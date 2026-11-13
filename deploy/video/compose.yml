@@ -33,6 +33,10 @@ services:
 
   api:
     image: jjtv-api:${JJTV_SOURCE_SHA:?}
+    networks:
+      default:
+        aliases:
+          - jjtv-api-internal
     build:
       context: ../..
       dockerfile: deploy/video/Dockerfile.api
