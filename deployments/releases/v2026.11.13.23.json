@@ -1,0 +1,30 @@
+{
+  "version": "v2026.11.13.23",
+  "target": "video-test-services",
+  "status": "published",
+  "sha": "9900273f216c5135c6e222e30835fb00417e5fb4",
+  "short_sha": "9900273f",
+  "command": [
+    "python3",
+    "scripts/test_tenancy_services.py",
+    "--credentials",
+    "/mnt/c/Users/Administrator/.codex/private/jjtv-tenancy-test-services.json",
+    "remote-run",
+    "tests/test_tag_list_queries.py",
+    "tests/test_content.py",
+    "-q",
+    "--maxfail=1"
+  ],
+  "exit_code": 0,
+  "started_at": "2026-11-13T21:31:05+08:00",
+  "finished_at": "2026-11-13T21:31:53+08:00",
+  "operator": {
+    "user": "root",
+    "host": "MM-202608191734",
+    "pid": 14290,
+    "agent_session": null,
+    "cwd": "/mnt/d/workspace/new/minitv"
+  },
+  "note": "Committed batched tenant tag count regression; isolated services only, no product deployment",
+  "dirty": false
+}
