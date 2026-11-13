@@ -306,7 +306,7 @@ def reset_administrator(tenant_id:str,user_id:int,request:Request,db:Session=Dep
 def audit_rows(db,tenant_id=None):
     query=select(AuditLog)
     if tenant_id is not None: query=query.where(AuditLog.tenant_id==tenant_id)
-    return [dict(id=row.id,actor_id=row.actor_id,actor_scope=row.actor_scope,tenant_id=row.tenant_id,action=row.action,payload=row.payload,created_at=row.created_at.isoformat()) for row in db.scalars(query.order_by(AuditLog.created_at.desc(),AuditLog.id.desc()).limit(200))]
+    return [dict(id=row.id,actor_id=row.actor_id,actor_scope=row.actor_scope,tenant_id=row.tenant_id,action=row.action,target_type=row.target_type,target_id=row.target_id,payload=row.payload,created_at=row.created_at.isoformat()) for row in db.scalars(query.order_by(AuditLog.created_at.desc(),AuditLog.id.desc()).limit(200))]
 
 @platform_router.get('/audit')
 def platform_audit(request:Request,tenant_id:str|None=None,db:Session=Depends(get_db),user:AdminUser=Depends(require_platform_admin)):

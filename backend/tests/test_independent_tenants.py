@@ -184,6 +184,12 @@ def test_platform_normal_token_has_no_implicit_business_access_and_support_is_sc
     env['db'].expire_all()
     audit=env['db'].scalar(select(AuditLog).where(AuditLog.actor_id==env['platform'].id,AuditLog.tenant_id==a['tenant']['id'],AuditLog.target_id==written.json()['id']).order_by(AuditLog.id.desc()))
     assert audit is not None and audit.actor_scope=='platform'
+    records=env['client'].get(PLATFORM+'/audit',params={'tenant_id':a['tenant']['id']},headers=env['pheaders'])
+    assert records.status_code==200,records.text
+    recorded=next(row for row in records.json()['items'] if row['id']==audit.id)
+    assert recorded['actor_id']==env['platform'].id and recorded['actor_scope']=='platform'
+    assert recorded['target_type']=='dramas' and recorded['target_id']==written.json()['id']
+    assert recorded['payload']['method']=='POST' and recorded['payload']['path']=='/admin/v1/dramas'
     assert env['client'].post(TENANT+'/auth/logout',headers=headers).status_code==200
     assert env['client'].get('/admin/v1/dramas',headers=headers).status_code==401
     assert env['client'].get(PLATFORM+'/context',headers=env['pheaders']).status_code==200
