@@ -191,17 +191,27 @@ def test_tenant_api_key_staff_scope_is_bounded_and_cannot_enter_platform(ctx):
     assert ctx['client'].post('/tenant/v1/auth/password',json={'old_password':'pass-1234','new_password':'changed-password'},headers=privileged).status_code==403
 
 @pytest.fixture()
-def india_ctx(ctx,monkeypatch):
+def india_ctx(ctx,monkeypatch,tmp_path):
     owner=ctx['make'].admin(role='admin',tenant_id=INDIA_TENANT)
     user=ctx['make'].admin(role='ops',tenant_id=INDIA_TENANT)
     current={**ctx,'tenant':INDIA_TENANT,'owner':owner,'operator':user,'owner_headers':login(ctx['client'],owner),'operator_headers':login(ctx['client'],user)}
     monkeypatch.setenv('TENANT_CONNECTION_KEY',Fernet.generate_key().decode());monkeypatch.setenv('INDIA_API_BASE_URL','https://india.example/v1')
+    client_key=tmp_path/'jjtv-client.key'
+    client_key.write_text('synthetic_jjtv_client_key_'+'k'*43,encoding='ascii')
+    monkeypatch.setenv('INDIA_JJTV_CLIENT_ENABLED','true')
+    monkeypatch.setenv('INDIA_JJTV_CLIENT_SECRET_FILE',str(client_key))
     calls=[];behavior={'deny':False}
     class FakeIndia:
         def __init__(self,**kwargs):pass
         async def call(self,action,**kwargs):
             calls.append((action,kwargs))
-            if action=='login':return IndiaReply({'access_token':'a'*43,'refresh_token':'r'*43,'user':{'id':'old-editor','name':'Editor','role':'editor'}},'old-login')
+            if action=='login':return IndiaReply({
+                'access_token':'a'*43,'refresh_token':'r'*43,
+                'auth_method':'jjtv_client_password','mfa_verified':False,
+                'expires_at':'2099-01-01T00:15:00.000Z',
+                'refresh_expires_at':'2099-01-01T08:00:00.000Z',
+                'user':{'id':'old-editor','name':'Editor','role':'editor','age_verified':False},
+            },'old-login')
             if behavior['deny']:raise IndiaError('india_forbidden',403,upstream_code='FORBIDDEN',request_id='old-denied')
             return IndiaReply({'id':'series-existing','version':3},'old-success')
     from app.modules.tenancy import router
