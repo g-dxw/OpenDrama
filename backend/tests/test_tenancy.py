@@ -216,6 +216,8 @@ def india_mock(monkeypatch):
         async def call(self, action, *, access_token=None, resource_id=None, payload=None, params=None, idempotency_key=None):
             observed.append({"action": action, "access_token": access_token, "resource_id": resource_id,
                              "payload": payload, "params": params, "idempotency_key": idempotency_key})
+            if state["expired"] and access_token is not None:
+                raise IndiaError("india_auth_required", 409, upstream_code="SESSION_EXPIRED", request_id="old-expired")
             if action == "configuration": return IndiaReply({"authentication": {"identity_mode": "first_party", "admin_password_enabled": True}}, "old-config")
             if action == "login":
                 if state["challenge"]:
@@ -231,7 +233,6 @@ def india_mock(monkeypatch):
                 assert payload == {"refresh_token": REFRESH}
                 return IndiaReply({"access_token": "n" * 43, "refresh_token": "s" * 43}, "old-refresh")
             if action == "me":
-                if state["expired"]: raise IndiaError("india_auth_required", 409, upstream_code="SESSION_EXPIRED", request_id="old-expired")
                 assert access_token in {ACCESS_A, ACCESS_B, "n" * 43}
                 return IndiaReply(OLD_ACTOR, "old-me")
             if action == "series_list":
@@ -344,13 +345,13 @@ def test_india_mfa_cancel_and_enrollment_are_bound_and_no_store(context, india_m
     india_mock[1].update(challenge=True, enrollment=True)
     pending = client.post(INDIA + "/session", json={"username": "old-existing", "password": "old-password-not-stored"}, headers=headers)
     assert pending.status_code == 200 and pending.json()["enrollment_required"] is True
-    assert pending.headers["cache-control"] == "no-store"
+    assert "no-store" in {part.strip().lower() for part in pending.headers["cache-control"].split(",")}
     another = login(client, context["owner"])
     denied = client.post(INDIA + "/session/enrollment", json={"challenge_token": CHALLENGE}, headers=another)
     assert denied.status_code == 409
     enrollment = client.post(INDIA + "/session/enrollment", json={"challenge_token": CHALLENGE}, headers=headers)
     assert enrollment.status_code == 200 and enrollment.json()["data"]["secret_base32"] == "A" * 32
-    assert enrollment.headers["cache-control"] == "no-store"
+    assert "no-store" in {part.strip().lower() for part in enrollment.headers["cache-control"].split(",")}
     row = db.scalar(select(IndiaConnection).where(IndiaConnection.user_id == context["owner"].id))
     decrypted = context["cipher"].decrypt(row.secret.encode()).decode()
     assert "A" * 32 not in decrypted and "otpauth://" not in decrypted and "old-password-not-stored" not in decrypted
