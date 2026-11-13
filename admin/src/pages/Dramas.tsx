@@ -510,6 +510,7 @@ export default function Dramas() {
                 width: 160,
                 render: (s: string, r) => {
                   const meta = STATUS_LABELS[s] ?? { text: s, color: "default" };
+                  if (!canWrite) return <Tag color={meta.color}>{meta.text}</Tag>;
                   const checked = s === "published";
                   const toggleable = s === "published" || s === "unpublished";
                   const tip = !toggleable

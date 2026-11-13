@@ -1,3 +1,4 @@
+import { tenantHeaders } from "./tenant-scope";
 const TOKEN_KEY = "minitv_admin_token";
 /** Why the last session ended; the login page turns it into a hint. */
 const LOGOUT_REASON_KEY = "minitv_admin_logout_reason";
@@ -103,6 +104,7 @@ export async function api<T = any>(path: string, options: RequestInit = {}): Pro
   const isFormData = typeof FormData !== "undefined" && options.body instanceof FormData;
   const headers: Record<string, string> = {
     ...(isFormData ? {} : { "Content-Type": "application/json" }),
+    ...tenantHeaders(path),
     ...((options.headers as Record<string, string>) ?? {}),
   };
   const token = getToken();

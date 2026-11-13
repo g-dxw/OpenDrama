@@ -88,6 +88,8 @@ def _register_routers() -> None:
     from app.modules.public_flow import router as public_flow_router
     from app.modules.recommend.router import router as feed_router
 
+    from app.modules.tenancy.router import router as tenant_router
+    app.include_router(tenant_router)
     app.include_router(admin_router)
     app.include_router(admin_api_key_router)
     app.include_router(admin_flow_router)
@@ -100,6 +102,17 @@ def _register_routers() -> None:
 
 
 _register_routers()
+
+@app.middleware("http")
+async def private_admin_responses(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/admin/") or request.url.path.startswith("/partner/"):
+        response.headers["Cache-Control"] = "private, no-store"
+        response.headers["Pragma"] = "no-cache"
+        vary = {value.strip() for value in response.headers.get("Vary", "").split(",") if value.strip()}
+        vary.update({"Authorization", "X-JJTV-Tenant"})
+        response.headers["Vary"] = ", ".join(sorted(vary))
+    return response
 
 
 @app.middleware("http")

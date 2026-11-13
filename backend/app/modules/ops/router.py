@@ -91,6 +91,8 @@ def require_admin(request: Request, db: Session = Depends(get_db)) -> AdminUser:
             status_code=403,
             detail={"code": "staff_only", "message": "该接口仅对平台员工开放"},
         )
+    from app.modules.tenancy.service import configure_request_scope
+    configure_request_scope(request, db, user)
     return user
 
 
@@ -468,6 +470,9 @@ def create_staff(
     except IntegrityError as exc:  # concurrent insert of the same username
         db.rollback()
         raise HTTPException(status_code=409, detail="账号已存在") from exc
+    if row.role in STAFF_ROLES:
+        from app.modules.tenancy.models import TenantMember
+        db.add(TenantMember(tenant_id="jjtv", user_id=row.id, role=row.role))
     db.add(
         AuditLog(
             actor_type="admin",

@@ -352,6 +352,7 @@ def list_episodes(
     db: Session = Depends(get_db),
     user: AdminUser = Depends(require_admin),
 ):
+    _drama_or_404(db, drama_id)
     stmt = select(Episode).where(Episode.drama_id == drama_id)
     if status:
         stmt = stmt.where(Episode.status == status)

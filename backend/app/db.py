@@ -61,6 +61,7 @@ def get_engine():
 def get_db():
     factory = make_session_factory(get_engine())
     db = factory()
+    db.info["content_tenant_id"] = "jjtv"
     try:
         yield db
     finally:

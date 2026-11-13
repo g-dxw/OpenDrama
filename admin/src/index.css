@@ -258,3 +258,8 @@ body {
     justify-content: flex-end;
   }
 }
+
+.tenant-context-bar { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; margin-bottom: 16px; padding: 10px 14px; border-left: 3px solid #e53b3e; background: #fff; border-radius: 4px; }
+.india-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 16px; }
+.india-form-full { grid-column: 1 / -1; }
+@media (max-width: 600px) { .india-form-grid { grid-template-columns: minmax(0, 1fr); } }
