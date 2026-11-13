@@ -155,6 +155,8 @@ if additions:
             temporary.unlink()
 print("JJTV tenancy connection configuration ready; existing secrets preserved.")
 PY
+install -d -m 700 "$ROOT/shared/india-client"
+export JJTV_INDIA_CLIENT_DIR="$ROOT/shared/india-client"
 export JJTV_ENV_FILE="$ROOT/shared/.env"
 export JJTV_SOURCE_SHA="$SOURCE_SHA"
 export JJTV_EDGE_NETWORK=dastaan-staging_default
