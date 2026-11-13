@@ -212,10 +212,9 @@ class TagUpdateIn(BaseModel):
 # ---- serializers ----
 
 
-def _tag_out(db: Session, tag: Tag) -> dict:
-    drama_count = (
-        db.scalar(select(func.count(DramaTag.drama_id)).where(DramaTag.tag_id == tag.id)) or 0
-    )
+def _tag_out(db: Session, tag: Tag, drama_count: int | None = None) -> dict:
+    if drama_count is None:
+        drama_count = db.scalar(select(func.count(DramaTag.drama_id)).where(DramaTag.tag_id == tag.id)) or 0
     return {
         "id": tag.id,
         "name_en": tag.name_en,
@@ -1043,7 +1042,9 @@ def list_tags(
     db: Session = Depends(get_db),
 ):
     rows = db.scalars(select(Tag).order_by(Tag.name_en)).all()
-    return {"items": [_tag_out(db, t) for t in rows]}
+    counts = dict(db.execute(select(DramaTag.tag_id,func.count(DramaTag.drama_id))
+                             .where(DramaTag.tag_id.in_([tag.id for tag in rows])).group_by(DramaTag.tag_id)).all()) if rows else {}
+    return {"items": [_tag_out(db, t, counts.get(t.id, 0)) for t in rows]}
 
 
 @router.post("/tags")
