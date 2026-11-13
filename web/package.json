@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "accept:preview": "node scripts/preview-acceptance.mjs"
+    "accept:preview": "node scripts/preview-acceptance.mjs",
+    "accept:consumer": "node scripts/consumer-acceptance.mjs",
+    "accept:subtitles": "node --experimental-strip-types scripts/subtitle-acceptance.mjs"
   },
   "dependencies": {
     "hls.js": "^1.7.3",

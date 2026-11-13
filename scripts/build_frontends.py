@@ -26,7 +26,7 @@ def require_clean_source(root: Path, frontends: tuple[str, ...] = FRONTENDS) -> 
     changed = git(root, "diff", "--name-only", "HEAD", "--")
     if changed:
         raise SystemExit("Commit tracked source changes before building or deploying JJTV:\n" + changed)
-    for frontend in frontends:
+    for frontend in (*frontends, "shared"):
         untracked = git(root, "ls-files", "--others", "--exclude-standard", "--", frontend)
         if untracked:
             raise SystemExit(f"Untracked {frontend} source is not part of HEAD:\n{untracked}")

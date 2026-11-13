@@ -9,6 +9,7 @@ const target = process.env.VITE_PROXY_TARGET ?? "http://127.0.0.1:18110";
 export default defineConfig({
   plugins: [react()],
   server: {
+    fs: {allow: [".."]},
     port: 5175,
     proxy: {
       "/v1": { target, changeOrigin: true, secure: true },

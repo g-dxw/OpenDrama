@@ -20,10 +20,26 @@ interface TabItem {
 }
 
 const TABS: TabItem[] = [
-  { id: "home", key: "nav.home", renderIcon: (active) => <IconHome active={active} /> },
-  { id: "foryou", key: "nav.foryou", renderIcon: (active) => <IconForYou active={active} /> },
-  { id: "rewards", key: "nav.rewards", renderIcon: (active) => <IconRewards active={active} /> },
-  { id: "me", key: "nav.me", renderIcon: (active) => <IconMe active={active} /> },
+  {
+    id: "home",
+    key: "nav.home",
+    renderIcon: (active) => <IconHome active={active} />,
+  },
+  {
+    id: "foryou",
+    key: "nav.foryou",
+    renderIcon: (active) => <IconForYou active={active} />,
+  },
+  {
+    id: "rewards",
+    key: "nav.rewards",
+    renderIcon: (active) => <IconRewards active={active} />,
+  },
+  {
+    id: "me",
+    key: "nav.me",
+    renderIcon: (active) => <IconMe active={active} />,
+  },
 ];
 
 export function App() {
@@ -35,7 +51,7 @@ export function App() {
 }
 
 function AppShell() {
-  const { loginOpen, refresh } = useAuth();
+  const { loginOpen, refresh, authError } = useAuth();
   const [locale, setLocale] = useState<Locale>(loadLocale);
   const [tab, setTab] = useState<Tab>("home");
   const [dramaId, setDramaId] = useState<number | null>(null);
@@ -47,13 +63,24 @@ function AppShell() {
     const params = new URLSearchParams(window.location.search);
     const result = params.get("checkout");
     if (!result) return;
+    for (const key of Object.keys(sessionStorage))
+      if (key.startsWith("jjtv_checkout_membership_"))
+        sessionStorage.removeItem(key);
     params.delete("checkout");
     const query = params.toString();
-    window.history.replaceState({}, "", `${window.location.pathname}${query ? `?${query}` : ""}`);
+    window.history.replaceState(
+      {},
+      "",
+      `${window.location.pathname}${query ? `?${query}` : ""}`,
+    );
     if (result === "success") {
       setTab("me");
       void refresh();
-      toast(t(locale, "premium_paid"));
+      toast(
+        locale === "zh"
+          ? "支付已返回，请在订单中查看确认结果。"
+          : "Checkout returned. Check your orders for confirmation.",
+      );
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -69,6 +96,12 @@ function AppShell() {
 
   return (
     <div className="app" id="app">
+      {authError && (
+        <div className="auth-connection-error" role="alert">
+          <span>{authError}</span>
+          <button onClick={() => void refresh()}>Retry</button>
+        </div>
+      )}
       {!playing && tab !== "me" && (
         <header className="topbar">
           {searching ? null : tab === "home" ? (
@@ -80,9 +113,15 @@ function AppShell() {
             <h1>{t(locale, TABS.find((item) => item.id === tab)!.key)}</h1>
           )}
           <span style={{ flex: 1 }} />
-          <button className="icon-btn" onClick={switchLocale}>{locale === "zh" ? "EN" : "中"}</button>
+          <button className="icon-btn" onClick={switchLocale}>
+            {locale === "zh" ? "EN" : "中"}
+          </button>
           {!searching && (
-            <button className="icon-btn search-btn" onClick={() => setSearching(true)} aria-label={t(locale, "search")}>
+            <button
+              className="icon-btn search-btn"
+              onClick={() => setSearching(true)}
+              aria-label={t(locale, "search")}
+            >
               <IconSearch />
             </button>
           )}
@@ -94,10 +133,20 @@ function AppShell() {
             dramaId={dramaId}
             locale={locale}
             onBack={() => setDramaId(null)}
-            onOpenRewards={() => { setDramaId(null); setTab("rewards"); }}
+            onOpenRewards={() => {
+              setDramaId(null);
+              setTab("rewards");
+            }}
           />
         ) : searching ? (
-          <SearchPage locale={locale} onBack={() => setSearching(false)} onOpen={(id) => { setSearching(false); setDramaId(id); }} />
+          <SearchPage
+            locale={locale}
+            onBack={() => setSearching(false)}
+            onOpen={(id) => {
+              setSearching(false);
+              setDramaId(id);
+            }}
+          />
         ) : tab === "home" ? (
           <HomePage locale={locale} onOpen={setDramaId} />
         ) : tab === "foryou" ? (

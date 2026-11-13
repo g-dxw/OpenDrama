@@ -1,10 +1,9 @@
-import { createRequire } from "node:module";
-
-const require = createRequire("/opt/homebrew/lib/node_modules/");
-const { chromium } = require("playwright");
+import {chromium} from "playwright-core";
+import os from "node:os";
+import path from "node:path";
 
 const APP_URL = process.env.BASE_URL || "https://jjtv-h5.8jj.net/";
-const OUT = "/tmp/h5auth";
+const OUT = process.env.OUT_DIR || path.join(os.tmpdir(), "h5auth");
 const TOKEN = "test-token-42";
 const EMAIL = "viewer@example.com";
 
@@ -45,8 +44,9 @@ const playPayload = {
       episode_number: 1,
       title: "EP1",
       duration_seconds: 90,
-      free: false,
-      locked: true,
+      // The reaction rail is intentionally hidden on locked episodes.
+      free: true,
+      locked: false,
       progress_seconds: 0,
       unlock: { coin_price: 60 },
     },
@@ -166,7 +166,7 @@ function check(ok, label) {
   console.log(`${ok ? "PASS" : "FAIL"}  ${label}`);
 }
 
-const browser = await chromium.launch({ channel: "chrome" });
+const browser = await chromium.launch(process.env.CHROME_PATH ? {executablePath: process.env.CHROME_PATH} : {channel: "chrome"});
 
 async function newPage(options = {}) {
   const context = await browser.newContext({
@@ -287,6 +287,7 @@ async function newPage(options = {}) {
   await page.getByRole("button", { name: "Settings" }).click();
   await page.waitForSelector('[data-testid="settings-sheet"]', { timeout: 5000 });
   await page.getByRole("button", { name: "Sign out" }).click();
+  await page.getByTestId("signout-confirm").click();
   await page.waitForSelector(".me-cta", { timeout: 5000 });
   check((await page.evaluate(() => localStorage.getItem("minitv_h5_token"))) === null, "sign out clears the token");
   check((await page.locator(".me-hero h2").innerText()).includes("Sign in"), "sign out returns the guest state");

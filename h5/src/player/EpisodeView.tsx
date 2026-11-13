@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { postJson } from "../api";
+import { prepareSubtitleTracks } from "../../../shared/consumer/subtitles";
 import { IconPlayCenter } from "../icons";
 import type { PlaybackAuth } from "../types";
 import { attachHls, type PlayerHandle } from "./hls";
@@ -38,6 +39,9 @@ export function EpisodeView({
   const [paused, setPaused] = useState(false);
   const [progress, setProgress] = useState(0);
   const [failed, setFailed] = useState(false);
+  const [subtitles, setSubtitles] = useState<
+    NonNullable<PlaybackAuth["subtitles"]>
+  >([]);
   const onFinishedRef = useRef(onFinished);
   onFinishedRef.current = onFinished;
   const onQualitiesChangeRef = useRef(onQualitiesChange);
@@ -51,9 +55,17 @@ export function EpisodeView({
     let heartbeat = 0;
     let cancelled = false;
     let finished = false;
+    const subtitleController = new AbortController();
+    let disposeSubtitles = () => {};
 
-    const report = (kind: "start" | "progress" | "complete", position: number) => {
-      postJson(`/v1/playback/${kind}`, { episode_id: episodeId, position_seconds: position }).catch(() => undefined);
+    const report = (
+      kind: "start" | "progress" | "complete",
+      position: number,
+    ) => {
+      postJson(`/v1/playback/${kind}`, {
+        episode_id: episodeId,
+        position_seconds: position,
+      }).catch(() => undefined);
     };
 
     const finish = () => {
@@ -72,11 +84,27 @@ export function EpisodeView({
 
     (async () => {
       try {
-        const auth = await postJson<PlaybackAuth>("/v1/playback", { drama_id: dramaId, episode_id: episodeId });
+        const auth = await postJson<PlaybackAuth>("/v1/playback", {
+          drama_id: dramaId,
+          episode_id: episodeId,
+        });
         if (cancelled || !auth.allowed || !auth.url) {
           if (!cancelled && auth.allowed === false) setFailed(true);
           return;
         }
+        void prepareSubtitleTracks(
+          auth.subtitles ?? [],
+          subtitleController.signal,
+        )
+          .then((result) => {
+            if (cancelled) {
+              result.dispose();
+              return;
+            }
+            setSubtitles(result.tracks);
+            disposeSubtitles = result.dispose;
+          })
+          .catch(() => undefined);
         handle = attachHls(video, auth.url, (levels) => {
           onQualitiesChangeRef.current?.(levels);
         });
@@ -89,7 +117,10 @@ export function EpisodeView({
           video.playbackRate = playbackSpeed;
           video.play().catch(() => setPaused(true));
           report("start", resumeSeconds);
-          heartbeat = window.setInterval(() => report("progress", Math.floor(video.currentTime || 0)), 15000);
+          heartbeat = window.setInterval(
+            () => report("progress", Math.floor(video.currentTime || 0)),
+            15000,
+          );
         };
         if (video.readyState >= 1) start();
         else video.addEventListener("loadedmetadata", start, { once: true });
@@ -102,6 +133,9 @@ export function EpisodeView({
 
     return () => {
       cancelled = true;
+      subtitleController.abort();
+      disposeSubtitles();
+      setSubtitles([]);
       window.clearInterval(heartbeat);
       video.removeEventListener("timeupdate", onTime);
       video.removeEventListener("ended", finish);
@@ -149,7 +183,55 @@ export function EpisodeView({
 
   return (
     <>
-      <video ref={videoRef} playsInline onClick={toggle} />
+      <video
+        ref={videoRef}
+        playsInline
+        crossOrigin="anonymous"
+        onClick={toggle}
+      >
+        {subtitles.map((track) => (
+          <track
+            key={track.language}
+            kind="subtitles"
+            src={track.url}
+            srcLang={track.language}
+            label={track.label}
+            default={track.is_default}
+          />
+        ))}
+      </video>
+      {subtitles.length > 0 && (
+        <label className="subtitle-picker">
+          Subtitles
+          <select
+            aria-label="Subtitles"
+            defaultValue="default"
+            onChange={(event) => {
+              const video = videoRef.current;
+              if (!video) return;
+              for (let i = 0; i < video.textTracks.length; i++) {
+                const track = video.textTracks[i];
+                track.mode =
+                  event.target.value === track.language ||
+                  (event.target.value === "default" &&
+                    subtitles.some(
+                      (s) => s.language === track.language && s.is_default,
+                    ))
+                    ? "showing"
+                    : "disabled";
+              }
+            }}
+          >
+            <option value="default">Default</option>
+            <option value="off">Off</option>
+            {subtitles.map((track) => (
+              <option value={track.language} key={track.language}>
+                {track.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
       {failed && <div className="lock">Could not play</div>}
       {paused && playable && (
         <button
@@ -163,7 +245,9 @@ export function EpisodeView({
           </span>
         </button>
       )}
-      <div className="progress"><b style={{ width: `${progress * 100}%` }} /></div>
+      <div className="progress">
+        <b style={{ width: `${progress * 100}%` }} />
+      </div>
     </>
   );
 }
