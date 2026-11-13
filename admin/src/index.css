@@ -263,3 +263,14 @@ body {
 .india-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 16px; }
 .india-form-full { grid-column: 1 / -1; }
 @media (max-width: 600px) { .india-form-grid { grid-template-columns: minmax(0, 1fr); } }
+
+/* Folder / page location remains readable when the sidebar is collapsed. */
+.app-breadcrumb { min-width: 0; }
+.app-breadcrumb-mobile { margin-bottom: 12px; }
+.tenant-role-module + .tenant-role-module { border-top: 1px solid #f0f0f0; padding-top: 14px; }
+
+.app-header-location { flex: 1; min-width: 0; }
+.app-header-location > .ant-space-item:last-child { min-width: 0; overflow: hidden; }
+.app-header-location .app-breadcrumb ol { flex-wrap: nowrap; }
+.app-header-location .app-breadcrumb li { white-space: nowrap; }
+.app-header-location .app-breadcrumb li:last-child { overflow: hidden; text-overflow: ellipsis; }

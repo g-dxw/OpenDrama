@@ -3,7 +3,7 @@ import { Alert, Button, Card, Checkbox, Drawer, Empty, Input, Modal, Popconfirm,
 import { PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import { api, errorText } from "../api";
 import { useTenant, type Tenant } from "../tenant";
-import { changePermission, type TenantRole, type PermissionEntry, type TenantRolesPayload } from "../tenant-permissions";
+import { changePermission, permissionSections, type TenantRole, type PermissionEntry, type TenantRolesPayload } from "../tenant-permissions";
 
 export default function TenantRoles({ tenant, onClose }: { tenant: Tenant | null; onClose: () => void }) {
   const { refresh } = useTenant();
@@ -51,12 +51,12 @@ export default function TenantRoles({ tenant, onClose }: { tenant: Tenant | null
       message.success("角色已删除"); await load(); await refresh();
     } catch (e) { message.error(errorText(e)); }
   };
-  const groups = [...new Set(catalog.map(entry => entry.group))];
+  const sections = permissionSections(catalog, tenant?.kind === "india_legacy");
   const invalid = picked.some(key => !catalog.some(entry => entry.key === key));
   return <>
     <Drawer title={tenant ? tenant.name + " · 角色与菜单权限" : "角色与菜单权限"} open={!!tenant} onClose={onClose} width="min(960px, 100vw)" destroyOnHidden>
       <Space direction="vertical" size="middle" style={{ width: "100%" }}>
-        <Typography.Text type="secondary">“查看”权限决定可见菜单，操作权限分别控制编辑、上传、审核等动作。仅显示此租户支持的功能。</Typography.Text>
+        <Typography.Text type="secondary">菜单分类与后台导航保持一致；“查看”权限决定可见子菜单，操作权限分别控制编辑、上传、审核等动作。仅显示此租户支持的功能。</Typography.Text>
         {tenant?.kind === "india_legacy" && <Alert type="info" showIcon message="India 仅开放内容运营" description="授权后仍需连接具备相应权限的旧站账号。此处不会开放旧站财务、钱包或会员管理。" />}
         {error && <Alert type="error" showIcon message={error} action={<Button onClick={() => void load()}>重试</Button>} />}
         <Space><Button type="primary" icon={<PlusOutlined aria-hidden />} disabled={loading || !!error} onClick={() => edit("new")}>新增角色</Button>
@@ -82,12 +82,17 @@ export default function TenantRoles({ tenant, onClose }: { tenant: Tenant | null
         <Typography.Text type="secondary">选择操作会同时选中必要的查看权限；取消查看权限会移除依赖它的操作。</Typography.Text>
         <div style={{ maxHeight: "55vh", overflow: "auto", width: "100%" }}>
           <Space direction="vertical" style={{ width: "100%" }} size="small">
-            {groups.map(group => <Card key={group} size="small" title={group}>
-              <Space direction="vertical" style={{ width: "100%" }}>
-                {catalog.filter(entry => entry.group === group).map(entry => <Checkbox key={entry.key} checked={picked.includes(entry.key)} disabled={saving}
-                  onChange={event => setPicked(current => changePermission(current, entry.key, event.target.checked, catalog))}>
-                  {entry.label}{entry.key.endsWith(".view") && <Typography.Text type="secondary"> · 菜单访问</Typography.Text>}
-                </Checkbox>)}
+            {sections.map(section => <Card key={section.key} size="small" title={section.title}>
+              <Space direction="vertical" style={{ width: "100%" }} size="middle">
+                {section.modules.map(module => <div className="tenant-role-module" key={module.key}>
+                  <Typography.Text strong>{module.title}</Typography.Text>
+                  <Space direction="vertical" style={{ width: "100%", marginTop: 10 }}>
+                    {module.entries.map(entry => <Checkbox key={entry.key} checked={picked.includes(entry.key)} disabled={saving}
+                      onChange={event => setPicked(current => changePermission(current, entry.key, event.target.checked, catalog))}>
+                      {entry.label}{entry.key.endsWith(".view") && !entry.label.includes("菜单") && <Typography.Text type="secondary"> · 菜单访问</Typography.Text>}
+                    </Checkbox>)}
+                  </Space>
+                </div>)}
               </Space>
             </Card>)}
           </Space>

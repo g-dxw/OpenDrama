@@ -4,12 +4,12 @@ import {
   Alert,
   Avatar,
   Button,
+  Breadcrumb,
   Card,
   Drawer,
   Dropdown,
   Grid,
   Layout,
-  Menu,
   Select,
   Space,
   Spin,
@@ -30,6 +30,8 @@ import {
 import { api, clearToken, forceReauth, getToken, isDeadCredential } from "./api";
 import { MeContext, ROLE_LABELS, type Me } from "./me";
 import Login from "./pages/Login";
+import TenantNavigation from "./components/TenantNavigation";
+import { navigationLeaves, selectedNavigation, visibleNavigation } from "./navigation";
 import Tenants from "./pages/Tenants";
 import IndiaContent from "./pages/IndiaContent";
 import { TenantContext, type Tenant } from "./tenant";
@@ -56,7 +58,6 @@ import {
   CommentsPage,
   DashboardPage,
   FinancePage,
-  // OpsCenterPage, // 运营中心入口已关闭，恢复时连同 ITEMS 与 /ops 路由一起放回
   PlansPage,
   UsersPage,
 } from "./pages/StagePages";
@@ -68,35 +69,6 @@ const SIDER_WIDTH = 208;
 /** lg breakpoint (antd `lg`): below this the sider becomes a drawer so it
  *  stops squeezing the page on tablets and phones. */
 const DESKTOP_QUERY = "(min-width: 992px)";
-
-const ITEMS: { key: string; label: string; roles?: string[] }[] = [
-  { key: "/dashboard", label: "数据看板", roles: ["ops", "finance", "admin"] },
-  { key: "/dramas", label: "剧集管理", roles: ["ops", "admin"] },
-  { key: "/reviews", label: "待审核", roles: ["ops", "admin"] },
-  { key: "/groups", label: "首页分组", roles: ["ops", "admin"] },
-  { key: "/users", label: "用户管理", roles: ["finance", "admin"] },
-  // 运营中心（推送记录）暂不开放：当前只是台账占位，没有真实推送通道，先隐藏入口。
-  // 恢复时把下面一行和 /ops 路由一起放回来即可。
-  // { key: "/ops", label: "运营中心" },
-  { key: "/home-ops", label: "首页运营", roles: ["ops", "admin"] },
-  { key: "/rewards", label: "金币与任务", roles: ["ops", "admin"] },
-  { key: "/comments", label: "评论审核", roles: ["ops", "admin"] },
-  { key: "/moderation", label: "自动审核", roles: ["ops", "admin"] },
-  { key: "/finance", label: "财务订单", roles: ["finance", "admin"] },
-  { key: "/settlements", label: "结算单", roles: ["finance", "admin"] },
-  { key: "/plans", label: "会员套餐", roles: ["finance", "admin"] },
-  { key: "/tags", label: "标签库", roles: ["ops", "admin"] },
-  // 员工账号只对管理员开放：运营/财务看到入口也只会拿到 403。
-  { key: "/staff", label: "账号管理", roles: ["admin"] },
-  // 密钥签发是超管动作，与账号管理同级。
-  { key: "/api-keys", label: "API 密钥", roles: ["admin"] },
-  { key: "/suppliers", label: "上剧方管理", roles: ["admin"] },
-  // 上剧方（partner）只看到自己的剧集；其它入口一律不渲染。
-  { key: "/partner/dramas", label: "我的剧集", roles: ["partner"] },
-  { key: "/partner/stats", label: "数据中心", roles: ["partner"] },
-  { key: "/partner/settlements", label: "结算单", roles: ["partner"] },
-  { key: "/partner/api-keys", label: "API 密钥", roles: ["partner"] },
-];
 
 export default function App() {
   const navigate = useNavigate();
@@ -317,14 +289,15 @@ export default function App() {
   const platformAdmin = me?.role === "admin";
   const effectiveRole = currentTenant?.role_name || currentTenant?.own_role || me?.role || "";
   const effectiveMe = me ? { ...me, platform_role: me.role, permissions: currentTenant?.permissions ?? [], menu_keys: currentTenant?.menu_keys ?? [], tenant_role_name: currentTenant?.role_name } : null;
-  const allowedMenus = new Set(currentTenant?.menu_keys ?? []);
-  const tenantItems = [...ITEMS, { key: "/tenants", label: "租户管理", roles: ["admin"] }, { key: "/india-content", label: "India 内容运营" }];
-  const firstMenu = tenantItems.find(item => item.key !== "/tenants" && allowedMenus.has(item.key))?.key;
+  const visibleItems = visibleNavigation({ menuKeys: currentTenant?.menu_keys ?? [], partner: isPartner, platformAdmin, india: currentTenant?.kind === "india_legacy" });
+  const tenantItems = navigationLeaves(visibleItems);
+  const allowedMenus = new Set(tenantItems.map(item => item.key));
+  const firstMenu = tenantItems.find(item => item.key !== "/tenants")?.key;
   const selectTenant = (id: string) => {
     const row = tenants.find(t => t.id === id);
     if (!row || row.status !== "active") { message.warning("此租户已暂停"); return; }
     setCurrentTenantId(id); setTenantId(id); setPermissionError("");
-    const target = tenantItems.find(item => item.key !== "/tenants" && (row.menu_keys ?? []).includes(item.key))?.key;
+    const target = navigationLeaves(visibleNavigation({ menuKeys: row.menu_keys ?? [], partner: false, platformAdmin, india: row.kind === "india_legacy" })).find(item => item.key !== "/tenants")?.key;
     navigate(target || "/", { replace: true });
   };
   if (!isPartner && tenantState !== "ready") return <div style={{ padding: 32 }}><Card>
@@ -334,22 +307,15 @@ export default function App() {
   const onTenantManagement = location.pathname === "/tenants";
   if (!isPartner && !onTenantManagement && currentTenant?.status === "active" && firstMenu) {
     const requested = [...tenantItems].sort((a, b) => b.key.length - a.key.length).find(item => location.pathname === item.key || location.pathname.startsWith(item.key + "/"));
-    const reviewDetail = /^\/dramas\/[^/]+$/.test(location.pathname) && (currentTenant.permissions ?? []).includes("reviews.view");
+    const reviewDetail = currentTenant?.kind === "native" && /^\/dramas\/[^/]+$/.test(location.pathname) && (currentTenant.permissions ?? []).includes("reviews.view");
     if ((!requested || !allowedMenus.has(requested.key)) && !reviewDetail) return <Navigate to={firstMenu} replace />;
   }
-  const selectedItem = [...tenantItems]
-    .sort((a, b) => b.key.length - a.key.length)
-    .find((item) => location.pathname === item.key || location.pathname.startsWith(`${item.key}/`));
-  const selected = selectedItem?.key ?? "/dramas";
-  const pageTitle = selectedItem?.label ?? "剧集管理";
-
-  // Role-gated entries stay hidden until `/auth/me` resolves, so a non-admin
-  // never sees a menu item that would only 403. Unrestricted items pass through.
-  const visibleItems = tenantItems.filter(item => {
-    if (item.key === "/tenants") return platformAdmin;
-    if (isPartner) return !!item.roles?.includes("partner");
-    return allowedMenus.has(item.key);
-  });
+  const reviewDetail = currentTenant?.kind === "native" && /^\/dramas\/[^/]+$/.test(location.pathname) && (currentTenant?.permissions ?? []).includes("reviews.view");
+  const selectedItem = selectedNavigation(location.pathname, visibleItems, reviewDetail);
+  const breadcrumbItems = selectedItem ? [
+    ...(selectedItem.parent ? [{ title: selectedItem.parent.label }] : []),
+    { title: <Typography.Text strong>{selectedItem.leaf.label}</Typography.Text> },
+  ] : [];
 
   const nav = (
     <>
@@ -360,15 +326,12 @@ export default function App() {
           {me?.role === "partner" ? "JJTV 合作方" : "JJTV 后台"}
         </div>
       )}
-      <Menu
-        mode="inline"
-        style={{ borderInlineEnd: "none" }}
-        selectedKeys={[selected]}
+      <TenantNavigation
         items={visibleItems}
-        onClick={({ key }) => {
-          navigate(key);
-          setNavOpen(false);
-        }}
+        selected={selectedItem?.leaf.key}
+        route={location.pathname}
+        scope={tenantId}
+        onNavigate={key => { navigate(key); setNavOpen(false); }}
       />
     </>
   );
@@ -412,7 +375,7 @@ export default function App() {
               borderBottom: "1px solid #f0f0f0",
             }}
           >
-            <Space size={4}>
+            <Space size={4} className="app-header-location">
               {isDesktop ? (
                 <Button
                   type="text"
@@ -428,9 +391,9 @@ export default function App() {
                   onClick={() => setNavOpen(true)}
                 />
               )}
-              {!isNarrow && <Typography.Text strong style={{ fontSize: 15 }}>{pageTitle}</Typography.Text>}
+              {!isNarrow && <Breadcrumb className="app-breadcrumb" items={breadcrumbItems} />}
             </Space>
-            <Space size={8}>
+            <Space size={8} style={{ flexShrink: 0 }}>
               {!isPartner && <Button type="text" aria-label="刷新租户权限" icon={<ReloadOutlined aria-hidden />} loading={refreshingPermissions} onClick={() => void refreshPermissions()} />}
               {!isPartner && <Select aria-label="当前租户" value={tenantId} onChange={selectTenant}
                 style={{ width: isNarrow ? 132 : 220 }} popupMatchSelectWidth={260}
@@ -464,6 +427,7 @@ export default function App() {
           {/* Fluid container: the table fills the viewport instead of leaving a
               dead column of whitespace on wide monitors. */}
           <Content key={tenantId + ":" + (currentTenant?.permissions ?? []).slice().sort().join(",") + ":" + (currentTenant?.menu_keys ?? []).slice().sort().join(",") + ":" + (currentTenant?.role_id ?? "")} style={{ padding: isNarrow ? 12 : 24, width: "100%", minWidth: 0 }}>
+            {isNarrow && <Breadcrumb className="app-breadcrumb app-breadcrumb-mobile" items={breadcrumbItems} />}
             {!isPartner && <div className="tenant-context-bar"><Typography.Text strong>{currentTenant?.name}</Typography.Text><Typography.Text type="secondary">当前运营租户</Typography.Text><Tag style={{ margin: 0 }}>{ROLE_LABELS[effectiveRole] || effectiveRole}</Tag></div>}
             {permissionError && !onTenantManagement ? <Alert type="error" showIcon message={permissionError} action={<Button onClick={() => void refreshPermissions()} loading={refreshingPermissions}>重试</Button>} /> : currentTenant?.status === "paused" && !onTenantManagement ? <Alert type="warning" showIcon message="此租户已暂停" description="请切换其他租户，或由平台管理员在租户管理中重新启用。" action={platformAdmin ? <Button onClick={() => navigate("/tenants")}>管理租户</Button> : undefined} /> : !isPartner && !firstMenu && !onTenantManagement ? <Alert type="info" showIcon message="当前租户角色未开放任何菜单" description="请联系平台管理员分配角色权限。" /> : <Routes>
               <Route path="/tenants" element={<Tenants />} />
