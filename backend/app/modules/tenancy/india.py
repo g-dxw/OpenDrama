@@ -1,14 +1,17 @@
 """Fixed India API connector. No database, credentials persistence, or URL proxying.
 
 The caller supplies the current JJTV operator's encrypted-at-rest upstream business
-credentials. Passwords and TOTP values are used only in their respective requests.
+credentials. Passwords are used only in the dedicated client login request.
 """
 from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterable, Mapping
 from dataclasses import dataclass
+from datetime import datetime
 import json
+import hashlib
+from pathlib import Path
 import os
 import re
 from typing import Any
@@ -54,14 +57,10 @@ class _Action:
 
 _LIST_QUERY = frozenset({"limit", "cursor", "q", "status"})
 _ACTIONS = {
-    "configuration": _Action("GET", "configuration", False),
     "me": _Action("GET", "me"),
-    "login": _Action("POST", "auth/admin/login", False),
-    "mfa_verify": _Action("POST", "auth/admin/mfa", False),
-    "mfa_cancel": _Action("POST", "auth/admin/mfa/cancel", False),
-    "mfa_enrollment": _Action("POST", "auth/admin/mfa/enrollment", False),
-    "refresh": _Action("POST", "auth/refresh", False),
-    "logout": _Action("POST", "auth/logout", False),
+    "login": _Action("POST", "auth/jjtv/login", False),
+    "refresh": _Action("POST", "auth/jjtv/refresh", False),
+    "logout": _Action("POST", "auth/jjtv/logout", False),
     "series_list": _Action("GET", "admin/series", query=_LIST_QUERY | {"rights_state", "review_queue"}),
     "series_detail": _Action("GET", "admin/series/{id}"),
     "series_create": _Action("POST", "admin/series"),
@@ -151,26 +150,65 @@ def normalize_login(value: Any) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise IndiaError("india_invalid_response")
     if value.get("mfa_required") is True:
-        challenge = value.get("challenge_token")
-        if not isinstance(challenge, str) or not re.fullmatch(r"[A-Za-z0-9_-]{43}", challenge) or not isinstance(value.get("expires_at"), str):
-            raise IndiaError("india_invalid_response")
-        return {"state": "mfa_required", "challenge_token": challenge, "expires_at": value["expires_at"],
-                "enrollment_required": value.get("enrollment_required") is True}
-    access, refresh = _credential(value.get("access_token")), _credential(value.get("refresh_token"))
+        raise IndiaError("india_client_contract_invalid")
+    if value.get("auth_method") != "jjtv_client_password" or value.get("mfa_verified") is not False:
+        raise IndiaError("india_client_contract_invalid")
+    try:
+        access, refresh = _credential(value.get("access_token")), _credential(value.get("refresh_token"))
+    except IndiaError:
+        # Malformed upstream success is not evidence that a saved connection expired.
+        raise IndiaError("india_invalid_response") from None
     result = {"state": "connected", "access_token": access, "refresh_token": refresh,
               "user": normalize_staff(value.get("user"))}
     for key in ("expires_at", "refresh_expires_at"):
-        if isinstance(value.get(key), str):
-            result[key] = value[key]
+        try:
+            expiry = value[key]
+            parsed = datetime.fromisoformat(expiry.replace("Z", "+00:00")) if isinstance(expiry, str) else None
+            if parsed is None or parsed.tzinfo is None:
+                raise ValueError()
+        except (KeyError, ValueError, TypeError):
+            raise IndiaError("india_invalid_response") from None
+        result[key] = expiry
     return result
+
+
+def normalize_refresh(value: Any, previous_user: Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise IndiaError("india_invalid_response")
+    result = normalize_login({**value, "user": value.get("user", previous_user)})
+    if result["user"]["id"] != previous_user["id"]:
+        raise IndiaError("india_invalid_response")
+    return result
+
+
+def client_secret() -> str:
+    """Read an independent, server-only client key; never fall back to web MFA."""
+    if os.environ.get("INDIA_JJTV_CLIENT_ENABLED", "").lower() != "true":
+        raise IndiaError("india_client_unavailable", 503)
+    try:
+        path = Path(os.environ.get("INDIA_JJTV_CLIENT_SECRET_FILE", ""))
+        if not path.is_absolute() or not path.is_file() or path.stat().st_size > 256:
+            raise ValueError()
+        secret = path.read_text(encoding="ascii").strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{43,128}", secret):
+            raise ValueError()
+        return secret
+    except (OSError, ValueError, UnicodeError):
+        raise IndiaError("india_client_unavailable", 503) from None
+
+
+def client_fingerprint() -> str:
+    return hashlib.sha256(client_secret().encode("ascii")).hexdigest()
 
 
 class IndiaClient:
     """Each operation owns its HTTP client; construction accepts server configuration only."""
 
-    def __init__(self, *, base_url: str | None = None, transport: httpx.AsyncBaseTransport | None = None):
+    def __init__(self, *, operator_id: str, base_url: str | None = None, transport: httpx.AsyncBaseTransport | None = None):
         self.base_url = normalize_api_base(base_url if base_url is not None else os.environ.get("INDIA_API_BASE_URL"))
         self._transport = transport
+        self._operator_id = safe_id(operator_id)
+        self._client_secret = client_secret()
 
     async def call(self, action: str, *, access_token: str | None = None, resource_id: str | None = None,
                    payload: Mapping[str, Any] | None = None, params: Mapping[str, Any] | None = None,
@@ -208,7 +246,9 @@ class IndiaClient:
                     raise IndiaError("india_payload_too_large", 413)
             except (TypeError, ValueError):
                 raise IndiaError("india_invalid_payload", 400) from None
-        return await self._send(spec.method, path, access_token=access_token, payload=body, params=query, headers=idempotency_headers)
+        auth_stage = action if action == "login" else None
+        return await self._send(spec.method, path, access_token=access_token, payload=body, params=query,
+                                headers=idempotency_headers, auth_stage=auth_stage)
 
     async def upload(self, kind: str, upload_id: str, *, access_token: str, chunks: AsyncIterable[bytes],
                      size: int, content_type: str, idempotency_key: str | None = None) -> IndiaReply:
@@ -249,8 +289,10 @@ class IndiaClient:
     async def _send(self, method: str, path: str, *, access_token: str | None = None,
                     payload: dict | None = None, params: dict | None = None,
                     content: AsyncIterable[bytes] | None = None, headers: dict | None = None,
-                    upload: bool = False) -> IndiaReply:
-        request_headers = {"Accept": "application/json", "User-Agent": "JJTV-India-Connector/1.0", **(headers or {})}
+                    upload: bool = False, auth_stage: str | None = None) -> IndiaReply:
+        request_headers = {"Accept": "application/json", "User-Agent": "JJTV-India-Connector/2.0", **(headers or {}),
+                           "X-JJTV-Client-Id": "jjtv", "X-JJTV-Client-Secret": self._client_secret,
+                           "X-JJTV-Operator-Id": self._operator_id}
         if access_token:
             request_headers["Authorization"] = "Bearer " + _credential(access_token)
         timeout = httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=5.0)
@@ -282,8 +324,15 @@ class IndiaClient:
                             upstream = envelope.get("code") if isinstance(envelope, dict) else None
                             upstream = upstream if isinstance(upstream, str) and _SAFE_CODE.fullmatch(upstream) else None
                             status = response.status_code
+                            public_status = 409 if status == 401 else status if 400 <= status < 500 else 502
                             code = "india_auth_required" if status == 401 else "india_forbidden" if status == 403 else "india_upstream_error"
-                            raise IndiaError(code, 409 if status == 401 else status if 400 <= status < 500 else 502,
+                            if status == 429:
+                                code = "india_rate_limited"
+                            elif upstream in {"JJTV_CLIENT_DISABLED", "JJTV_CLIENT_UNAVAILABLE", "JJTV_CLIENT_PROOF_INVALID"}:
+                                code, public_status = "india_client_unavailable", 503
+                            elif status == 401 and auth_stage == "login":
+                                code, public_status = "india_login_rejected", 400
+                            raise IndiaError(code, public_status,
                                              upstream_code=upstream, request_id=request_id, retryable=status in {429, 502, 503, 504})
                         if not isinstance(envelope, dict) or "data" not in envelope or request_id is None:
                             raise IndiaError("india_invalid_response")

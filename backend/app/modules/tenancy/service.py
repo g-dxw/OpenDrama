@@ -112,14 +112,19 @@ def save_connection(db, request, user, data, *, commit=True):
     if commit: db.commit()
     return row
 
-def clear_connection(db, request, user, *, expected_access_token=None, commit=True):
+def clear_connection(db, request, user, *, expected_access_token=None, expected_challenge_token=None, commit=True):
     key = connection_key(request)
     stmt = delete(IndiaConnection).where(IndiaConnection.tenant_id == INDIA_TENANT, IndiaConnection.user_id == user.id, IndiaConnection.session_key == key)
-    if expected_access_token is not None:
+    if expected_access_token is not None or expected_challenge_token is not None:
         row, current = read_connection(db, request, user)
-        if row is None or current.get("access_token") != expected_access_token:
+        if row is None:
             return
-        # A concurrent refresh must not be erased by an old request's 401.
+        if expected_access_token is not None and current.get("access_token") != expected_access_token:
+            return
+        if expected_challenge_token is not None and (current.get("state") != "mfa_required"
+                                                   or current.get("challenge_token") != expected_challenge_token):
+            return
+        # An old token/challenge failure must not erase a concurrent replacement.
         stmt = stmt.where(IndiaConnection.secret == row.secret)
     db.execute(stmt)
     if commit: db.commit()
