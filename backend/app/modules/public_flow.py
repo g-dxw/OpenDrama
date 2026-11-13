@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+import secrets
 import os
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.orm import Session
@@ -23,6 +24,7 @@ from app.modules.common.auth import require_user as _require_user
 from app.modules.common.models import AuditLog
 from app.modules.content import service as content
 from app.modules.content.models import Drama, Episode, Tag
+from app.modules.content.pricing import episode_access
 from app.modules.content.upload_service import UploadRejected, apply_callback
 from app.modules.ops.config_models import (
     Banner,
@@ -52,6 +54,14 @@ from app.modules.wallet.service import (
 )
 
 router = APIRouter(prefix="/v1", tags=["public-flow"])
+
+def _registration_attribution(db,request,user_id,created=True):
+    pid=request.headers.get('X-JJTV-Attribution','')[:100]
+    if created and pid:
+        from app.modules.attribution.service import record_registration
+        record_registration(db,user_id=user_id,pid=pid,context={'user_agent':request.headers.get('user-agent','')[:500]})
+        db.commit()
+
 
 
 def _tags_of(db: Session, drama_id: int) -> list[Tag]:
@@ -199,56 +209,33 @@ def email_code(body: CodeIn, db: Session = Depends(get_db)):
 
 
 @router.get("/auth/providers")
-def auth_providers():
-    """What this deployment can actually sign in with.
-
-    The client hides anything that is off instead of rendering a button that
-    cannot work. The Google client id is served from the environment so a new
-    origin does not need an H5 rebuild.
-
-    Only the browser client is published here: the H5 build renders Google's
-    GIS button with it, and the Flutter app reuses it as Android's
-    `serverClientId`. iOS mints its own audience from the iOS client baked into
-    the app, which the backend accepts through `GOOGLE_CLIENT_IDS`.
-
-    Facebook serves its public App ID the same way: the H5 JavaScript SDK and
-    the native SDKs all need it, and it is not a secret.
-    """
-    client_id = next(
-        (
-            item.strip()
-            for name in ("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_IDS")
-            for item in os.environ.get(name, "").split(",")
-            if item.strip()
-        ),
-        "",
-    )
-    facebook_app_id = os.environ.get("FACEBOOK_APP_ID", "").strip()
-    return {
-        "email": {"enabled": True},
-        "google": {"enabled": bool(client_id), "client_id": client_id or None},
-        "facebook": {"enabled": bool(facebook_app_id), "app_id": facebook_app_id or None},
-    }
+def auth_providers(db: Session = Depends(get_db)):
+    from app.modules.ops.managed_settings import login_config
+    cfg=login_config(db)
+    clients=cfg.get('google_client_ids') or []
+    return dict(email=dict(enabled=bool(cfg.get('email_enabled'))),google=dict(enabled=bool(cfg.get('google_enabled') and clients),client_id=clients[0] if clients else None),facebook=dict(enabled=bool(cfg.get('facebook_enabled') and cfg.get('facebook_app_id')),app_id=cfg.get('facebook_app_id') or None))
 
 
 @router.post("/auth/email/authenticate")
-def email_authenticate(body: LoginIn, db: Session = Depends(get_db)):
+def email_authenticate(body: LoginIn, request: Request, db: Session = Depends(get_db)):
     """Sign in with a code, creating the account on first use."""
     try:
         user, token, created = accounts.login_or_register_with_code(db, email=body.email, code=body.code)
     except AccountError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    _registration_attribution(db,request,user.id,created)
     return {"token": token, "user_id": user.id, "public_id": user.public_id, "created": created}
 
 
 @router.post("/auth/email/register")
-def email_register(body: RegisterIn, db: Session = Depends(get_db)):
+def email_register(body: RegisterIn, request: Request, db: Session = Depends(get_db)):
     if body.password is not None:
         raise HTTPException(status_code=422, detail="password is not accepted")
     try:
         user, token = accounts.register(db, email=body.email, code=body.code)
     except AccountError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    _registration_attribution(db,request,user.id)
     return {"token": token, "user_id": user.id, "public_id": user.public_id}
 
 
@@ -262,16 +249,17 @@ def email_login(body: LoginIn, db: Session = Depends(get_db)):
 
 
 @router.post("/auth/google")
-def google_login(body: GoogleIn, db: Session = Depends(get_db)):
+def google_login(body: GoogleIn, request: Request, db: Session = Depends(get_db)):
     try:
         user, token, created = accounts.login_with_google(db, id_token=body.id_token)
     except AccountError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    _registration_attribution(db,request,user.id,created)
     return {"token": token, "user_id": user.id, "public_id": user.public_id, "created": created}
 
 
 @router.post("/auth/facebook")
-def facebook_login(body: FacebookIn, db: Session = Depends(get_db)):
+def facebook_login(body: FacebookIn, request: Request, db: Session = Depends(get_db)):
     """Sign in with Facebook; the first visit creates the account."""
     if not body.access_token and not body.id_token:
         raise HTTPException(status_code=422, detail="access_token or id_token required")
@@ -281,6 +269,7 @@ def facebook_login(body: FacebookIn, db: Session = Depends(get_db)):
         )
     except AccountError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    _registration_attribution(db,request,user.id,created)
     return {"token": token, "user_id": user.id, "public_id": user.public_id, "created": created}
 
 
@@ -438,14 +427,18 @@ class CheckoutIn(BaseModel):
 
 
 @router.post("/billing/checkout")
-def checkout(body: CheckoutIn, user: User = Depends(_require_user), db: Session = Depends(get_db)):
+def checkout(body: CheckoutIn, request: Request, user: User = Depends(_require_user), db: Session = Depends(get_db)):
     """Start a Stripe Checkout for one of the plans and hand back the URL."""
     try:
-        return billing.create_checkout_session(
+        from app.modules.billing.commerce import checkout as managed_checkout
+        return managed_checkout(
             db,
             user_id=user.id,
             email=user.email,
-            plan_code=body.plan_code,
+            product_type='membership',
+            code=body.plan_code,
+            idempotency_key=request.headers.get('Idempotency-Key') or secrets.token_hex(16),
+            attribution_pid=request.headers.get('X-JJTV-Attribution') or None,
             success_url=body.success_url,
             cancel_url=body.cancel_url,
             source_drama_id=body.source_drama_id,
@@ -956,8 +949,9 @@ def drama_play(drama_id: int, user: User | None = Depends(_optional_user), db: S
             key = int(episode_id)
             comment_counts[key] = comment_counts.get(key, 0) + int(total)
     for episode in episodes:
-        free = episode.episode_number <= drama.free_episode_count
-        locked = not (free or member or episode.id in unlocked)
+        policy = episode_access(drama,episode,member=member,unlocked=episode.id in unlocked)
+        free = policy['free']
+        locked = not policy['allowed']
         position = progress_rows.get(episode.id, 0)
         items.append(
             {
@@ -972,7 +966,9 @@ def drama_play(drama_id: int, user: User | None = Depends(_optional_user), db: S
                 # the episode sheet, so the flag travels with the row.
                 "completed": episode.id in completed,
                 "comment_count": comment_counts.get(episode.id, 0),
-                "unlock": {"coin_price": drama.coin_price_per_episode} if locked else None,
+                "coin_price": policy["coin_price"],
+                "membership_required": policy["membership_required"],
+                "unlock": {"coin_price": policy["coin_price"]} if locked else None,
             }
         )
         # Resume = the first watchable episode the viewer started but did not
@@ -1012,7 +1008,7 @@ def drama_play(drama_id: int, user: User | None = Depends(_optional_user), db: S
             "synopsis": drama.synopsis,
             "cover_url": drama.cover_url,
             "tags": [tag.name_en for tag in tags],
-            "free_episode_count": drama.free_episode_count,
+            "free_episode_count": drama.non_member_free_episodes if drama.non_member_free_episodes is not None else drama.free_episode_count,
             "coin_price_per_episode": drama.coin_price_per_episode,
             "play_count": drama.play_count,
             "like_count": int(like_count),
@@ -1120,23 +1116,22 @@ def home_groups(db: Session = Depends(get_db)):
 
 
 @router.get("/me/history")
-def history(user: User = Depends(_require_user), db: Session = Depends(get_db)):
+def history(limit: int=Query(60,ge=1,le=100),offset: int=Query(0,ge=0),user: User = Depends(_require_user), db: Session = Depends(get_db)):
     """Watch history as cards: newest progress first, joined to drama + episode.
 
     The Me page paints a poster grid, so returning bare episode ids would leave
     the client with nothing to show. Unpublished dramas are filtered out the
     same way favorites are, and the legacy episode fields stay for old clients.
     """
-    rows = db.execute(
-        select(PlaybackProgress, Episode, Drama)
+    stmt = (select(PlaybackProgress, Episode, Drama)
         .join(Episode, Episode.id == PlaybackProgress.episode_id)
         .join(Drama, Drama.id == Episode.drama_id)
-        .where(PlaybackProgress.user_id == user.id, Drama.status == "published")
-        .order_by(PlaybackProgress.updated_at.desc())
-        .limit(60)
-    ).all()
+        .where(PlaybackProgress.user_id == user.id, Drama.status == "published"))
+    total=db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
+    rows=db.execute(stmt.order_by(PlaybackProgress.updated_at.desc(),Episode.id.desc()).offset(offset).limit(limit)).all()
     totals = _episode_counts(db, [drama.id for _, _, drama in rows])
     return {
+        "total": int(total),"limit": limit,"offset": offset,
         "items": [
             {
                 "episode_id": progress.episode_id,

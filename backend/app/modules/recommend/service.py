@@ -17,6 +17,7 @@ degrades to a freshly ranked page instead of failing.
 """
 
 from __future__ import annotations
+from app.modules.content.pricing import episode_access
 
 import base64
 import datetime
@@ -281,7 +282,7 @@ def _drama_payload(db: Session, drama: Drama, tags: list[Tag], counts: dict, *, 
         "tags": [tag.name_en for tag in tags],
         "episode_count": counts.get("total", 0),
         "published_episode_count": counts.get("published", 0),
-        "free_episode_count": drama.free_episode_count,
+        "free_episode_count": drama.non_member_free_episodes if drama.non_member_free_episodes is not None else drama.free_episode_count,
         "coin_price_per_episode": drama.coin_price_per_episode,
         "play_count": drama.play_count,
         "like_count": like_count,
@@ -405,11 +406,7 @@ def _materialize(
         episode = episodes.get(entry["episode_id"])
         if drama is None or episode is None or episode.drama_id != drama.id:
             continue
-        if (
-            episode.episode_number > drama.free_episode_count
-            and not member
-            and episode.id not in unlocked
-        ):
+        if not episode_access(drama,episode,member=member,unlocked=episode.id in unlocked)['allowed']:
             continue
         items.append(
             {
@@ -427,7 +424,7 @@ def _materialize(
                     "episode_number": episode.episode_number,
                     "title": episode.title,
                     "duration_seconds": episode.duration_seconds,
-                    "free": episode.episode_number <= drama.free_episode_count,
+                    "free": episode_access(drama,episode,member=member,unlocked=episode.id in unlocked)['free'],
                     "comment_count": comment_counts.get(episode.id, 0),
                 },
                 "resume_seconds": entry["resume_seconds"],

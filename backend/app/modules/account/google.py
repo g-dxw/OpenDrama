@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+from app.modules.ops.managed_settings import config_value
 import time
 import urllib.error
 import urllib.request
@@ -33,7 +34,7 @@ class GoogleIdentity:
 
 
 def configured() -> bool:
-    return any(os.environ.get(name, "").strip() for name in ("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_IDS"))
+    return any(config_value(name, "").strip() for name in ("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_IDS"))
 
 
 def _audiences() -> list[str]:
@@ -46,7 +47,7 @@ def _audiences() -> list[str]:
     """
     audiences: list[str] = []
     for name in ("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_IDS"):
-        for item in os.environ.get(name, "").split(","):
+        for item in config_value(name, "").split(","):
             client_id = item.strip()
             if client_id and client_id not in audiences:
                 audiences.append(client_id)

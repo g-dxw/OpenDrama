@@ -11,6 +11,7 @@ import datetime
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     DateTime,
     ForeignKey,
     Index,
@@ -52,6 +53,8 @@ class PlanVersion(Base):
     price_cents: Mapped[int] = mapped_column(Integer, nullable=False)  # $19.99 -> 1999
     currency: Mapped[str] = mapped_column(String(8), nullable=False, default="USD")
     benefits: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)  # entitlement snapshot
+    base_coins: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    bonus_coins: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     note: Mapped[str] = mapped_column(Text, nullable=False, default="")  # price change reason, audited
     stripe_price_id: Mapped[str | None] = mapped_column(String(64), nullable=True)  # recurring
     stripe_one_time_price_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -77,6 +80,8 @@ class Subscription(Base):
     current_period_start: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     current_period_end: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     canceled_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    account_code: Mapped[str] = mapped_column(String(32), nullable=False, default="env", server_default="env")
+    managed_commerce: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     stripe_customer_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     stripe_subscription_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     stripe_price_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -111,8 +116,17 @@ class Order(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     order_no: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    product_type: Mapped[str] = mapped_column(String(16), nullable=False, default="membership", server_default="membership")
+    product_snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
+    account_code: Mapped[str] = mapped_column(String(32), nullable=False, default="env", server_default="env")
+    checkout_url: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    checkout_key: Mapped[str | None] = mapped_column(String(100), nullable=True, unique=True)
+    payment_intent_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    invoice_id: Mapped[str | None] = mapped_column(String(100), nullable=True, unique=True)
+    subscription_ref: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    attribution_pid: Mapped[str | None] = mapped_column(String(100), nullable=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
-    plan_version_id: Mapped[int] = mapped_column(ForeignKey("plan_versions.id"), nullable=False)
+    plan_version_id: Mapped[int | None] = mapped_column(ForeignKey("plan_versions.id"), nullable=True)
     amount_cents: Mapped[int] = mapped_column(Integer, nullable=False)
     currency: Mapped[str] = mapped_column(String(8), nullable=False, default="USD")
     billing_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="subscription")

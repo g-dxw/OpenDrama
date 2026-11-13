@@ -38,10 +38,14 @@ class Drama(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     title: Mapped[str] = mapped_column(String(200), nullable=False)
+    language: Mapped[str] = mapped_column(String(16), nullable=False, default='', server_default='')
     synopsis: Mapped[str] = mapped_column(Text, nullable=False, default="")
     cover_url: Mapped[str] = mapped_column(String(500), nullable=False, default="")
     free_episode_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     coin_price_per_episode: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    access_mode: Mapped[str] = mapped_column(String(16), nullable=False, default='public', server_default='public')
+    member_pays_coins: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default='false')
+    non_member_free_episodes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="draft")
     country_allowlist: Mapped[str] = mapped_column(
         String(200), nullable=False, default=""
@@ -106,6 +110,7 @@ class Episode(Base):
     title: Mapped[str] = mapped_column(String(200), nullable=False, default="")
     duration_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     bunny_video_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")  # filled in stage 3
+    coin_price: Mapped[int | None] = mapped_column(Integer, nullable=True)
     subtitle_url: Mapped[str] = mapped_column(String(500), nullable=False, default="")
     width: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     height: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -235,3 +240,11 @@ class CdnPurge(Base):
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+class EpisodeSubtitle(Base):
+    __tablename__ = 'episode_subtitles'
+    episode_id: Mapped[int] = mapped_column(ForeignKey('episodes.id', ondelete='CASCADE'), primary_key=True)
+    language: Mapped[str] = mapped_column(String(35), primary_key=True)
+    label: Mapped[str] = mapped_column(String(80), nullable=False)
+    url: Mapped[str] = mapped_column(String(500), nullable=False)
+    is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

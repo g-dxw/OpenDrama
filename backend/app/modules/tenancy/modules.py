@@ -12,6 +12,15 @@ MODULES = [
 ]
 for key, label, menu in [('dashboard','数据看板','/dashboard'),('users','用户管理','/users'),('rewards','金币与任务','/rewards'),('comments','评论审核','/comments'),('moderation','自动审核','/moderation'),('finance','财务订单','/finance'),('settlements','结算单','/settlements'),('plans','会员套餐','/plans'),('suppliers','上剧方管理','/suppliers')]:
     MODULES.append(dict(key=key,label=label,menu_key=menu,permissions=[key+'.view']+([] if key in {'dashboard','finance'} else [key+'.manage']),backend='legacy_jjtv'))
+for key,label,menu,permissions in [
+ ('login_settings','登录配置','/login-settings',['login_settings.view','login_settings.manage']),
+ ('stripe','支付通道','/stripe-accounts',['stripe.view','stripe.manage']),
+ ('coin_packs','金币商城','/coin-packs',['coin_packs.view','coin_packs.manage']),
+ ('coins','金币消耗','/coin-ledger',['coins.view','coins.export']),
+ ('attribution','投放归因','/attribution',['attribution.view','attribution.manage']),
+ ('support','客服工单','/support/workbench',['support.view','support.queue','support.manage','support.reports','support.settings']),
+]: MODULES.append(dict(key=key,label=label,menu_key=menu,permissions=permissions,backend='legacy_jjtv'))
+next(item for item in MODULES if item['key']=='finance')['permissions'].append('finance.refund')
 BY_KEY = {item['key']:item for item in MODULES}
 LEGACY_MODULE_KEYS = tuple(item['key'] for item in MODULES if item['backend']=='legacy_jjtv')
 # Native home_ops opens only channels/banners; its older global config routes

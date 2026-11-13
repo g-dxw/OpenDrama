@@ -192,6 +192,10 @@ class DramaUpdateIn(BaseModel):
     cover_url: str | None = Field(default=None, max_length=500)
     free_episode_count: int | None = Field(default=None, ge=0)
     coin_price_per_episode: int | None = Field(default=None, ge=0)
+    access_mode: str | None = Field(default=None, pattern='^(public|members)$')
+    member_pays_coins: bool | None = None
+    non_member_free_episodes: int | None = Field(default=None, ge=0)
+    language: str | None = Field(default=None,max_length=16)
     tag_ids: list[int] | None = None
 
 
@@ -240,6 +244,10 @@ def _drama_out(db: Session, drama: Drama) -> dict:
         "status": drama.status,
         "free_episode_count": drama.free_episode_count,
         "coin_price_per_episode": drama.coin_price_per_episode,
+        "access_mode": drama.access_mode,
+        "member_pays_coins": drama.member_pays_coins,
+        "non_member_free_episodes": drama.non_member_free_episodes,
+        "language": drama.language,
         "tags": [{"id": t.id, "name_en": t.name_en, "name_zh": t.name_zh} for t in tag_rows],
         "episode_count": episode_count,
         # Lifetime starts reported by the player; see playback.record_event.
@@ -920,44 +928,27 @@ def list_dramas(
     status: str | None = None,
     q: str | None = None,
     tag_id: int | None = None,
+    access_mode: str | None = Query(default=None, pattern='^(public|members)$'),
+    member_pays_coins: bool | None = None,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
     user: AdminUser = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    stmt = select(Drama)
-    count_stmt = select(func.count(Drama.id))
-    if status:
-        stmt = stmt.where(Drama.status == status)
-        count_stmt = count_stmt.where(Drama.status == status)
-    if q:
-        stmt = stmt.where(Drama.title.ilike(f"%{q}%"))
-        count_stmt = count_stmt.where(Drama.title.ilike(f"%{q}%"))
+    # Status cards retain all status buckets within the other selected filters.
+    filters=[]
+    if q: filters.append(Drama.title.ilike(f"%{q}%"))
     if tag_id is not None:
-        tagged = select(DramaTag.drama_id).where(DramaTag.tag_id == tag_id)
-        stmt = stmt.where(Drama.id.in_(tagged))
-        count_stmt = count_stmt.where(Drama.id.in_(tagged))
-    total = db.scalar(count_stmt) or 0
-    rows = db.scalars(
-        stmt.order_by(Drama.updated_at.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-    ).all()
-    # 全库按状态计数，不受分页 / 筛选影响，给列表页顶部的统计条用。
-    counts = {
-        row.status: row.n
-        for row in db.execute(
-            select(Drama.status, func.count(Drama.id).label("n")).group_by(Drama.status)
-        )
-    }
-    status_counts = {s: int(counts.get(s, 0)) for s in ("draft", "in_review", "published", "unpublished")}
-    return {
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-        "status_counts": {"all": sum(status_counts.values()), **status_counts},
-        "items": [_drama_out(db, d) for d in rows],
-    }
+        filters.append(Drama.id.in_(select(DramaTag.drama_id).where(DramaTag.tag_id==tag_id)))
+    if access_mode is not None: filters.append(Drama.access_mode==access_mode)
+    if member_pays_coins is not None: filters.append(Drama.member_pays_coins==member_pays_coins)
+    selected=list(filters)
+    if status: selected.append(Drama.status==status)
+    total=db.scalar(select(func.count(Drama.id)).where(*selected)) or 0
+    rows=db.scalars(select(Drama).where(*selected).order_by(Drama.updated_at.desc(),Drama.id.desc()).offset((page-1)*page_size).limit(page_size)).all()
+    counts={row.status:row.n for row in db.execute(select(Drama.status,func.count(Drama.id).label("n")).where(*filters).group_by(Drama.status))}
+    status_counts={s:int(counts.get(s,0)) for s in ("draft","in_review","published","unpublished")}
+    return dict(total=total,page=page,page_size=page_size,status_counts={"all":sum(status_counts.values()),**status_counts},items=[_drama_out(db,d) for d in rows])
 
 
 @router.post("/dramas")
@@ -1006,9 +997,11 @@ def update_drama(
 ):
     drama = _get_drama_or_404(db, drama_id)
     data = body.model_dump(exclude_unset=True)
+    if any(value is None for key,value in data.items() if key not in {'tag_ids','non_member_free_episodes'}):
+        raise HTTPException(422,detail='Fields cannot be null; omit them to keep existing values')
     from app.modules.tenancy.permissions import require_permission
     for field in data:
-        permission = 'dramas.pricing' if field in {'free_episode_count','coin_price_per_episode'} else 'dramas.upload' if field == 'cover_url' else 'dramas.edit'
+        permission = 'dramas.pricing' if field in {'free_episode_count','coin_price_per_episode','access_mode','member_pays_coins','non_member_free_episodes'} else 'dramas.upload' if field == 'cover_url' else 'dramas.edit'
         require_permission(request, permission)
     tag_ids = data.pop("tag_ids", None)
     for field, value in data.items():

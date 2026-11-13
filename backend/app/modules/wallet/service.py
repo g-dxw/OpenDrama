@@ -73,6 +73,13 @@ def unlock_episode(
         payload["replayed"] = True
         return UnlockResult(**payload)
 
+    from app.modules.billing.commerce import wallet_lock
+    wallet_lock(session,user_id)
+    record = session.scalar(select(IdempotencyRecord).where(IdempotencyRecord.idempotency_key == scoped_key))
+    if record is not None:
+        payload = dict(record.response_payload); payload["replayed"] = True
+        return UnlockResult(**payload)
+
     # 2. resolve episode + price; only published content is purchasable
     episode = session.get(Episode, episode_id)
     drama = None if episode is None else session.get(Drama, episode.drama_id)
@@ -83,21 +90,30 @@ def unlock_episode(
         or drama.status != "published"
     ):
         raise EpisodeNotFoundError(f"episode {episode_id} not found")
-    price = drama.coin_price_per_episode
-    if price <= 0:
-        # A zero price would write amount=0 and violate the ledger constraint.
-        # Such content is membership-only (or misconfigured); never charge it.
-        raise EpisodeNotPurchasableError(f"episode {episode_id} has no coin price")
-
+    from app.modules.content.pricing import episode_access
+    member = billing.access_until(session,user_id) is not None
+    policy = episode_access(drama,episode,member=member)
+    if policy["membership_required"]:
+        raise EpisodeNotPurchasableError("membership is required before coin unlock")
+    price = policy["coin_price"]
     # 3. member priority: an active subscription never creates a coin flow
     # Subscription period or one-time pass, whichever ends last.
-    if billing.access_until(session, user_id) is not None:
+    if member and policy["allowed"]:
         result = UnlockResult(
             status="subscription", source="subscription", episode_id=episode_id, balance_after=None
         )
         _record_idempotency(session, scoped_key, result)
         session.commit()
         return result
+
+    if policy['free']:
+        result=UnlockResult(status='free',source='free',episode_id=episode_id,balance_after=None)
+        _record_idempotency(session,scoped_key,result);session.commit();return result
+
+    if price <= 0:
+        # A zero price would write amount=0 and violate the ledger constraint.
+        # Such content is membership-only (or misconfigured); never charge it.
+        raise EpisodeNotPurchasableError(f"episode {episode_id} has no coin price")
 
     # 4. already unlocked? (also covers a retry that arrives with a different key)
     existing = session.scalar(
@@ -125,17 +141,19 @@ def unlock_episode(
         session.rollback()
         raise InsufficientCoinsError(need=price, have=have)
 
-    wallet.balance -= price
-    session.add(
-        CoinLedgerEntry(
+    from app.modules.billing.commerce import allocate_spend
+    ledger = CoinLedgerEntry(
             user_id=user_id,
             amount=-price,
-            balance_after=wallet.balance,
+            balance_after=wallet.balance-price,
             biz_type="unlock",
             biz_key=scoped_key,
             episode_id=episode_id,
         )
-    )
+    session.add(ledger)
+    session.flush()
+    allocate_spend(session,wallet,ledger,price)
+    wallet.balance -= price
     session.add(
         Entitlement(
             user_id=user_id, episode_id=episode_id, entitlement_type=ENTITLEMENT_TYPE_COIN

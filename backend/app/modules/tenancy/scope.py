@@ -4,7 +4,7 @@ from fastapi import HTTPException
 from sqlalchemy import event, inspect, select
 from sqlalchemy.orm import Session, with_loader_criteria
 from app.modules.common.models import AuditLog
-from app.modules.content.models import Drama, Episode, Tag, HomeGroup, DramaTag, DramaHomeGroup, MediaUpload
+from app.modules.content.models import Drama, Episode, EpisodeSubtitle, Tag, HomeGroup, DramaTag, DramaHomeGroup, MediaUpload
 from app.modules.tenancy.models import LegacyBusinessBinding
 from app.modules.ops.config_models import ChannelTab, Banner
 
@@ -22,7 +22,7 @@ def scope_queries(state):
     rules = [(Drama, Drama.tenant_id == tenant), (Tag, Tag.tenant_id == tenant),
              (HomeGroup, HomeGroup.tenant_id == tenant), (ChannelTab, ChannelTab.tenant_id == tenant),
              (Banner, Banner.tenant_id == tenant), (Episode, Episode.drama_id.in_(dramas)),
-             (MediaUpload, MediaUpload.episode_id.in_(episodes)),
+             (MediaUpload, MediaUpload.episode_id.in_(episodes)), (EpisodeSubtitle, EpisodeSubtitle.episode_id.in_(episodes)),
              (DramaTag, DramaTag.drama_id.in_(dramas)), (DramaHomeGroup, DramaHomeGroup.drama_id.in_(dramas))]
     statement = state.statement
     for model, condition in rules:
@@ -86,7 +86,7 @@ def scope_writes(session, flush_context, instances):
                 raise HTTPException(400, detail="上剧方配置仅属于 JJTV 自营")
         elif isinstance(record, Episode):
             if not owns(Drama, record.drama_id): refuse()
-        elif isinstance(record, MediaUpload):
+        elif isinstance(record, (MediaUpload, EpisodeSubtitle)):
             if not owns(Episode, record.episode_id): refuse()
         elif isinstance(record, DramaTag):
             if not owns(Drama, record.drama_id) or not owns(Tag, record.tag_id): refuse()

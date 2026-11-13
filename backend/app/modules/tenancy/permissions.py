@@ -33,6 +33,17 @@ for code, label, menu in GLOBAL_MODULES:
     define(code+'.view', '查看'+label+'（菜单）', label, menu_key=menu)
     if code not in ('dashboard','finance'):
         define(code+'.manage', '管理'+label, label, requires=[code+'.view'])
+for code,label,menu in [('login_settings','登录配置','/login-settings'),('stripe','支付通道','/stripe-accounts'),('coin_packs','金币商城','/coin-packs'),('attribution','投放归因','/attribution')]:
+    define(code+'.view','查看'+label,label,menu_key=menu)
+    define(code+'.manage','管理'+label,label,requires=[code+'.view'])
+define('coins.view','查看金币消耗','金币消耗',menu_key='/coin-ledger')
+define('coins.export','导出金币流水','金币消耗',requires=['coins.view'])
+define('finance.refund','未消费订单全额退款','财务订单',requires=['finance.view'])
+define('support.view','客服工作台','客服',menu_key='/support/workbench')
+define('support.queue','工单队列','客服',requires=['support.view'],menu_key='/support/queue')
+define('support.reports','服务质量','客服',requires=['support.view'],menu_key='/support/reports')
+define('support.settings','工单设置','客服',requires=['support.view'],menu_key='/support/settings')
+define('support.manage','回复、指派和处理工单','客服',requires=['support.view'])
 ALL_KEYS = {item['key'] for item in CATALOG}
 STAFF_READ_KEYS = {item['key'] for item in CATALOG if item['key'].endswith('.view')} - CONTENT_KEYS - {'staff.view','api_keys.view','settlements.view'}
 INDIA_KEYS = {'dramas.view','dramas.edit','dramas.upload','dramas.publish','dramas.pricing','reviews.view','reviews.decide'}
@@ -143,6 +154,11 @@ CONTENT_RULES = [
  ('PATCH', r'dev-tus/[A-Za-z0-9_-]+', ('dramas.upload',)),
  ('POST', r'dramas/[0-9]+/cover', ('dramas.upload',)),
  ('DELETE', r'dramas/[0-9]+/cover', ('dramas.upload',)),
+ ('GET', r'episodes/[0-9]+/subtitles', READ_CONTENT),
+ ('POST', r'episodes/[0-9]+/subtitles', ('dramas.upload',)),
+ ('PATCH', r'episodes/[0-9]+/subtitles/default', ('dramas.upload',)),
+ ('DELETE', r'episodes/[0-9]+/subtitles/[a-z0-9-]+', ('dramas.upload',)),
+ ('PATCH', r'episodes/[0-9]+/pricing', ('dramas.pricing',)),
  ('POST', r'episodes/[0-9]+/subtitle', ('dramas.upload',)),
  ('POST', r'episodes/[0-9]+/(?:publish|unpublish)', ('dramas.publish',)),
  ('POST', r'episodes/bulk-status', ('dramas.publish',)),
@@ -163,6 +179,10 @@ CONTENT_RULES = [
  ('DELETE', r'groups/[0-9]+/dramas/[0-9]+', ('groups.manage',)),
 ]
 GLOBAL_PREFIXES = [
+ (r'login(?:/.*)?','login_settings'), (r'stripe(?:/.*)?','stripe'),
+ (r'coin-packs(?:/.*)?','coin_packs'), (r'coins(?:/.*)?','coins'),
+ (r'attr(?:/.*)?','attribution'), (r'support(?:/.*)?','support'),
+ (r'commerce/plans(?:/.*)?','plans'), (r'commerce(?:/.*)?','finance'), (r'billing/channels(?:/.*)?','stripe'),
  (r'dashboard', 'dashboard'), (r'users(?:/.*)?', 'users'),
  (r'finance(?:/.*)?', 'finance'), (r'settlements(?:/.*)?', 'settlements'),
  (r'(?:plans|billing/settings)(?:/.*)?', 'plans'), (r'staff(?:/.*)?', 'staff'),
@@ -184,6 +204,10 @@ def authorize_native_request(request,tenant,grants):
         # Review remains a supported consumer of read-only drama details.
         if request.method not in {'GET','HEAD'} or 'reviews.view' not in grants['permissions']:
             deny(('dramas.view',))
+    if path=='coins/ladder' and request.method=='GET':
+        require_permission(request,'coin_packs.view','coins.view',any_of=True)
+        request.state.tenant_business_authorized=True
+        return
     for method,pattern,required in CONTENT_RULES:
         if request.method==method and re.fullmatch(pattern,path):
             require_permission(request,*required,any_of=True)
@@ -198,6 +222,15 @@ def authorize_native_request(request,tenant,grants):
                 if binding is None or binding.tenant_id!=tenant.id:
                     deny(('adapted_home_ops_action',))
             if module not in {'staff','api_keys','roles'} and module not in business_modules.enabled_modules(request.state.db_for_tenant,tenant): deny((module+'.view',))
+            read=request.method in ('GET','HEAD','OPTIONS')
+            special = None
+            if module=='finance' and path.endswith('/refund'): special='finance.refund'
+            elif module=='coins': special='coins.export' if path.endswith('/export') else 'coins.view' if read else 'coin_packs.manage'
+            elif module=='support': special='support.settings' if path.startswith('support/settings') else 'support.reports' if path.startswith('support/reports') else 'support.view' if read else 'support.manage'
+            if special:
+                require_permission(request,special)
+                request.state.tenant_business_authorized=True
+                return
             view=request.method in ('GET','HEAD','OPTIONS') or (module=='moderation' and path=='moderation/test')
             if view and module=='plans' and path in {'plans','billing/settings'}: require_permission(request,'plans.view','users.view','finance.view',any_of=True)
             else: require_permission(request,module+('.view' if view else '.manage'))

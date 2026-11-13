@@ -1149,32 +1149,13 @@ def delete_cover(
 
 
 @router.post("/episodes/{episode_id}/subtitle")
-async def upload_subtitle(
-    episode_id: int,
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db),
-    user: AdminUser = Depends(require_content_writer),
-):
-    episode = db.get(Episode, episode_id)
-    if episode is None:
-        raise HTTPException(status_code=404, detail="episode not found")
-    if not bunny.live():
-        raise HTTPException(status_code=503, detail="bunny storage not configured (BUNNY_MODE=fake)")
-    data = await file.read()
-    if not data or len(data) > SUBTITLE_MAX_BYTES:
-        raise HTTPException(status_code=422, detail="subtitle must be between 1 byte and 2MB")
-    name = os.path.basename(file.filename or "subtitle.vtt")
-    ext = os.path.splitext(name)[1].lower()
-    if ext not in {".vtt", ".srt"}:
-        raise HTTPException(status_code=422, detail="subtitle must be .vtt or .srt")
-    remote_path = f"subs/{episode.id}/sub{ext}"
-    try:
-        bunny.storage_upload(remote_path, data, "text/vtt" if ext == ".vtt" else "application/x-subrip")
-    except bunny.BunnyError as exc:
-        raise HTTPException(status_code=502, detail=f"bunny storage: {exc}") from exc
-    episode.subtitle_url = remote_path
-    db.commit()
-    return {"subtitle_url": remote_path}
+async def upload_subtitle(episode_id:int,file:UploadFile=File(...),db:Session=Depends(get_db),user:AdminUser=Depends(require_content_writer)):
+    # Old clients update the selected default track, preserving its language.
+    from app.modules.content.models import EpisodeSubtitle
+    from app.modules.content.enhancements import upload_subtitle as upload_track
+    current=db.scalar(select(EpisodeSubtitle).where(EpisodeSubtitle.episode_id==episode_id,EpisodeSubtitle.is_default.is_(True)))
+    result=await upload_track(episode_id=episode_id,language=current.language if current else 'und',label=current.label if current else 'Default',is_default=True,file=file,db=db,user=user)
+    return {'subtitle_url':result['url']}
 
 
 @router.post("/dramas/{drama_id}/status")
@@ -1231,6 +1212,7 @@ def preview(drama_id: int, episode_id: int | None = None, db: Session = Depends(
             "number": episode.episode_number,
             "title": episode.title,
             "subtitle_url": episode.subtitle_url,
+            "coin_price": episode.coin_price,
         },
         "episodes": [{"id": ep.id, "number": ep.episode_number, "status": ep.status} for ep in episodes],
         "playback": playback,
@@ -2031,28 +2013,18 @@ def update_user(
 def adjust(user_id: int, body: AdjustIn, db: Session = Depends(get_db), actor: AdminUser = Depends(require_admin_role)):
     if db.get(User, user_id) is None:
         raise HTTPException(status_code=404, detail="user not found")
-    wallet = db.get(WalletAccount, user_id, with_for_update=True)
-    if wallet is None:
-        # Legacy rows may predate the wallet table; create it on demand so the
-        # operator does not have to run a migration just to grant coins.
-        wallet = WalletAccount(user_id=user_id, balance=0)
-        db.add(wallet)
-        db.flush()
-    before = wallet.balance
-    after = before + body.delta
-    if after < 0:
-        raise HTTPException(status_code=409, detail="balance cannot be negative")
-    wallet.balance = after
-    db.add(
-        CoinLedgerEntry(
-            user_id=user_id,
-            amount=body.delta,
-            balance_after=after,
-            biz_type="adjustment",
-            biz_key=f"adjust:{actor.id}:{user_id}:{before}:{body.delta}:{datetime.now(timezone.utc).timestamp()}",
-            note=body.reason,
-        )
-    )
+    from app.modules.billing.commerce import wallet_lock, ensure_sources, allocate_spend
+    from app.modules.billing.commerce_models import CoinSource
+    wallet=wallet_lock(db,user_id)
+    before=wallet.balance
+    after=before+body.delta
+    if after<0:raise HTTPException(status_code=409,detail="balance cannot be negative")
+    ensure_sources(db,wallet)
+    ledger=CoinLedgerEntry(user_id=user_id,amount=body.delta,balance_after=after,biz_type="adjustment",biz_key=f"adjust:{actor.id}:{user_id}:{before}:{body.delta}:{datetime.now(timezone.utc).timestamp()}",note=body.reason)
+    db.add(ledger);db.flush()
+    if body.delta<0:allocate_spend(db,wallet,ledger,-body.delta)
+    elif body.delta>0:db.add(CoinSource(user_id=user_id,original=body.delta,remaining=body.delta,reserved=0))
+    wallet.balance=after
     db.add(
         AuditLog(
             actor_type="admin",
