@@ -43,10 +43,10 @@ def _partner_headers(client, headers, *, name: str, username: str) -> dict:
     )
     assert acc.status_code == 201, acc.text
     login = client.post(
-        "/admin/v1/auth/login", json={"tenant_code": "jjtv", "username": username, "password": "temporary-partner-pass-1234"}
+        "/tenant/v1/auth/login", json={"tenant_code": "jjtv", "username": username, "password": "temporary-partner-pass-1234"}
     )
     assert login.status_code == 200, login.text
-    assert login.json()["user"]["must_change_password"] is True
+    assert login.json()["context"]["user"]["must_change_password"] is True
     rotated = client.post(
         "/partner/v1/auth/password",
         json={"old_password": "temporary-partner-pass-1234", "new_password": "partner-pass-1234"},
@@ -54,10 +54,10 @@ def _partner_headers(client, headers, *, name: str, username: str) -> dict:
     )
     assert rotated.status_code == 200, rotated.text
     login = client.post(
-        "/admin/v1/auth/login", json={"tenant_code": "jjtv", "username": username, "password": "partner-pass-1234"}
+        "/tenant/v1/auth/login", json={"tenant_code": "jjtv", "username": username, "password": "partner-pass-1234"}
     )
     assert login.status_code == 200, login.text
-    assert login.json()["user"]["must_change_password"] is False
+    assert login.json()["context"]["user"]["must_change_password"] is False
     return {"Authorization": f"Bearer {login.json()['token']}"}
 
 
