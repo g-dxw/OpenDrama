@@ -83,3 +83,5 @@ To remove JJTV's public entry points, back up and remove only
 `/opt/dastaan/shared/edge/jjtv.conf`, test the edge configuration, and reload the
 edge through a repository release command. Database migrations are not
 automatically reversed; keep database backups before subsequent upgrades.
+
+HTML entry points use Cache-Control: no-store and disable ETag/If-Modified-Since validation. Exact index locations also handle SPA fallback redirects, ensuring an older browser reload receives current HTML even when archived entry files have the same size and epoch mtime. Existing hashed-asset caching rules are retained.
