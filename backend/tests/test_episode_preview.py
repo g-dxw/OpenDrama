@@ -21,7 +21,7 @@ def test_admin_episode_preview_url_requires_video_and_signs_player_url(
 
     login = client.post(
         "/admin/v1/auth/login",
-        json={"username": staff.username, "password": "pass-1234"},
+        json={"tenant_code": "jjtv", "username": staff.username, "password": "pass-1234"},
     )
     assert login.status_code == 200, login.text
     headers = {"Authorization": f"Bearer {login.json()['token']}"}

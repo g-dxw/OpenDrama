@@ -32,7 +32,7 @@ import {
 } from "@ant-design/icons";
 import type { UploadProps } from "antd";
 import { api, errorText } from "../api";
-import { useCanWriteContent } from "../me";
+import { usePermission, useModuleEnabled } from "../me";
 import EpisodesPanel from "./EpisodesPanel";
 import { PublishPanel } from "./StagePages";
 import { DramaGroupsPanel } from "./Groups";
@@ -66,7 +66,15 @@ const COVER_H = 266;
 export default function DramaEdit() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const canWrite = useCanWriteContent();
+  const canWrite = usePermission("dramas.edit");
+  const canUpload = usePermission("dramas.upload");
+  const canPricing = usePermission("dramas.pricing");
+  const canPublish = usePermission("dramas.publish");
+  const canDelete = usePermission("dramas.delete");
+  const groupsEnabled = useModuleEnabled("groups");
+  const tagsEnabled = useModuleEnabled("tags");
+  const canViewGroups = usePermission("groups.view") && groupsEnabled;
+  const canViewTags = usePermission("tags.view") && tagsEnabled;
   const [form] = Form.useForm();
   const [drama, setDrama] = useState<Drama | null>(null);
   const [tagOptions, setTagOptions] = useState<TagOption[]>([]);
@@ -83,12 +91,12 @@ export default function DramaEdit() {
   const load = useCallback(async () => {
     const [d, t] = await Promise.all([
       api<Drama>(`/admin/v1/dramas/${id}`),
-      api<{ items: TagOption[] }>("/admin/v1/tags"),
+      canViewTags ? api<{ items: TagOption[] }>("/admin/v1/tags") : Promise.resolve({ items: [] as TagOption[] }),
     ]);
     setDrama(d);
     setCoverUrl(d.cover_url ?? "");
     setTagOptions(t.items);
-    if (canWrite) form.setFieldsValue({
+    if (canWrite || canPricing || canUpload) form.setFieldsValue({
       title: d.title,
       synopsis: d.synopsis,
       cover_url: d.cover_url,
@@ -97,7 +105,7 @@ export default function DramaEdit() {
       tag_ids: d.tags.map((x) => x.id),
     });
     setDirty(false);
-  }, [id, form, canWrite]);
+  }, [id, form, canWrite, canPricing, canUpload, canViewTags]);
 
   useEffect(() => {
     load().catch((e) => message.error(`加载失败：${errorText(e)}`));
@@ -133,9 +141,15 @@ export default function DramaEdit() {
   }, [dirty]);
 
   const onSave = async (values: any) => {
+    if (!(canWrite || canPricing || canUpload)) return;
+    const payload: Record<string, unknown> = {};
+    if (canWrite) for (const key of ["title", "synopsis"]) payload[key] = values[key];
+    if (canWrite && canViewTags) payload.tag_ids = values.tag_ids;
+    if (canPricing) for (const key of ["free_episode_count", "coin_price_per_episode"]) payload[key] = values[key];
+    if (canUpload) payload.cover_url = values.cover_url;
     setSaving(true);
     try {
-      await api(`/admin/v1/dramas/${id}`, { method: "PATCH", body: JSON.stringify(values) });
+      await api(`/admin/v1/dramas/${id}`, { method: "PATCH", body: JSON.stringify(payload) });
       message.success("已保存");
       setDirty(false);
       await load();
@@ -147,6 +161,7 @@ export default function DramaEdit() {
   };
 
   const uploadCover = async (file: File) => {
+    if (!canUpload) return;
     setCoverBusy("upload");
     try {
       const fd = new FormData();
@@ -183,6 +198,7 @@ export default function DramaEdit() {
   };
 
   const removeCover = async () => {
+    if (!canUpload) return;
     setCoverBusy("delete");
     try {
       await api(`/admin/v1/dramas/${id}/cover`, { method: "DELETE" });
@@ -256,13 +272,14 @@ export default function DramaEdit() {
     accept: "image/jpeg,image/png,image/webp",
     showUploadList: false,
     beforeUpload,
-    disabled: coverBusy !== null,
+    disabled: !canUpload || coverBusy !== null,
   };
 
-  const infoTab = canWrite ? (
+  const infoTab = (canWrite || canPricing || canUpload) ? (
     <Card styles={{ body: { padding: 24 } }}>
       <Form
         form={form}
+        disabled={!canWrite}
         layout="vertical"
         onFinish={onSave}
         onValuesChange={() => setDirty(true)}
@@ -330,7 +347,7 @@ export default function DramaEdit() {
                       size="small"
                       icon={<UploadOutlined />}
                       loading={coverBusy === "upload"}
-                      disabled={coverBusy !== null}
+                      disabled={!canUpload || coverBusy !== null}
                     >
                       {coverUrl ? "替换" : "上传"}
                     </Button>
@@ -342,14 +359,14 @@ export default function DramaEdit() {
                     cancelText="取消"
                     okButtonProps={{ danger: true }}
                     onConfirm={removeCover}
-                    disabled={!coverUrl}
+                    disabled={!canUpload || !coverUrl}
                   >
                     <Button
                       size="small"
                       danger
                       icon={<DeleteOutlined />}
                       loading={coverBusy === "delete"}
-                      disabled={!coverUrl || coverBusy !== null}
+                      disabled={!canUpload || !coverUrl || coverBusy !== null}
                     >
                       删除
                     </Button>
@@ -362,7 +379,7 @@ export default function DramaEdit() {
                     size="small"
                     icon={<LinkOutlined />}
                     style={{ paddingLeft: 0 }}
-                    disabled={coverBusy !== null}
+                    disabled={!canUpload || coverBusy !== null}
                     onClick={() => {
                       if (!urlEditing) setUrlDraft(coverUrl);
                       setUrlEditing(!urlEditing);
@@ -372,6 +389,7 @@ export default function DramaEdit() {
                   </Button>
                   {urlEditing && (
                     <Input.Search
+                      disabled={!canUpload}
                       style={{ width: COVER_W, maxWidth: "100%" }}
                       placeholder="https://cdn.example/cover.jpg"
                       value={urlDraft}
@@ -408,7 +426,7 @@ export default function DramaEdit() {
               <Input.TextArea rows={6} maxLength={20000} showCount placeholder="请输入剧情简介" />
             </Form.Item>
 
-            <Form.Item label="标签" name="tag_ids" style={{ maxWidth: 640 }}>
+            {canViewTags && <Form.Item label="标签" name="tag_ids" style={{ maxWidth: 640 }}>
               <Select
                 mode="multiple"
                 placeholder="选择标签"
@@ -419,7 +437,7 @@ export default function DramaEdit() {
                   label: `${t.name_zh || t.name_en}（${t.name_en}）`,
                 }))}
               />
-            </Form.Item>
+            </Form.Item>}
 
             <Row gutter={24} style={{ maxWidth: 640 }}>
               <Col span={12}>
@@ -428,7 +446,7 @@ export default function DramaEdit() {
                   name="free_episode_count"
                   tooltip="用户可直接观看的集数，超出的集数需要金币解锁"
                 >
-                  <InputNumber min={0} style={{ width: "100%" }} />
+                  <InputNumber disabled={!canPricing} min={0} style={{ width: "100%" }} />
                 </Form.Item>
               </Col>
               <Col span={12}>
@@ -437,7 +455,7 @@ export default function DramaEdit() {
                   name="coin_price_per_episode"
                   tooltip="解锁单集所需金币"
                 >
-                  <InputNumber min={0} style={{ width: "100%" }} />
+                  <InputNumber disabled={!canPricing} min={0} style={{ width: "100%" }} />
                 </Form.Item>
               </Col>
             </Row>
@@ -445,7 +463,7 @@ export default function DramaEdit() {
             <Divider style={{ margin: "8px 0 16px" }} />
 
             <Space>
-              <Button type="primary" htmlType="submit" icon={<SaveOutlined />} loading={saving}>
+              <Button disabled={false} type="primary" htmlType="submit" icon={<SaveOutlined />} loading={saving}>
                 保存
               </Button>
               <Button
@@ -488,7 +506,7 @@ export default function DramaEdit() {
         </Space>
       </Card>
 
-      {canWrite && drama.status !== "published" && (
+      {(canWrite || canUpload || canPublish) && drama.status !== "published" && (
         <Card
           size="small"
           title="上架流程"
@@ -536,7 +554,7 @@ export default function DramaEdit() {
               />
             ),
           },
-        ].filter(item => canWrite || ["info", "episodes"].includes(item.key))}
+        ].filter(item => ["info", "episodes"].includes(item.key) || (item.key === "groups" ? canViewGroups : canPublish || canDelete))}
       />
     </Space>
   );

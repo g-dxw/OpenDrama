@@ -163,8 +163,38 @@ export JJTV_EDGE_NETWORK=dastaan-staging_default
 COMPOSE=(docker compose --env-file "$JJTV_ENV_FILE" -p jjtv -f "$RELEASE_DIR/deploy/video/compose.yml")
 "${COMPOSE[@]}" build api
 "${COMPOSE[@]}" up -d --wait postgres redis
-# First administrator password is supplied by the server .env, never printed.
-"${COMPOSE[@]}" run --rm --no-deps --interactive=false api sh -ec 'alembic upgrade head && python -m app.seed_admin && python -m app.seed_rewards'
+# Stop every old JJTV API writer BEFORE taking the consistent backup or changing
+# its account model. Failure must keep it stopped: old global identities cannot
+# safely run against the independently owned tenant schema.
+install -d -m 700 "$ROOT/backups"
+BACKUP_DIR="$ROOT/backups/$(date -u +%Y%m%dT%H%M%SZ)-$SOURCE_SHA"
+mkdir -m 700 "$BACKUP_DIR"
+"${COMPOSE[@]}" stop --timeout 45 api
+if [[ -n $(docker ps --filter label=com.docker.compose.project=jjtv --filter label=com.docker.compose.service=api --format '{{.ID}}') ]]; then
+  echo 'JJTV old API is still running; refusing account migration.' >&2
+  exit 1
+fi
+printf 'JJTV API stopped for guarded schema upgrade. Failure leaves it stopped; no old-code rollback.\n'
+cp -p "$ROOT/shared/.env" "$BACKUP_DIR/runtime.env"
+chmod 600 "$BACKUP_DIR/runtime.env"
+if [[ -d $ROOT/shared/india-client ]]; then
+  cp -a "$ROOT/shared/india-client" "$BACKUP_DIR/india-client"
+  find "$BACKUP_DIR/india-client" -type d -exec chmod 700 {} +
+  find "$BACKUP_DIR/india-client" -type f -exec chmod 600 {} +
+fi
+docker exec jjtv-postgres-1 pg_dump -U jjtv -d jjtv --format=custom --no-owner >"$BACKUP_DIR/database.dump"
+chmod 600 "$BACKUP_DIR/database.dump"
+# Read/decompress the complete archive, rather than checking only its header.
+docker exec -i jjtv-postgres-1 pg_restore --file=/dev/null <"$BACKUP_DIR/database.dump"
+(cd "$BACKUP_DIR" && sha256sum database.dump runtime.env > SHA256SUMS)
+chmod 600 "$BACKUP_DIR/SHA256SUMS"
+printf 'Verified private JJTV backup: %s\n' "$BACKUP_DIR"
+"${COMPOSE[@]}" run --rm --no-deps --interactive=false \
+  -v "$BACKUP_DIR:/srv/jjtv-upgrade:rw" api \
+  python -m app.deploy_tenant_upgrade --backup-dir /srv/jjtv-upgrade
+# First platform administrator password is supplied by stable server .env.
+# Existing platform users and every original staff password are left unchanged.
+"${COMPOSE[@]}" run --rm --no-deps --interactive=false api sh -ec 'python -m app.seed_admin && python -m app.seed_rewards'
 "${COMPOSE[@]}" up -d --wait api web
 curl -fsS http://127.0.0.1:18110/health
 printf '\n'

@@ -58,54 +58,56 @@ def _session_store_503() -> HTTPException:
     return HTTPException(status_code=503, detail=SESSION_STORE_503_DETAIL)
 
 
-def require_admin(request: Request, db: Session = Depends(get_db)) -> AdminUser:
-    """Accept either a staff session token or an API key.
-
-    API keys are bound to an ``admin_users`` row and resolved into that account,
-    so every downstream dependency (role checks, audit ``actor_id``) keeps
-    working unchanged. The session path is deliberately untouched.
-    """
-    credential = _bearer_token(request)
+def require_identity(request: Request, db: Session = Depends(get_db)) -> AdminUser:
+    from app.modules.tenancy.identity import SessionPrincipal
+    credential=_bearer_token(request)
     if api_key_service.looks_like_key(credential):
-        user, key = api_key_service.resolve_credential(db, credential)
-        # Stamp the key before the scope check: a denied write must still be
-        # recorded in api_key_events (the middleware reads these after response).
-        request.state.api_key_id = key.id
-        request.state.api_key_staff_id = user.id
-        api_key_service.authorize(key, request.method, request.url.path, user.role)
+        user,key=api_key_service.resolve_credential(db,credential)
+        request.state.api_key_id=key.id; request.state.api_key_staff_id=user.id
+        api_key_service.authorize(key,request.method,request.url.path,user.role)
+        principal=SessionPrincipal(user,key.account_scope,key.tenant_id,'api_key',user.auth_version)
     else:
-        try:
-            user = ops_service.resolve_session_token(db, credential)
-        except ops_service.SessionStoreUnavailable as exc:
-            raise _session_store_503() from exc
-        if user is None:
-            raise HTTPException(
-                status_code=401,
-                detail={"code": "invalid_session", "message": "会话无效或已过期"},
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-    # Suppliers live in the same table but are external tenants: they must never
-    # reach this surface, even if a future dependency forgets a role check.
+        try: principal=ops_service.resolve_principal(db,credential)
+        except ops_service.SessionStoreUnavailable as exc: raise _session_store_503() from exc
+        if principal is None:
+            raise HTTPException(401,detail=dict(code='invalid_session',message='会话无效或已过期，请从正确的平台或租户入口重新登录'),headers={'WWW-Authenticate':'Bearer'})
+        user=principal.user
+    request.state.principal=principal
+    if principal.kind=='support' and request.url.path.endswith('/auth/password'):
+        raise HTTPException(403,detail='支持会话不能修改平台账号密码')
+    if user.must_change_password and not request.url.path.endswith(('/context','/auth/password','/auth/logout','/auth/me')):
+        raise HTTPException(403,detail=dict(code='password_change_required',message='请先修改初始密码'))
+    return user
+
+def require_admin(request: Request, db: Session = Depends(get_db), user: AdminUser = Depends(require_identity)) -> AdminUser:
     if user.role not in STAFF_ROLES:
-        raise HTTPException(
-            status_code=403,
-            detail={"code": "staff_only", "message": "该接口仅对平台员工开放"},
-        )
+        raise HTTPException(403,detail=dict(code='staff_only',message='该接口仅对租户员工开放'))
     from app.modules.tenancy.service import configure_request_scope
-    configure_request_scope(request, db, user)
+    configure_request_scope(request,db,user)
     return user
 
-
-def require_content_writer(user: AdminUser = Depends(require_admin)) -> AdminUser:
-    if user.role not in CONTENT_WRITER_ROLES:
-        raise HTTPException(status_code=403, detail=f"role '{user.role}' cannot write content")
+def require_platform_admin(request: Request, db: Session = Depends(get_db), user: AdminUser = Depends(require_identity)) -> AdminUser:
+    principal=request.state.principal
+    if principal.account_scope!='platform' or principal.kind=='support':
+        raise HTTPException(403,detail=dict(code='platform_only',message='仅平台管理员可以操作总平台'))
+    from app.modules.tenancy.domains import validate_entry_origin
+    validate_entry_origin(request,db,platform=True)
     return user
 
+def require_tenant_admin(request: Request, user: AdminUser = Depends(require_admin)) -> AdminUser:
+    if not getattr(request.state,'tenant_grants',{}).get('is_tenant_admin'):
+        raise HTTPException(403,detail=dict(code='tenant_admin_only',message='仅当前租户管理员可操作'))
+    return user
 
-def require_admin_role(user: AdminUser = Depends(require_admin)) -> AdminUser:
-    """Super-admin only: delete drama, price/billing changes, coin adjust, staff."""
-    if user.role != ROLE_ADMIN:
-        raise HTTPException(status_code=403, detail="admin only")
+def require_content_writer(request: Request, user: AdminUser = Depends(require_admin)) -> AdminUser:
+    if not getattr(request.state,'tenant_business_authorized',False):
+        raise HTTPException(403,detail='tenant business permission required')
+    return user
+
+def require_admin_role(request: Request, user: AdminUser = Depends(require_admin)) -> AdminUser:
+    # Legacy business handlers now use already-verified tenant action grants.
+    if not getattr(request.state,'tenant_business_authorized',False):
+        raise HTTPException(403,detail='tenant administration permission required')
     return user
 
 
@@ -124,6 +126,7 @@ class AdminUserOut(BaseModel):
 class LoginIn(BaseModel):
     username: str
     password: str
+    tenant_code: str | None = None
 
 
 class StaffCreateIn(BaseModel):
@@ -209,10 +212,9 @@ class TagUpdateIn(BaseModel):
 # ---- serializers ----
 
 
-def _tag_out(db: Session, tag: Tag) -> dict:
-    drama_count = (
-        db.scalar(select(func.count(DramaTag.drama_id)).where(DramaTag.tag_id == tag.id)) or 0
-    )
+def _tag_out(db: Session, tag: Tag, drama_count: int | None = None) -> dict:
+    if drama_count is None:
+        drama_count = db.scalar(select(func.count(DramaTag.drama_id)).where(DramaTag.tag_id == tag.id)) or 0
     return {
         "id": tag.id,
         "name_en": tag.name_en,
@@ -257,9 +259,15 @@ def _get_drama_or_404(db: Session, drama_id: int) -> Drama:
 
 
 @router.post("/auth/login")
-def login(body: LoginIn, db: Session = Depends(get_db)):
+def login(body: LoginIn, request: Request, db: Session = Depends(get_db)):
+    if not body.tenant_code:
+        raise HTTPException(400, detail={"code":"tenant_required","message":"请使用平台入口或提供租户编码"})
+    from app.modules.tenancy.models import Tenant
+    from app.modules.tenancy.domains import validate_entry_origin
+    tenant=db.scalar(select(Tenant).where(Tenant.code==body.tenant_code))
+    if tenant is not None: validate_entry_origin(request,db,tenant)
     try:
-        result = ops_service.login(db, username=body.username, password=body.password)
+        result = ops_service.login(db, username=body.username, password=body.password, tenant_code=body.tenant_code)
     except ops_service.SessionStoreUnavailable as exc:
         raise _session_store_503() from exc
     if result is None:
@@ -282,9 +290,23 @@ def logout(request: Request, user: AdminUser = Depends(require_admin)):
     return {"ok": True}
 
 
+def lock_password_account(db, user, principal):
+    # Match tenant administration's Tenant -> User lock order, including audit FKs.
+    if principal.tenant_id:
+        from app.modules.tenancy.models import Tenant
+        tenant=db.scalar(select(Tenant).where(Tenant.id==principal.tenant_id).execution_options(populate_existing=True).with_for_update())
+        if tenant is None or tenant.status!='active':
+            raise HTTPException(403,detail=dict(code='tenant_paused',message='当前租户已暂停'))
+    current=db.scalar(select(AdminUser).where(AdminUser.id==user.id).execution_options(populate_existing=True).with_for_update())
+    if current is None or current.status!=STATUS_ACTIVE or current.auth_version!=principal.auth_version:
+        raise HTTPException(401,detail=dict(code='invalid_session',message='账号凭据已变化，请重新登录'))
+    return current
+
+
 @router.post("/auth/password")
 def change_own_password(
     body: PasswordChangeIn,
+    request: Request,
     db: Session = Depends(get_db),
     user: AdminUser = Depends(require_admin),
 ):
@@ -294,6 +316,15 @@ def change_own_password(
     making this call — so the client must send the user back to the login page
     and sign in again with the new password.
     """
+    principal=request.state.principal
+    if principal.kind!='normal':
+        raise HTTPException(403,detail='请在对应账号的交互登录入口修改密码')
+    user=lock_password_account(db,user,principal)
+    from app.modules.tenancy.domains import validate_entry_origin
+    if principal.account_scope=='platform': validate_entry_origin(request,db,platform=True)
+    else:
+        from app.modules.tenancy.management import validate_tenant_auth_context
+        validate_tenant_auth_context(request,db,principal)
     if not ops_service.verify_password(body.old_password, user.password_hash):
         raise HTTPException(status_code=400, detail="原密码不正确")
     if body.new_password == body.old_password:
@@ -301,10 +332,17 @@ def change_own_password(
     _validate_password(body.new_password, user.username)
     killed = _revoke_or_503(user.id)
     user.password_hash = ops_service.hash_password(body.new_password)
+    user.auth_version += 1
+    user.must_change_password = False
+    from app.modules.tenancy.models import IndiaConnection
+    from sqlalchemy import delete
+    db.execute(delete(IndiaConnection).where(IndiaConnection.user_id==user.id))
     db.add(
         AuditLog(
             actor_type="admin",
             actor_id=user.id,
+            actor_scope=principal.account_scope,
+            tenant_id=principal.tenant_id,
             action="staff_password_change",
             target_type="admin_user",
             target_id=user.id,
@@ -472,7 +510,8 @@ def create_staff(
         raise HTTPException(status_code=409, detail="账号已存在") from exc
     if row.role in STAFF_ROLES:
         from app.modules.tenancy.models import TenantMember
-        db.add(TenantMember(tenant_id="jjtv", user_id=row.id, role=row.role))
+        from app.modules.tenancy.permissions import preset_role_id
+        db.add(TenantMember(tenant_id="jjtv", user_id=row.id, role=row.role, role_id=preset_role_id("jjtv", row.role)))
     db.add(
         AuditLog(
             actor_type="admin",
@@ -961,11 +1000,16 @@ def get_drama(
 def update_drama(
     drama_id: int,
     body: DramaUpdateIn,
+    request: Request,
     user: AdminUser = Depends(require_content_writer),
     db: Session = Depends(get_db),
 ):
     drama = _get_drama_or_404(db, drama_id)
     data = body.model_dump(exclude_unset=True)
+    from app.modules.tenancy.permissions import require_permission
+    for field in data:
+        permission = 'dramas.pricing' if field in {'free_episode_count','coin_price_per_episode'} else 'dramas.upload' if field == 'cover_url' else 'dramas.edit'
+        require_permission(request, permission)
     tag_ids = data.pop("tag_ids", None)
     for field, value in data.items():
         setattr(drama, field, value)
@@ -998,7 +1042,9 @@ def list_tags(
     db: Session = Depends(get_db),
 ):
     rows = db.scalars(select(Tag).order_by(Tag.name_en)).all()
-    return {"items": [_tag_out(db, t) for t in rows]}
+    counts = dict(db.execute(select(DramaTag.tag_id,func.count(DramaTag.drama_id))
+                             .where(DramaTag.tag_id.in_([tag.id for tag in rows])).group_by(DramaTag.tag_id)).all()) if rows else {}
+    return {"items": [_tag_out(db, t, counts.get(t.id, 0)) for t in rows]}
 
 
 @router.post("/tags")

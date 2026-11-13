@@ -49,7 +49,7 @@ def test_login_returns_503_when_redis_is_down(monkeypatch, client, make):
 
     response = client.post(
         "/admin/v1/auth/login",
-        json={"username": staff.username, "password": "pass-1234"},
+        json={"tenant_code": "jjtv", "username": staff.username, "password": "pass-1234"},
     )
 
     assert response.status_code == 503, response.text
@@ -73,7 +73,7 @@ def test_health_of_session_flows_unaffected_when_redis_is_up(client, make):
     staff = make.admin(role="ops")
     login = client.post(
         "/admin/v1/auth/login",
-        json={"username": staff.username, "password": "pass-1234"},
+        json={"tenant_code": "jjtv", "username": staff.username, "password": "pass-1234"},
     )
     assert login.status_code == 200, login.text
     token = login.json()["token"]

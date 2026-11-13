@@ -4,7 +4,7 @@ Usage:
     cd backend && ../.venv/bin/python -m app.seed_admin
 
 `scripts/deploy_server.sh` runs this on every deploy, so it must be safe to
-re-run: it only acts when `admin_users` is empty. That also means deleting or
+re-run: it only acts when the platform account realm is empty. That also means deleting or
 disabling an account can no longer be undone by the next deployment — the old
 behaviour recreated the default `admin/admin-1234` row forever.
 
@@ -28,9 +28,9 @@ from app.modules.ops.service import hash_password
 def seed() -> None:
     factory = make_session_factory(get_engine())
     with factory() as db:
-        existing = db.scalar(select(func.count(AdminUser.id))) or 0
+        existing = db.scalar(select(func.count(AdminUser.id)).where(AdminUser.account_scope == "platform")) or 0
         if existing:
-            print(f"skip: admin_users already has {existing} account(s)")
+            print(f"skip: platform realm already has {existing} account(s)")
             return
 
         username = (os.environ.get("SEED_ADMIN_USERNAME") or "admin").strip().lower() or "admin"
@@ -44,6 +44,10 @@ def seed() -> None:
                 username=username,
                 password_hash=hash_password(password),
                 role=ROLE_ADMIN,
+                account_scope="platform",
+                tenant_id=None,
+                auth_version=1,
+                must_change_password=False,
                 status=STATUS_ACTIVE,
                 display_name="管理员",
             )

@@ -23,7 +23,7 @@ def client(session):
 
 
 def _login(client: TestClient, username: str, password: str = "pass-1234") -> dict:
-    r = client.post("/admin/v1/auth/login", json={"username": username, "password": password})
+    r = client.post("/admin/v1/auth/login", json={"tenant_code": "jjtv", "username": username, "password": password})
     assert r.status_code == 200, r.text
     return {"Authorization": f"Bearer {r.json()['token']}"}
 
@@ -361,6 +361,11 @@ def test_audit_and_events(make, client, session):
 
 def test_rate_limit(make, client, monkeypatch):
     monkeypatch.setenv("API_KEY_RATE_LIMIT", "3")
+    # Freeze only the rate limiter clock; auth/session expiry keeps real time.
+    from types import SimpleNamespace
+    from app.modules.ops import api_keys
+    rate_now = api_keys.time.time()
+    monkeypatch.setattr(api_keys, "time", SimpleNamespace(time=lambda: rate_now))
     headers, _ = _admin_headers(make, client)
     ops = make.admin(role="ops", username="agent-ops")
     created = _issue(client, headers, ops.id)

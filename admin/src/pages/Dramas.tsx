@@ -28,7 +28,7 @@ import {
 } from "@ant-design/icons";
 import { api, errorText } from "../api";
 import { useConfirm } from "../confirm";
-import { useCanWriteContent } from "../me";
+import { useCanWriteContent, usePermission } from "../me";
 
 type DramaRow = {
   id: number;
@@ -185,6 +185,7 @@ export default function Dramas() {
   const [creating, setCreating] = useState(false);
   const [createForm] = Form.useForm<{ title: string }>();
   const canWrite = useCanWriteContent();
+  const canPublish = usePermission("dramas.publish");
   const { confirm, confirmModal } = useConfirm();
 
   const load = useCallback(async () => {
@@ -213,6 +214,7 @@ export default function Dramas() {
    * 草稿 / 审核中必须先走审核流程。
    */
   const togglePublish = async (row: DramaRow, next: boolean) => {
+    if (!canPublish) return;
     const missing = next
       ? [!row.cover_url ? "还没有封面" : null, row.episode_count === 0 ? "还没有分集" : null].filter(Boolean)
       : [];
@@ -234,6 +236,7 @@ export default function Dramas() {
   };
 
   const setPublishStatus = async (row: DramaRow, next: boolean) => {
+    if (!canPublish) return;
     const to_status = next ? "published" : "unpublished";
     setTogglingId(row.id);
     try {
@@ -262,6 +265,7 @@ export default function Dramas() {
 
   /** 新建剧集：只要求剧名，创建后跳入详情页继续编辑 */
   const onCreate = async (values: { title: string }) => {
+    if (!canWrite) return;
     setCreating(true);
     try {
       const created = await api<{ id: number; title: string }>("/admin/v1/dramas", {
@@ -510,7 +514,7 @@ export default function Dramas() {
                 width: 160,
                 render: (s: string, r) => {
                   const meta = STATUS_LABELS[s] ?? { text: s, color: "default" };
-                  if (!canWrite) return <Tag color={meta.color}>{meta.text}</Tag>;
+                  if (!canPublish) return <Tag color={meta.color}>{meta.text}</Tag>;
                   const checked = s === "published";
                   const toggleable = s === "published" || s === "unpublished";
                   const tip = !toggleable
@@ -522,12 +526,12 @@ export default function Dramas() {
                       : "点击重新上架";
                   return (
                     <Space size={8} align="center">
-                      <Tooltip title={canWrite ? tip : "当前角色只能查看状态"}>
+                      <Tooltip title={canPublish ? tip : "当前角色只能查看状态"}>
                         <span style={{ display: "inline-flex" }}>
                           <Switch
                             size="small"
                             checked={checked}
-                            disabled={!toggleable || !canWrite}
+                            disabled={!toggleable || !canPublish}
                             loading={togglingId === r.id}
                             style={checked ? { backgroundColor: "#12b76a" } : undefined}
                             onChange={(next) => togglePublish(r, next)}

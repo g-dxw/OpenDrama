@@ -12,6 +12,8 @@ export default defineConfig(({ command }) => ({
     port: 5173,
     proxy: {
       "/admin/v1": "http://127.0.0.1:18110",
+      "/platform/v1": "http://127.0.0.1:18110",
+      "/tenant/v1": "http://127.0.0.1:18110",
       "/partner/v1": "http://127.0.0.1:18110",
       "/v1": "http://127.0.0.1:18110",
     },

@@ -20,7 +20,7 @@ def client(session):
 
 
 def _login(client, username, password="pass-1234"):
-    response = client.post("/admin/v1/auth/login", json={"username": username, "password": password})
+    response = client.post("/admin/v1/auth/login", json={"tenant_code": "jjtv", "username": username, "password": password})
     assert response.status_code == 200, response.text
     return {"Authorization": f"Bearer {response.json()['token']}"}
 
@@ -115,8 +115,8 @@ def test_write_requires_content_writer_role(make, session, client):
     headers = _login(client, staff.username)
     forbidden = client.post("/admin/v1/rewards/config", json={"code": "ad", "amounts": [30]}, headers=headers)
     assert forbidden.status_code == 403
-    # Reads stay open to every staff role.
-    assert client.get("/admin/v1/rewards/config", headers=headers).status_code == 200
+    # The default finance role has no rewards menu permission.
+    assert client.get("/admin/v1/rewards/config", headers=headers).status_code == 403
 
 
 def test_gradient_change_applies_tomorrow_not_today(make, session, client):

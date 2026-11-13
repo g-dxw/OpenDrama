@@ -1,9 +1,8 @@
-"""Tenant boundaries and the India BFF, using the dedicated test DB/Redis fixtures.
+"""Tenant-bound content and India authorization regressions.
 
-India HTTP is always mocked. These tests do not call or migrate the old system.
+All India HTTP calls are mocked. Tests never call or migrate the old system.
 """
 from __future__ import annotations
-
 import hashlib
 import json
 from uuid import uuid4
@@ -15,20 +14,20 @@ import httpx
 import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-
 from app.main import app
 from app.modules.common.models import AuditLog
 from app.modules.content.models import Drama, DramaTag, Episode, MediaUpload, Tag
 from app.modules.tenancy.india import IndiaClient, IndiaError, IndiaReply
-from app.modules.tenancy.models import DEFAULT_TENANT, INDIA_TENANT, IndiaConnection, Tenant, TenantMember
+from app.modules.tenancy.models import DEFAULT_TENANT, INDIA_TENANT, IndiaConnection, TenantMember, TenantRole
+from app.modules.tenancy.permissions import preset_role_id
 
-TENANTS = "/admin/v1/tenants"
-INDIA = TENANTS + "/india-short-drama/india"
-ACCESS_A, ACCESS_B = "a" * 43, "b" * 43
-REFRESH = "r" * 43
-CHALLENGE = "c" * 43
-CLIENT_SECRET = "synthetic_jjtv_client_key_" + "k" * 43
-OLD_ACTOR = {"id": "user_old-editor", "name": "Old content operator", "role": "editor", "age_verified": False}
+TENANTS = '/platform/v1/tenants'
+INDIA = '/admin/v1/tenants/india-short-drama/india'
+ACCESS_A, ACCESS_B = 'a' * 43, 'b' * 43
+REFRESH = 'r' * 43
+CHALLENGE = 'c' * 43
+CLIENT_SECRET = 'synthetic_jjtv_client_key_' + 'k' * 43
+OLD_ACTOR = {'id': 'user_old-editor', 'name': 'Old content operator', 'role': 'editor', 'age_verified': False}
 
 
 def bridge_tokens(access=ACCESS_A, refresh=REFRESH, **extra):
@@ -36,185 +35,126 @@ def bridge_tokens(access=ACCESS_A, refresh=REFRESH, **extra):
             "mfa_verified": False, "expires_at": "2099-01-01T00:15:00.000Z",
             "refresh_expires_at": "2099-01-01T08:00:00.000Z", **extra}
 
-
-def login(client, staff):
-    response = client.post("/admin/v1/auth/login", json={"username": staff.username, "password": "pass-1234"})
+def login(client, staff, tenant_code=None):
+    body = dict(username=staff.username, password='pass-1234')
+    path = '/platform/v1/auth/login' if staff.account_scope == 'platform' else '/tenant/v1/auth/login'
+    if staff.account_scope == 'tenant': body['tenant_code'] = tenant_code or getattr(staff, '_test_tenant_code', staff.tenant_id)
+    response = client.post(path, json=body)
     assert response.status_code == 200, response.text
-    return {"Authorization": "Bearer " + response.json()["token"]}
-
+    return {'Authorization': 'Bearer '+response.json()['token']}
 
 def scoped(headers, tenant):
-    return {**headers, "X-JJTV-Tenant": tenant}
-
+    return {**headers, 'X-JJTV-Tenant': tenant}
 
 @pytest.fixture()
 def context(session, make, monkeypatch, tmp_path):
-    # The shared fixture truncates all tables, including migration seed rows.
-    for identifier, name, kind in [(DEFAULT_TENANT, "JJTV", "native"), (INDIA_TENANT, "India Short Drama", "india_legacy")]:
-        if session.get(Tenant, identifier) is None:
-            session.add(Tenant(id=identifier, name=name, kind=kind, status="active"))
-    session.commit()
-    owner, operator, finance = make.admin(role="admin"), make.admin(role="ops"), make.admin(role="finance")
-    for person in (operator, finance):
-        if session.get(TenantMember, (DEFAULT_TENANT, person.id)) is None:
-            session.add(TenantMember(tenant_id=DEFAULT_TENANT, user_id=person.id, role=person.role))
+    owner = make.admin(role='admin', tenant_id=INDIA_TENANT)
+    operator = make.admin(role='ops', tenant_id=INDIA_TENANT)
+    finance = make.admin(role='finance', tenant_id=INDIA_TENANT)
+    platform = make.platform_admin()
+    # A login may exist without any business capability; connecting India still requires view permission.
+    role = TenantRole(id='test-india-no-access', tenant_id=INDIA_TENANT, name='No content access', kind='business', permissions=[], version=1)
+    session.add(role); session.flush()
+    session.get(TenantMember, (INDIA_TENANT, operator.id)).role_id = role.id
     session.commit()
     key = Fernet.generate_key()
-    monkeypatch.setenv("TENANT_CONNECTION_KEY", key.decode())
-    monkeypatch.setenv("INDIA_API_BASE_URL", "https://india.example/v1")
-    client_key = tmp_path / "jjtv-client.key"
-    client_key.write_text(CLIENT_SECRET, encoding="ascii")
-    monkeypatch.setenv("INDIA_JJTV_CLIENT_ENABLED", "true")
-    monkeypatch.setenv("INDIA_JJTV_CLIENT_SECRET_FILE", str(client_key))
+    monkeypatch.setenv('TENANT_CONNECTION_KEY', key.decode())
+    monkeypatch.setenv('INDIA_API_BASE_URL', 'https://india.example/v1')
+    client_key = tmp_path / 'jjtv-client.key'
+    client_key.write_text(CLIENT_SECRET, encoding='ascii')
+    monkeypatch.setenv('INDIA_JJTV_CLIENT_ENABLED', 'true')
+    monkeypatch.setenv('INDIA_JJTV_CLIENT_SECRET_FILE', str(client_key))
     client = TestClient(app)
-    return {"db": session, "make": make, "client": client, "owner": owner, "operator": operator,
-            "finance": finance, "owner_headers": login(client, owner), "operator_headers": login(client, operator),
-            "finance_headers": login(client, finance), "cipher": Fernet(key), "client_key": client_key}
+    return dict(db=session, make=make, client=client, owner=owner, operator=operator, finance=finance,
+                platform=platform, platform_headers=login(client, platform), owner_headers=login(client, owner),
+                operator_headers=login(client, operator), finance_headers=login(client, finance), cipher=Fernet(key), client_key=client_key, support={})
 
+def native(context, name='Another studio'):
+    code = 'test-'+uuid4().hex[:12]
+    response = context['client'].post(TENANTS, json=dict(code=code, name=name), headers=context['platform_headers'])
+    assert response.status_code == 201, response.text
+    return response.json()['tenant']['id']
 
-def native(context, name="Another studio"):
-    response = context["client"].post(TENANTS, json={"name": name}, headers=context["owner_headers"])
-    assert response.status_code in (200, 201), response.text
-    result = response.json()
-    assert result["kind"] == "native" and result["status"] == "active"
-    return result["id"]
-
+def entered(context, tenant):
+    if tenant not in context['support']:
+        response = context['client'].post(TENANTS+f'/{tenant}/enter', json={}, headers=context['platform_headers'])
+        assert response.status_code == 200, response.text
+        context['support'][tenant] = {'Authorization': 'Bearer '+response.json()['token']}
+    return scoped(context['support'][tenant], tenant)
 
 def grant(context, tenant, *members):
-    response = context["client"].put(TENANTS + f"/{tenant}/members", json={"members": [
-        {"user_id": user.id, "role": role} for user, role in members
-    ]}, headers=context["owner_headers"])
-    assert response.status_code == 200, response.text
-    return response.json()
-
+    assert tenant == INDIA_TENANT
+    for user, key in members:
+        role_id = preset_role_id(tenant, 'tenant_admin' if key == 'admin' else key)
+        result = context['client'].patch(f'/tenant/v1/staff/{user.id}', json={'role_id': role_id}, headers=context['owner_headers'])
+        assert result.status_code == 200, result.text
+        for key in ('operator','finance'):
+            if context[key].id == user.id: context[key+'_headers'] = login(context['client'], user)
 
 def create_drama(context, tenant, title):
-    response = context["client"].post("/admin/v1/dramas", json={"title": title}, headers=scoped(context["owner_headers"], tenant))
+    response = context['client'].post('/admin/v1/dramas', json={'title': title}, headers=entered(context, tenant))
     assert response.status_code == 200, response.text
     return response.json()
-
 
 def create_episode(context, tenant, drama_id):
-    response = context["client"].post(f"/admin/v1/dramas/{drama_id}/episodes", json={"episode_number": 1, "title": "Episode 1"},
-                                       headers=scoped(context["owner_headers"], tenant))
+    response = context['client'].post(f'/admin/v1/dramas/{drama_id}/episodes', json={'episode_number': 1, 'title': 'Episode 1'}, headers=entered(context, tenant))
     assert response.status_code == 200, response.text
     return response.json()
 
-
-def test_directory_own_role_and_explicit_membership(context):
-    client = context["client"]
-    other = native(context)
-    owner_rows = client.get(TENANTS, headers=context["owner_headers"])
-    assert owner_rows.status_code == 200
-    assert isinstance(owner_rows.json(), list)
-    assert {row["id"] for row in owner_rows.json()} >= {DEFAULT_TENANT, INDIA_TENANT, other}
-    assert all(row["own_role"] == "admin" for row in owner_rows.json())
-    rows = client.get(TENANTS, headers=context["operator_headers"]).json()
-    assert {row["id"] for row in rows} == {DEFAULT_TENANT}
-    grant(context, other, (context["operator"], "finance"))
-    rows = client.get(TENANTS, headers=context["operator_headers"]).json()
-    assert next(row for row in rows if row["id"] == other)["own_role"] == "finance"
-    grant(context, other, (context["finance"], "admin"))
-    rows = client.get(TENANTS, headers=context["finance_headers"]).json()
-    assert next(row for row in rows if row["id"] == other)["own_role"] == "finance"  # No global-role elevation.
-
-
-def test_only_platform_admin_manages_directory_and_india_kind_is_fixed(context):
-    client, owner = context["client"], context["owner_headers"]
-    assert client.post(TENANTS, json={"name": "Forbidden"}, headers=context["operator_headers"]).status_code == 403
-    other = native(context)
-    assert client.patch(TENANTS + f"/{other}", json={"status": "paused"}, headers=owner).status_code == 200
-    assert client.get("/admin/v1/dramas", headers=scoped(owner, other)).status_code == 409
-    assert client.patch(TENANTS + f"/{other}", json={"status": "active"}, headers=owner).status_code == 200
-    assert client.get("/admin/v1/dramas", headers=scoped(owner, other)).status_code == 200
-    assert client.patch(TENANTS + "/" + INDIA_TENANT, json={"kind": "native"}, headers=owner).status_code == 422
-    context["db"].expire_all()
-    assert context["db"].get(Tenant, INDIA_TENANT).kind == "india_legacy"
-
-
-def test_member_replace_revokes_default_jjtv_access_and_cannot_enable_India_native_routes(context):
-    client, owner = context["client"], context["owner_headers"]
-    response = client.get(TENANTS + "/jjtv/members", headers=owner)
-    assert response.status_code == 200
-    assert set(response.json()) >= {"members", "staff"}
-    assert any(row["user_id"] == context["operator"].id for row in response.json()["members"])
-    assert client.put(TENANTS + "/jjtv/members", json={"members": []}, headers=context["operator_headers"]).status_code == 403
-    grant(context, DEFAULT_TENANT)
-    assert client.get("/admin/v1/dramas", headers=context["operator_headers"]).status_code == 403
-    assert DEFAULT_TENANT not in {row["id"] for row in client.get(TENANTS, headers=context["operator_headers"]).json()}
-    grant(context, INDIA_TENANT, (context["operator"], "ops"))
-    denied = client.get("/admin/v1/dramas", headers=scoped(context["operator_headers"], INDIA_TENANT))
-    assert denied.status_code == 409
-    assert denied.json()["detail"]["code"] == "tenant_content_route_required"
-
-
-def test_native_drama_episode_tag_and_upload_are_isolated_by_header(context):
-    client, db = context["client"], context["db"]
-    first, second = native(context, "Studio A"), native(context, "Studio B")
-    a = create_drama(context, first, "Same tenant-local title")
-    b = create_drama(context, second, "Same tenant-local title")
-    ep = create_episode(context, first, a["id"])
-    tags = []
+def test_support_content_is_scoped_and_cannot_switch_by_header(context):
+    first, second = native(context, 'Studio A'), native(context, 'Studio B')
+    a = create_drama(context, first, 'Same tenant-local title')
+    b = create_drama(context, second, 'Same tenant-local title')
+    ep = create_episode(context, first, a['id'])
+    tags=[]
     for tenant in (first, second):
-        response = client.post("/admin/v1/tags", json={"name_en": "Same local tag"}, headers=scoped(context["owner_headers"], tenant))
-        assert response.status_code in (200, 201), response.text
-        tags.append(response.json())
-    headers_b = scoped(context["owner_headers"], second)
-    assert {row["id"] for row in client.get("/admin/v1/dramas", headers=headers_b).json()["items"]} == {b["id"]}
-    assert {row["id"] for row in client.get("/admin/v1/tags", headers=headers_b).json()["items"]} == {tags[1]["id"]}
-    for method, path, body in [
-        ("GET", f"/admin/v1/dramas/{a['id']}", None),
-        ("PATCH", f"/admin/v1/dramas/{a['id']}", {"title": "Must not change"}),
-        ("GET", f"/admin/v1/dramas/{a['id']}/episodes", None),
-        ("POST", f"/admin/v1/dramas/{a['id']}/episodes", {"episode_number": 2}),
-        ("PATCH", f"/admin/v1/episodes/{ep['id']}", {"title": "Must not change"}),
-        ("PATCH", f"/admin/v1/tags/{tags[0]['id']}", {"name_en": "Must not change"}),
-    ]:
-        kwargs = {"headers": headers_b}
-        if body is not None: kwargs["json"] = body
-        response = client.request(method, path, **kwargs)
-        assert response.status_code == 404, (method, path, response.status_code, response.text)
-    # A valid local drama must not be linked to another tenant's valid tag ID.
-    response = client.patch(f"/admin/v1/dramas/{b['id']}", json={"tag_ids": [tags[0]["id"]]}, headers=headers_b)
-    assert response.status_code in (404, 422)
-    upload = client.post(f"/admin/v1/episodes/{ep['id']}/upload-session", headers=scoped(context["owner_headers"], first),
-                         json={"filename": "episode.mp4", "mime": "video/mp4", "size_bytes": 16, "width": 720, "height": 1280, "duration_seconds": 12})
-    assert upload.status_code == 200, upload.text
-    video_id = upload.json()["video_id"]
-    assert client.head(f"/admin/v1/dev-tus/{video_id}", headers=headers_b).status_code == 404
-    assert client.patch(f"/admin/v1/dev-tus/{video_id}", content=b"must-not-write", headers=headers_b).status_code == 404
-    db.expire_all()
-    assert db.get(Drama, a["id"]).title == "Same tenant-local title"
-    assert db.get(Episode, ep["id"]).title == "Episode 1"
-    assert db.scalar(select(DramaTag).where(DramaTag.drama_id == b["id"])) is None
-    assert db.scalar(select(MediaUpload).where(MediaUpload.video_id == video_id)).status != "completed"
+        result=context['client'].post('/admin/v1/tags',json={'name_en':'Same local tag'},headers=entered(context,tenant))
+        assert result.status_code in (200,201),result.text
+        tags.append(result.json())
+    headers_b=entered(context,second)
+    assert {item['id'] for item in context['client'].get('/admin/v1/dramas',headers=headers_b).json()['items']} == {b['id']}
+    assert context['client'].get('/admin/v1/dramas',headers=scoped(entered(context,first),second)).status_code == 403
+    for method,path,payload in [('GET',f'/admin/v1/dramas/{a["id"]}',None),('PATCH',f'/admin/v1/dramas/{a["id"]}',{'title':'Forbidden'}),('GET',f'/admin/v1/dramas/{a["id"]}/episodes',None),('POST',f'/admin/v1/dramas/{a["id"]}/episodes',{'episode_number':2}),('PATCH',f'/admin/v1/episodes/{ep["id"]}',{'title':'Forbidden'}),('PATCH',f'/admin/v1/tags/{tags[0]["id"]}',{'name_en':'Forbidden'})]:
+        kwargs={'headers':headers_b}
+        if payload is not None:kwargs['json']=payload
+        result=context['client'].request(method,path,**kwargs)
+        assert result.status_code==404,(method,path,result.text)
+    result=context['client'].patch(f'/admin/v1/dramas/{b["id"]}',json={'tag_ids':[tags[0]['id']]},headers=headers_b)
+    assert result.status_code in (404,422)
+    uploaded=context['client'].post(f'/admin/v1/episodes/{ep["id"]}/upload-session',headers=entered(context,first),json={'filename':'episode.mp4','mime':'video/mp4','size_bytes':16,'width':720,'height':1280,'duration_seconds':12})
+    assert uploaded.status_code==200,uploaded.text
+    video_id=uploaded.json()['video_id']
+    assert context['client'].head(f'/admin/v1/dev-tus/{video_id}',headers=headers_b).status_code==404
+    assert context['client'].patch(f'/admin/v1/dev-tus/{video_id}',content=b'must-not-write',headers=headers_b).status_code==404
+    context['db'].expire_all()
+    assert context['db'].get(Drama,a['id']).title=='Same tenant-local title'
+    assert context['db'].get(Episode,ep['id']).title=='Episode 1'
+    assert context['db'].scalar(select(DramaTag).where(DramaTag.drama_id==b['id'])) is None
+    assert context['db'].scalar(select(MediaUpload).where(MediaUpload.video_id==video_id)).status!='completed'
 
+def test_public_catalog_and_playback_do_not_accept_admin_tenant_header(context):
+    db,client=context['db'],context['client']
+    other=native(context)
+    default=Drama(tenant_id=DEFAULT_TENANT,title='Default public show',status='published',free_episode_count=1)
+    hidden=Drama(tenant_id=other,title='Other tenant private show',status='published',free_episode_count=1)
+    db.add_all([default,hidden]);db.flush()
+    episodes=[Episode(drama_id=row.id,episode_number=1,title='First',status='published',bunny_video_id='fake-'+str(row.id)) for row in (default,hidden)]
+    db.add_all(episodes);db.commit()
+    headers={'X-JJTV-Tenant':other}
+    home=client.get('/v1/home',headers=headers)
+    assert home.status_code==200
+    assert {row['id'] for row in home.json()['items']}=={default.id}
+    assert client.get(f'/v1/dramas/{hidden.id}',headers=headers).status_code==404
+    assert client.get(f'/v1/preview/dramas/{hidden.id}',headers=headers).status_code==404
+    playback=client.post('/v1/playback',json={'drama_id':hidden.id,'episode_id':episodes[1].id},headers=headers)
+    assert playback.status_code in (200,403,404)
+    if playback.status_code==200:assert playback.json().get('allowed') is False and not playback.json().get('url')
 
-def test_public_catalog_and_playback_always_use_jjtv_even_with_tenant_header(context):
-    db, client = context["db"], context["client"]
-    other = native(context)
-    default = Drama(tenant_id=DEFAULT_TENANT, title="Default public show", status="published", free_episode_count=1)
-    hidden = Drama(tenant_id=other, title="Other tenant public-looking show", status="published", free_episode_count=1)
-    db.add_all([default, hidden]); db.flush()
-    episodes = [Episode(drama_id=row.id, episode_number=1, title="First", status="published", bunny_video_id="fake-" + str(row.id)) for row in (default, hidden)]
-    db.add_all(episodes); db.commit()
-    headers = {"X-JJTV-Tenant": other}
-    home = client.get("/v1/home", headers=headers)
-    assert home.status_code == 200
-    assert {row["id"] for row in home.json()["items"]} == {default.id}
-    assert client.get(f"/v1/dramas/{hidden.id}", headers=headers).status_code == 404
-    assert client.get(f"/v1/preview/dramas/{hidden.id}", headers=headers).status_code == 404
-    playback = client.post("/v1/playback", json={"drama_id": hidden.id, "episode_id": episodes[1].id}, headers=headers)
-    assert playback.status_code in (200, 403, 404)
-    if playback.status_code == 200:
-        assert playback.json().get("allowed") is False and not playback.json().get("url")
-
-
-@pytest.mark.parametrize("path", ["/admin/v1/finance/orders", "/admin/v1/finance/ledger", "/admin/v1/staff"])
-def test_nondefault_native_tenant_cannot_enter_global_finance_or_staff(context, path):
-    other = native(context)
-    response = context["client"].get(path, headers=scoped(context["owner_headers"], other))
-    assert response.status_code == 403, response.text
+@pytest.mark.parametrize('path',['/admin/v1/finance/orders','/admin/v1/finance/ledger'])
+def test_nonowner_native_tenant_cannot_use_unadapted_legacy_module(context,path):
+    other=native(context)
+    response=context['client'].get(path,headers=entered(context,other))
+    assert response.status_code==403,response.text
 
 
 @pytest.fixture()
@@ -341,11 +281,16 @@ def test_india_tenant_readonly_and_pause_revoke_write_and_connection(context, in
                          headers={**context["operator_headers"], "Idempotency-Key": str(uuid4())})
     assert denied.status_code == 403
     assert not any(call["action"] == "series_create" for call in india_mock[0][before:])
-    assert client.patch(TENANTS + "/" + INDIA_TENANT, json={"status": "paused"}, headers=owner).status_code == 200
-    assert client.get(INDIA + "/admin/series", headers=context["operator_headers"]).status_code == 409
+    configuration = client.get(TENANTS + "/" + INDIA_TENANT + "/modules", headers=context["platform_headers"])
+    assert configuration.status_code == 200, configuration.text
+    assert client.patch(TENANTS + "/" + INDIA_TENANT, json={"status": "paused", "version": configuration.json()["version"]}, headers=context["platform_headers"]).status_code == 200
+    assert client.get(INDIA + "/admin/series", headers=context["operator_headers"]).status_code in (401, 403, 409)
     db.expire_all()
     assert db.scalar(select(IndiaConnection).where(IndiaConnection.user_id == context["operator"].id)) is None
-    assert client.patch(TENANTS + "/" + INDIA_TENANT, json={"status": "active"}, headers=owner).status_code == 200
+    configuration = client.get(TENANTS + "/" + INDIA_TENANT + "/modules", headers=context["platform_headers"])
+    assert configuration.status_code == 200, configuration.text
+    assert client.patch(TENANTS + "/" + INDIA_TENANT, json={"status": "active", "version": configuration.json()["version"]}, headers=context["platform_headers"]).status_code == 200
+    context["operator_headers"] = login(client, context["operator"])
     assert client.get(INDIA + "/session", headers=context["operator_headers"]).json()["connected"] is False
 
 
@@ -454,7 +399,7 @@ def test_corrupt_India_cipher_cleanup_does_not_delete_a_concurrent_replacement(c
     assert client.get(INDIA + "/session", headers=headers).json()["connected"] is True
 
 
-def test_failed_tenant_membership_audit_rolls_back_members_and_connection(context, india_mock):
+def test_failed_tenant_staff_audit_rolls_back_role_and_connection(context, india_mock):
     from sqlalchemy import event
 
     db, headers = context["db"], context["owner_headers"]
@@ -467,18 +412,18 @@ def test_failed_tenant_membership_audit_rolls_back_members_and_connection(contex
     rejected_audits = []
 
     def reject_membership_audit(mapper, database_connection, target):
-        if target.action == "tenant.members.update" and target.payload.get("tenant_id") == INDIA_TENANT:
+        if target.actor_id == context["owner"].id and target.target_id == operator.id and target.target_type == "admin_user":
             rejected_audits.append(target.action)
             raise RuntimeError("synthetic audit insert failure")
 
     event.listen(AuditLog, "before_insert", reject_membership_audit)
     try:
         failed_client = TestClient(app, raise_server_exceptions=False)
-        response = failed_client.put(TENANTS + "/" + INDIA_TENANT + "/members", json={"members": []}, headers=headers)
+        response = failed_client.patch("/tenant/v1/staff/" + str(operator.id), json={"role_id": preset_role_id(INDIA_TENANT, "finance")}, headers=headers)
         assert response.status_code >= 500
     finally:
         event.remove(AuditLog, "before_insert", reject_membership_audit)
-    assert rejected_audits == ["tenant.members.update"]  # Failure occurred at the intended audit boundary.
+    assert len(rejected_audits) == 1  # The target staff audit, not authentication, failed.
     db.expire_all()
     member = db.get(TenantMember, (INDIA_TENANT, operator.id), populate_existing=True)
     remaining = db.get(IndiaConnection, primary_key, populate_existing=True)
@@ -554,6 +499,25 @@ def test_first_connection_uses_only_password_and_server_derived_client_identity(
     row, data = saved_india(context)
     assert data["auth_mode"] == "jjtv_client_password" and data["state"] == "connected"
     assert all(value not in json.dumps(data) for value in [CLIENT_SECRET, "old-password-not-stored", CHALLENGE])
+
+
+def test_password_bridge_support_keeps_real_platform_actor_and_bound_business_session(context, india_auth_http):
+    client, db = context["client"], context["db"]
+    denied = client.post(INDIA + "/session", headers=context["platform_headers"],
+        json={"username": "old-existing", "password": "synthetic"})
+    assert denied.status_code == 403 and india_auth_http[0] == []
+    support = entered(context, INDIA_TENANT)
+    connect(context, support)
+    assert india_auth_http[0][0][2]["x-jjtv-operator-id"] == str(context["platform"].id)
+    assert client.get(INDIA + "/session", headers=context["owner_headers"]).json()["connected"] is False
+    before = len(india_auth_http[0])
+    spoofed = client.get(INDIA + "/session", headers=scoped(support, DEFAULT_TENANT))
+    assert spoofed.status_code == 403 and len(india_auth_http[0]) == before
+    db.expire_all()
+    audit = db.scalar(select(AuditLog).where(
+        AuditLog.actor_id == context["platform"].id, AuditLog.action == "india.login"))
+    assert audit is not None and audit.actor_scope == "platform" and audit.tenant_id == INDIA_TENANT
+    assert audit.payload["upstream_actor_id"] == OLD_ACTOR["id"]
 
 
 @pytest.mark.parametrize("endpoint", ["mfa", "enrollment", "cancel"])

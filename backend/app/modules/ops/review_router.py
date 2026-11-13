@@ -12,7 +12,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
@@ -22,19 +22,18 @@ from app.modules.account import mail
 from app.modules.common.models import AuditLog
 from app.modules.content.models import Drama, Episode
 from app.modules.content.service import InvalidTransition, transition_drama, transition_episode
-from app.modules.ops.models import ROLE_ADMIN, ROLE_OPS, AdminUser, Supplier
+from app.modules.ops.models import AdminUser, Supplier
 from app.modules.ops.router import require_admin
 
 router = APIRouter(prefix="/admin/v1", tags=["reviews"])
 log = logging.getLogger(__name__)
 
-REVIEW_WRITERS = (ROLE_OPS, ROLE_ADMIN)
 MAX_BATCH = 50
 
 
-def _require_reviewer(user: AdminUser = Depends(require_admin)) -> AdminUser:
-    if user.role not in REVIEW_WRITERS:
-        raise HTTPException(status_code=403, detail="role cannot review content")
+def _require_reviewer(request: Request, user: AdminUser = Depends(require_admin)) -> AdminUser:
+    if not getattr(request.state, 'tenant_content_authorized', False):
+        raise HTTPException(status_code=403, detail='tenant content permission required')
     return user
 
 

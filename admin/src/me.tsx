@@ -4,13 +4,21 @@ export type Me = {
   id: number;
   username: string;
   display_name: string;
+  /** Global staff role; tenant content permissions never replace it. */
   role: string;
+  account_scope?: string;
+  session_kind?: string;
+  is_platform_admin?: boolean;
+  is_tenant_admin?: boolean;
+  must_change_password?: boolean;
   platform_role?: string;
-  /** Present only on the partner surface (`/partner/v1/me`). */
+  enabled_modules?: string[];
+  permissions?: string[];
+  menu_keys?: string[];
+  tenant_role_name?: string;
   supplier?: { id: number; name: string; status: string; revenue_share_bps: number };
 };
 
-/** Human labels for `admin_users.role`; keys mirror backend/app/modules/ops/models.py. */
 export const ROLE_LABELS: Record<string, string> = {
   ops: "运营",
   finance: "财务",
@@ -18,18 +26,11 @@ export const ROLE_LABELS: Record<string, string> = {
   partner: "上剧方",
 };
 
-/** Staff roles only: partners are created from the supplier page, not here. */
 export const ROLE_OPTIONS = [
   { value: "ops", label: "运营" },
   { value: "finance", label: "财务" },
   { value: "admin", label: "管理员" },
 ];
-
-/**
- * Roles allowed to create / edit content. Mirrors CONTENT_WRITER_ROLES in
- * backend/app/modules/ops/models.py — the API answers 403 for anyone else.
- */
-const CONTENT_WRITER_ROLES = ["ops", "admin"];
 
 export const MeContext = createContext<Me | null>(null);
 
@@ -37,23 +38,37 @@ export function useMe(): Me | null {
   return useContext(MeContext);
 }
 
-/** Whether the signed-in admin may create dramas / write content. */
-export function useCanWriteContent(): boolean {
-  const me = useMe();
-  return me !== null && CONTENT_WRITER_ROLES.includes(me.role);
+export function hasPermission(me: Me | null, key: string): boolean {
+  return !!me && (me.permissions ?? []).includes(key);
 }
 
-/**
- * 仅管理员可执行删除剧集、调账、套餐改价等高危操作
- * （角色矩阵见 docs/software-architecture.md：管理员 / 运营 / 财务）。
- */
+export function usePermission(key: string): boolean {
+  return hasPermission(useMe(), key);
+}
+
+export function useAnyPermission(keys: string[]): boolean {
+  const me = useMe();
+  return keys.some(key => hasPermission(me, key));
+}
+
+/** Metadata editing only: uploads, publishing and pricing use separate grants. */
+export function useCanWriteContent(): boolean {
+  return usePermission("dramas.edit");
+}
+
+/** Platform administration never follows a tenant role name. */
 export function useIsAdmin(): boolean {
   const me = useMe();
-  return me?.role === "admin";
+  return !!me?.is_platform_admin && me.account_scope === "platform" && me.session_kind === "normal";
 }
 
-/** External suppliers get a different shell; never let them into staff pages. */
 export function useIsPartner(): boolean {
   const me = useMe();
-  return me?.role === "partner";
+  return (me?.platform_role ?? me?.role) === "partner";
 }
+
+export const useIsPlatformAdmin = useIsAdmin;
+export function useIsTenantAdmin(): boolean { return !!useMe()?.is_tenant_admin; }
+export function useCanAdministerTenant(): boolean { const me = useMe(); return !!me?.is_tenant_admin || me?.session_kind === 'support'; }
+
+export function useModuleEnabled(key: string): boolean { return (useMe()?.enabled_modules ?? []).includes(key); }

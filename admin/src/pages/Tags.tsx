@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Button, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag, Typography, message } from "antd";
+import { usePermission } from "../me";
 import { api } from "../api";
 
 type TagRow = {
@@ -12,6 +13,7 @@ type TagRow = {
 };
 
 export default function Tags() {
+  const canManage = usePermission("tags.manage");
   const [rows, setRows] = useState<TagRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
@@ -50,6 +52,7 @@ export default function Tags() {
   };
 
   const onSave = async (values: any) => {
+    if (!canManage) return;
     try {
       if (editing) {
         await api(`/admin/v1/tags/${editing.id}`, { method: "PATCH", body: JSON.stringify(values) });
@@ -73,6 +76,7 @@ export default function Tags() {
   };
 
   const onDelete = async (row: TagRow) => {
+    if (!canManage) return;
     try {
       await api(`/admin/v1/tags/${row.id}`, { method: "DELETE" });
       message.success("已删除");
@@ -91,9 +95,9 @@ export default function Tags() {
   return (
     <Space direction="vertical" style={{ width: "100%" }} size="middle">
       <Space>
-        <Button type="primary" onClick={openCreate}>
+        {canManage && <Button type="primary" onClick={openCreate}>
           + 新建标签
-        </Button>
+        </Button>}
         <Typography.Text type="secondary">共 {rows.length} 个标签</Typography.Text>
       </Space>
       <Table<TagRow>
@@ -118,7 +122,7 @@ export default function Tags() {
             title: "操作",
             key: "actions",
             width: 140,
-            render: (_, r) => (
+            render: (_, r) => canManage ? (
               <Space>
                 <Button type="link" size="small" onClick={() => openEdit(r)}>
                   编辑
@@ -129,7 +133,7 @@ export default function Tags() {
                   </Button>
                 </Popconfirm>
               </Space>
-            ),
+            ) : null,
           },
         ]}
       />
@@ -138,9 +142,10 @@ export default function Tags() {
         open={modalOpen}
         onCancel={() => setModalOpen(false)}
         onOk={() => form.submit()}
+        okButtonProps={{ disabled: !canManage }}
         destroyOnClose
       >
-        <Form form={form} layout="vertical" onFinish={onSave}>
+        <Form disabled={!canManage} form={form} layout="vertical" onFinish={onSave}>
           <Form.Item
             label="英文名"
             name="name_en"

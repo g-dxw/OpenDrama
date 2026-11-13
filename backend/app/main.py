@@ -88,8 +88,19 @@ def _register_routers() -> None:
     from app.modules.public_flow import router as public_flow_router
     from app.modules.recommend.router import router as feed_router
 
-    from app.modules.tenancy.router import router as tenant_router
+    from app.modules.tenancy.router import router as india_router
+    from app.modules.tenancy.management import platform_router,tenant_router,legacy_router
+    from app.modules.tenancy.tenant_staff import tenant_router as staff_router,legacy_staff_router
+    from app.modules.ops.api_key_router import tenant_router as tenant_key_router
+    # Replace legacy globally-scoped staff controllers with tenant-owned aliases.
+    admin_router.routes[:]=[route for route in admin_router.routes if not getattr(route,'path','').startswith('/admin/v1/staff')]
+    app.include_router(platform_router)
     app.include_router(tenant_router)
+    app.include_router(staff_router)
+    app.include_router(legacy_router)
+    app.include_router(legacy_staff_router)
+    app.include_router(tenant_key_router)
+    app.include_router(india_router)
     app.include_router(admin_router)
     app.include_router(admin_api_key_router)
     app.include_router(admin_flow_router)
@@ -106,12 +117,34 @@ _register_routers()
 @app.middleware("http")
 async def private_admin_responses(request: Request, call_next):
     response = await call_next(request)
-    if request.url.path.startswith("/admin/") or request.url.path.startswith("/partner/"):
+    if request.url.path.startswith(('/admin/','/partner/','/platform/','/tenant/')):
         response.headers["Cache-Control"] = "private, no-store"
         response.headers["Pragma"] = "no-cache"
         vary = {value.strip() for value in response.headers.get("Vary", "").split(",") if value.strip()}
-        vary.update({"Authorization", "X-JJTV-Tenant"})
+        vary.update({"Authorization", "X-JJTV-Tenant", "Origin"})
         response.headers["Vary"] = ", ".join(sorted(vary))
+    return response
+
+
+@app.middleware('http')
+async def verified_tenant_domain_cors(request: Request,call_next):
+    origin=request.headers.get('Origin')
+    approved=False
+    if origin and origin not in _cors_origins():
+        from urllib.parse import urlsplit
+        from app.db import get_engine,make_session_factory
+        from app.modules.tenancy.domains import active_admin_domain
+        db=make_session_factory(get_engine())()
+        try: approved=active_admin_domain(db,urlsplit(origin).hostname) is not None
+        finally: db.close()
+    if approved and request.method=='OPTIONS':
+        from fastapi.responses import Response
+        return Response(status_code=204,headers={'Access-Control-Allow-Origin':origin,'Access-Control-Allow-Credentials':'true','Access-Control-Allow-Methods':'GET,POST,PUT,PATCH,DELETE,HEAD,OPTIONS','Access-Control-Allow-Headers':'Authorization,Content-Type,X-JJTV-Tenant,Idempotency-Key,Tus-Resumable,Upload-Offset,Upload-Length,Upload-Metadata','Vary':'Origin','Cache-Control':'no-store'})
+    response=await call_next(request)
+    if approved:
+        response.headers['Access-Control-Allow-Origin']=origin
+        response.headers['Access-Control-Allow-Credentials']='true'
+        response.headers['Vary']='Origin, Authorization, X-JJTV-Tenant'
     return response
 
 

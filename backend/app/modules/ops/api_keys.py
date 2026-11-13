@@ -35,6 +35,7 @@ from sqlalchemy.orm import Session
 from app.modules.common.models import AuditLog
 from app.modules.ops import service as ops_service
 from app.modules.ops.models import STATUS_ACTIVE, AdminApiKey, AdminUser
+from app.modules.tenancy.models import Tenant
 
 KEY_PREFIX = "mk_live_"
 PREFIX_RANDOM_BYTES = 4  # 8 hex chars
@@ -56,6 +57,7 @@ RATE_LIMIT_ENV = "API_KEY_RATE_LIMIT"
 DEFAULT_RATE_LIMIT = 600  # requests per minute per key
 
 _STAFF_PATH = re.compile(r"^/admin/v1/(?:api-keys|staff)(?:/|$)")
+_TENANT_STAFF_PATH = re.compile(r"^/admin/v1/tenants/[^/]+(?:$|/(?:roles|members)(?:/|$))")
 _PARTNER_KEY_PATH = re.compile(r"^/partner/v1/(?:api-keys|auth/keys)(?:/|$)")
 _PARTNER_UPLOAD_PATH = re.compile(
     r"^/partner/v1/(?:episodes/\d+/(?:upload-session|upload-headers)"
@@ -103,10 +105,15 @@ def looks_like_key(credential: str) -> bool:
 
 def scope_for_request(method: str, path: str) -> str:
     """Which scope a request needs. Order matters: first match wins."""
+    if path.startswith('/tenant/v1/'):
+        path = '/admin/v1/' + path[len('/tenant/v1/'):]
+    if path.startswith('/platform/v1/'):
+        return 'staff'
+    if re.match(r'^/admin/v1/(?:roles|members)(?:/|$)', path): return 'staff'
     if _SELF_CREDENTIAL.match(path):
         # Changing the account password must never be reachable with a key.
         return "staff"
-    if _STAFF_PATH.match(path):
+    if _STAFF_PATH.match(path) or _TENANT_STAFF_PATH.match(path) or (path == "/admin/v1/tenants" and method.upper() != "GET"):
         return "staff"
     if _PARTNER_KEY_PATH.match(path):
         # A supplier key may read its own key list (read scope); every mutation
@@ -204,12 +211,29 @@ def resolve_credential(db: Session, credential: str) -> tuple[AdminUser, AdminAp
     user = db.get(AdminUser, key.admin_user_id)
     if user is None or user.status != STATUS_ACTIVE:
         raise _reject(401, "account_disabled", "密钥绑定的账号已被禁用")
+    if key.account_scope != user.account_scope or key.tenant_id != user.tenant_id:
+        raise _reject(401, 'key_owner_mismatch', '密钥与绑定账号的租户范围不一致')
+    if user.must_change_password:
+        raise _reject(403, 'password_change_required', '请先修改初始密码')
+    if key.account_scope == 'tenant':
+        tenant = db.get(Tenant, key.tenant_id, populate_existing=True)
+        if tenant is None or tenant.status != 'active':
+            raise _reject(403, 'tenant_paused', '当前租户已暂停')
     _enforce_rate_limit(key.id)
     _touch(db, key)
     return user, key
 
 
 def authorize(key: AdminApiKey, method: str, path: str, role: str | None = None) -> None:
+    platform_path = path.startswith('/platform/v1/')
+    tenant_path = path.startswith(('/tenant/v1/','/admin/v1/','/partner/v1/'))
+    if key.account_scope == 'platform':
+        if not platform_path: raise _reject(403, 'key_context_mismatch', '平台密钥只能访问平台接口')
+        if re.search(r'/(?:support-session|support-sessions|support)(?:/|$)',path):
+            raise _reject(403, 'interactive_session_required', '进入租户支持需要交互式平台会话')
+    elif key.account_scope == 'tenant':
+        if not tenant_path or platform_path: raise _reject(403, 'key_context_mismatch', '租户密钥不能访问平台接口')
+    else: raise _reject(403, 'key_context_mismatch', '密钥缺少有效身份范围')
     # A supplier credential is valid on exactly one surface. Fail here (before
     # any route-level role check) so the error is stable and greppable.
     if role == "partner" and not path.startswith("/partner/v1/"):
@@ -287,8 +311,10 @@ def _as_utc(value: datetime | None) -> datetime | None:
 
 
 def _audit(db: Session, actor_id: int | None, action: str, key: AdminApiKey, extra: dict) -> None:
+    actor = db.get(AdminUser, actor_id) if actor_id is not None else None
     db.add(
         AuditLog(
+            tenant_id=key.tenant_id, actor_scope=actor.account_scope if actor else 'system',
             actor_type="admin",
             actor_id=actor_id,
             action=action,
@@ -315,9 +341,12 @@ def _insert(
     expires_at: datetime | None,
     actor_id: int | None,
 ) -> tuple[AdminApiKey, str]:
+    owner = db.get(AdminUser, admin_user_id)
+    if owner is None: raise HTTPException(404, detail='staff not found')
     plaintext, prefix, digest = generate_key()
     key = AdminApiKey(
         admin_user_id=admin_user_id,
+        account_scope=owner.account_scope, tenant_id=owner.tenant_id,
         name=name,
         key_prefix=prefix,
         key_hash=digest,
@@ -479,6 +508,7 @@ def delete_key(db: Session, key: AdminApiKey, *, actor_id: int | None) -> None:
         AuditLog(
             actor_type="admin",
             actor_id=actor_id,
+            tenant_id=key.tenant_id, actor_scope=(db.get(AdminUser, actor_id).account_scope if actor_id is not None and db.get(AdminUser, actor_id) is not None else "system"),
             action="api_key_delete",
             target_type="api_key",
             target_id=None,

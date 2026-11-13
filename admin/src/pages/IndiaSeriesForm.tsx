@@ -16,7 +16,7 @@ function fields(record?: IndiaSeries | null) {
     tags: record?.tags || [], actors: record?.actors || [], search_aliases: record?.search_aliases || [], descriptors: record?.descriptors || [],
     free_episode_count: record?.free_episode_count ?? 1 };
 }
-export default function IndiaSeriesForm({ record, writable, onSaved }: { record?: IndiaSeries | null; writable: boolean; onSaved: (row: IndiaSeries) => void }) {
+export default function IndiaSeriesForm({ record, writable, canPricing, onSaved }: { record?: IndiaSeries | null; writable: boolean; canPricing: boolean; onSaved: (row: IndiaSeries) => void }) {
   const [form] = Form.useForm();
   const [saving, setSaving] = useState(false);
   const [loadedVersion, setLoadedVersion] = useState<number | undefined>(record?.version);
@@ -29,15 +29,21 @@ export default function IndiaSeriesForm({ record, writable, onSaved }: { record?
   }, [record?.id, record?.version]);
   const reload = () => { form.resetFields(); form.setFieldsValue(fields(record)); setLoadedVersion(record?.version); setStale(false); setDirty(false); };
   const submit = async (values: any) => {
-    if (!writable || stale) return;
-    const starts = new Date(values.rights.starts_at), ends = new Date(values.rights.ends_at);
-    if (!Number.isFinite(starts.getTime()) || !Number.isFinite(ends.getTime()) || ends <= starts) { message.error("授权结束时间必须晚于开始时间"); return; }
-    const rights = { ...values.rights, starts_at: starts.toISOString(), ends_at: ends.toISOString(), exclusive: !!values.rights.exclusive, evidence_ref: record?.rights?.evidence_ref || "" };
-    const payload = { title: values.title.trim(), title_hi: values.title_hi || "", synopsis: values.synopsis, genre: values.genre, language: values.language,
-      content_origin: values.content_origin, age_rating: values.age_rating, free_episode_count: values.free_episode_count,
-      content_format: values.content_format, content_collections: values.content_collections || [], tags: values.tags || [], actors: values.actors || [],
-      search_aliases: values.search_aliases || [], descriptors: values.descriptors || [], rights,
-      member_window: values.member_mode === "early_access" ? { mode: "early_access", public_at: new Date(values.public_at).toISOString() } : { mode: values.member_mode } };
+    if ((!writable && !(record && canPricing)) || stale) return;
+    const payload: Record<string, unknown> = {};
+    if (writable) {
+      const starts = new Date(values.rights.starts_at), ends = new Date(values.rights.ends_at);
+      if (!Number.isFinite(starts.getTime()) || !Number.isFinite(ends.getTime()) || ends <= starts) { message.error("授权结束时间必须晚于开始时间"); return; }
+      Object.assign(payload, { title: values.title.trim(), title_hi: values.title_hi || "", synopsis: values.synopsis, genre: values.genre, language: values.language,
+        content_origin: values.content_origin, age_rating: values.age_rating, content_format: values.content_format,
+        content_collections: values.content_collections || [], tags: values.tags || [], actors: values.actors || [], search_aliases: values.search_aliases || [], descriptors: values.descriptors || [],
+        rights: { ...values.rights, starts_at: starts.toISOString(), ends_at: ends.toISOString(), exclusive: !!values.rights.exclusive, evidence_ref: record?.rights?.evidence_ref || "" } });
+    }
+    if (canPricing) {
+      if (values.member_mode === "early_access" && !Number.isFinite(Date.parse(values.public_at))) { message.error("请填写有效的公开时间"); return; }
+      payload.free_episode_count = values.free_episode_count;
+      payload.member_window = values.member_mode === "early_access" ? { mode: "early_access", public_at: new Date(values.public_at).toISOString() } : { mode: values.member_mode };
+    }
     setSaving(true);
     try {
       const result = await indiaApi<IndiaSeries>("/admin/series" + (record ? "/" + encodeURIComponent(record.id) : ""), {
@@ -63,9 +69,9 @@ export default function IndiaSeriesForm({ record, writable, onSaved }: { record?
       <Form.Item label="年龄分级" name="age_rating" rules={required}><Select options={options(["U", "U/A 7+", "U/A 13+", "U/A 16+", "A"])} /></Form.Item>
       <Form.Item label="内容形式" name="content_format" rules={required}><Select options={[{ value: "unknown", label: "尚未分类" }, { value: "micro_series", label: "分集短剧" }, { value: "complete_short_film", label: "完整短片" }]} /></Form.Item>
       <Form.Item label="内容集合" name="content_collections"><Select mode="multiple" options={[{ value: "india_launch", label: "India Launch（仅分集短剧）" }]} /></Form.Item>
-      <Form.Item label="免费集数" name="free_episode_count" rules={required}><InputNumber min={0} max={1000} precision={0} style={{ width: "100%" }} /></Form.Item>
-      <Form.Item label="会员观看窗口" name="member_mode" rules={required}><Select options={[{ value: "standard", label: "普通" }, { value: "exclusive", label: "会员专享" }, { value: "early_access", label: "会员抢先看" }]} /></Form.Item>
-      {memberMode === "early_access" && <Form.Item label="公开时间（本地时间）" name="public_at" rules={required}><Input type="datetime-local" /></Form.Item>}
+      <Form.Item label="免费集数" name="free_episode_count" rules={required}><InputNumber disabled={!canPricing || saving} min={0} max={1000} precision={0} style={{ width: "100%" }} /></Form.Item>
+      <Form.Item label="会员观看窗口" name="member_mode" rules={required}><Select disabled={!canPricing || saving} options={[{ value: "standard", label: "普通" }, { value: "exclusive", label: "会员专享" }, { value: "early_access", label: "会员抢先看" }]} /></Form.Item>
+      {memberMode === "early_access" && <Form.Item label="公开时间（本地时间）" name="public_at" rules={required}><Input disabled={!canPricing || saving} type="datetime-local" /></Form.Item>}
       <Form.Item label="标签" name="tags"><Select mode="tags" tokenSeparators={[",", "，"]} /></Form.Item>
       <Form.Item label="演员" name="actors"><Select mode="tags" tokenSeparators={[",", "，"]} /></Form.Item>
       <Form.Item label="搜索别名" name="search_aliases"><Select mode="tags" tokenSeparators={[",", "，"]} /></Form.Item>
@@ -89,7 +95,7 @@ export default function IndiaSeriesForm({ record, writable, onSaved }: { record?
       <Form.Item label="已登记版权证明"><Input readOnly value={record?.rights?.evidence_ref || "保存草稿后，在文件页上传版权证明"} /></Form.Item>
       <Form.Item className="india-form-full" label="撤回与下架条款" name={["rights", "withdrawal_terms"]} rules={required}><Input.TextArea rows={2} maxLength={3000} /></Form.Item>
     </div>
-    <Space><Button type="primary" htmlType="submit" loading={saving} disabled={!writable || stale}>{record ? "保存资料" : "创建草稿"}</Button>
+    <Space><Button type="primary" htmlType={writable ? "submit" : "button"} onClick={!writable && canPricing && record ? async () => { const values = await form.validateFields(["free_episode_count", "member_mode", ...(memberMode === "early_access" ? ["public_at"] : [])]).catch(() => null); if (values) void submit(values); } : undefined} loading={saving} disabled={(!writable && !(record && canPricing)) || stale || saving}>{record ? "保存资料" : "创建草稿"}</Button>
       {record && <span style={{ color: "#8c8c8c" }}>保存资料会重新进入草稿及审核流程</span>}</Space>
   </Form>;
 }

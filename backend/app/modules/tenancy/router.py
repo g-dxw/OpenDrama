@@ -1,116 +1,42 @@
-"""Tenant administration and the single fixed India content integration."""
+"""The fixed India content adapter; platform and tenant IAM live in management."""
 from __future__ import annotations
 import json
 import os
 import re
-from uuid import UUID, uuid4
-from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select, delete
+from uuid import UUID
+from datetime import datetime,timezone
+from fastapi import APIRouter,Depends,HTTPException,Request,Response
+from pydantic import BaseModel,ConfigDict,Field
 from sqlalchemy.orm import Session
 from app.db import get_db
 from app.modules.common.models import AuditLog
-from app.modules.ops.models import AdminUser, STAFF_ROLES
-from app.modules.ops.router import require_admin, require_admin_role
+from app.modules.ops.models import AdminUser
+from app.modules.ops.router import require_admin
 from app.modules.ops import service as ops_service
 from app.modules.tenancy import service
-from app.modules.tenancy.models import Tenant, TenantMember, IndiaConnection, DEFAULT_TENANT, INDIA_TENANT
+from app.modules.tenancy.models import INDIA_TENANT
+from app.modules.tenancy.permissions import require_permission
 from app.modules.tenancy.india import IndiaClient, IndiaError, normalize_login, normalize_refresh, normalize_staff, client_fingerprint
-
-router = APIRouter(prefix="/admin/v1/tenants", tags=["tenants"])
-
-class TenantCreate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    name: str = Field(min_length=1, max_length=100)
-
-class TenantPatch(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    name: str | None = Field(default=None, min_length=1, max_length=100)
-    status: str | None = None
-
-class MemberInput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    user_id: int
-    role: str = "ops"
-
-class MembersInput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    members: list[MemberInput] = Field(max_length=100)
+router=APIRouter(prefix='/admin/v1/tenants',tags=['india-content'])
 
 class LoginInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     username: str = Field(min_length=1, max_length=64)
     password: str = Field(min_length=1, max_length=128)
 
-def audit(db, user, tenant_id, action, *, old_actor=None, request_id=None, outcome="success", code=None, resource_id=None):
-    payload = {"tenant_id": tenant_id, "outcome": outcome}
-    if old_actor: payload["upstream_actor_id"] = old_actor
-    if request_id: payload["upstream_request_id"] = request_id
-    if code: payload["upstream_code"] = code
-    if resource_id: payload["resource_id"] = resource_id
-    db.add(AuditLog(actor_type="admin", actor_id=user.id, action=action,
-                    target_type="tenant", target_id=None, payload=payload))
-    db.commit()
+def audit(db,user,tenant_id,action,*,old_actor=None,request_id=None,outcome='success',code=None,resource_id=None):
+    payload=dict(tenant_id=tenant_id,outcome=outcome)
+    if old_actor: payload['upstream_actor_id']=old_actor
+    if request_id: payload['upstream_request_id']=request_id
+    if code: payload['upstream_code']=code
+    if resource_id: payload['resource_id']=resource_id
+    db.add(AuditLog(actor_type='admin',actor_id=user.id,actor_scope=db.info.get('actor_scope',user.account_scope),tenant_id=tenant_id,action=action,target_type='tenant',target_id=None,payload=payload)); db.commit()
 
-def name_value(value):
-    result = value.strip()
-    if not result: raise HTTPException(422, detail="租户名称不能为空")
-    return result
-
-@router.get("")
-def list_tenants(db: Session = Depends(get_db), user: AdminUser = Depends(require_admin)):
-    return service.tenant_list(db, user)
-
-@router.post("", status_code=201)
-def create_tenant(body: TenantCreate, db: Session = Depends(get_db), user: AdminUser = Depends(require_admin_role)):
-    tenant = Tenant(id="tenant-" + uuid4().hex, name=name_value(body.name), kind="native", status="active")
-    db.add(tenant)
-    audit(db, user, tenant.id, "tenant.create")
-    return {"id": tenant.id, "name": tenant.name, "kind": tenant.kind, "status": tenant.status, "own_role": "admin"}
-
-@router.patch("/{tenant_id}")
-def patch_tenant(tenant_id: str, body: TenantPatch, db: Session = Depends(get_db), user: AdminUser = Depends(require_admin_role)):
-    tenant, _ = service.tenant_access(db, user, tenant_id, paused=True)
-    if "name" in body.model_fields_set:
-        if body.name is None: raise HTTPException(422, detail="租户名称不能为空")
-        tenant.name = name_value(body.name)
-    if "status" in body.model_fields_set:
-        if body.status not in ("active", "paused"): raise HTTPException(422, detail="接入状态无效")
-        tenant.status = body.status
-        if body.status == "paused":
-            db.execute(delete(IndiaConnection).where(IndiaConnection.tenant_id == tenant_id))
-    audit(db, user, tenant.id, "tenant.update")
-    return {"id": tenant.id, "name": tenant.name, "kind": tenant.kind, "status": tenant.status, "own_role": "admin"}
-
-@router.get("/{tenant_id}/members")
-def members(tenant_id: str, db: Session = Depends(get_db), user: AdminUser = Depends(require_admin_role)):
-    service.tenant_access(db, user, tenant_id, paused=True)
-    rows = db.execute(select(TenantMember, AdminUser).join(AdminUser, AdminUser.id == TenantMember.user_id).where(TenantMember.tenant_id == tenant_id)).all()
-    staff = db.scalars(select(AdminUser).where(AdminUser.role.in_(STAFF_ROLES), AdminUser.status == "active").order_by(AdminUser.username)).all()
-    return {"members": [{"user_id": member.user_id, "username": person.username, "display_name": person.display_name, "role": member.role} for member, person in rows],
-            "staff": [{"id": person.id, "username": person.username, "display_name": person.display_name, "role": person.role} for person in staff]}
-
-@router.put("/{tenant_id}/members")
-def set_members(tenant_id: str, body: MembersInput, db: Session = Depends(get_db), user: AdminUser = Depends(require_admin_role)):
-    service.tenant_access(db, user, tenant_id, paused=True)
-    identifiers = [member.user_id for member in body.members]
-    if len(set(identifiers)) != len(identifiers): raise HTTPException(422, detail="成员不能重复")
-    for member in body.members:
-        person = db.get(AdminUser, member.user_id)
-        if person is None or person.role not in STAFF_ROLES or person.status != "active": raise HTTPException(422, detail="成员必须是有效平台员工")
-        if member.role not in STAFF_ROLES: raise HTTPException(422, detail="租户角色无效")
-    db.execute(delete(TenantMember).where(TenantMember.tenant_id == tenant_id))
-    db.execute(delete(IndiaConnection).where(IndiaConnection.tenant_id == tenant_id))
-    db.add_all([TenantMember(tenant_id=tenant_id, user_id=member.user_id, role=member.role) for member in body.members])
-    audit(db, user, tenant_id, "tenant.members.update")
-    return members(tenant_id, db, user)
-
-def india_access(tenant_id, db, user, request, *, write=False):
-    tenant, role = service.tenant_access(db, user, tenant_id)
-    if tenant.id != INDIA_TENANT or tenant.kind != "india_legacy": raise HTTPException(404, detail="该租户没有旧站内容接口")
-    if write and (role not in ("admin", "ops") or user.role not in ("admin", "ops")):
-        raise HTTPException(403, detail="当前租户为只读权限")
+def india_access(tenant_id,db,user,request,*,write=False):
+    tenant=request.state.tenant
+    if tenant.id!=tenant_id: raise HTTPException(403,detail=dict(code='tenant_scope_mismatch',message='当前会话不能切换租户'))
+    if tenant.id!=INDIA_TENANT or tenant.kind!='india_legacy': raise HTTPException(404,detail='该租户没有旧站内容接口')
+    require_permission(request,'dramas.view','reviews.view',any_of=True)
     service.connection_key(request)
     return tenant
 
@@ -326,6 +252,13 @@ async def india_content(tenant_id: str, upstream_path: str, request: Request, re
             match = re.fullmatch(pattern, upstream_path)
             if match: action = "upload_" + kind; resource_id = match.group(1); upload_kind = kind; break
     if not action: raise HTTPException(404, detail="没有该内容运营接口")
+    if action in {'series_list','series_detail','rights_list','series_publications','jobs_list','job_detail'}:
+        require_permission(request, 'dramas.view', 'reviews.view', any_of=True)
+    elif action == 'series_edit': require_permission(request, 'dramas.edit', 'dramas.pricing', any_of=True)
+    elif action in {'series_create','episodes_create','submit'}: require_permission(request, 'dramas.edit')
+    elif action == 'review': require_permission(request, 'reviews.decide')
+    elif action in {'publish','unpublish'}: require_permission(request, 'dramas.publish')
+    else: require_permission(request, 'dramas.upload')
     key = None
     if request.method != "GET":
         try: key = str(UUID(request.headers.get("Idempotency-Key", "")))
@@ -342,6 +275,13 @@ async def india_content(tenant_id: str, upstream_path: str, request: Request, re
         else:
             if len(request.query_params.multi_items()) != len(set(request.query_params.keys())): raise HTTPException(400, detail="查询条件不能重复")
             payload = None if request.method == "GET" else await bounded_json(request)
+            if payload and action in {'series_create','series_edit'}:
+                # PATCH requires only version upstream. Never forward a protected
+                # field merely because a preflight snapshot appeared unchanged.
+                for field in payload:
+                    if field == 'version': continue
+                    permission = 'dramas.pricing' if field in {'free_episode_count','member_window'} else 'dramas.edit'
+                    require_permission(request, permission)
             reply = await client.call(action, access_token=data["access_token"], resource_id=resource_id,
                 payload=payload, params=dict(request.query_params), idempotency_key=key)
         if request.method != "GET":

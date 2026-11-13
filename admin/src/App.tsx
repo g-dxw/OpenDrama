@@ -1,493 +1,122 @@
-import { useCallback, useEffect, useState } from "react";
-import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
-import {
-  Alert,
-  Avatar,
-  Button,
-  Card,
-  Drawer,
-  Dropdown,
-  Grid,
-  Layout,
-  Menu,
-  Select,
-  Space,
-  Spin,
-  Tag,
-  Typography,
-  message,
-} from "antd";
-import type { MenuProps } from "antd";
-import {
-  DownOutlined,
-  KeyOutlined,
-  LogoutOutlined,
-  MenuFoldOutlined,
-  MenuOutlined,
-  MenuUnfoldOutlined,
-} from "@ant-design/icons";
-import { api, clearToken, forceReauth, getToken, isDeadCredential } from "./api";
-import { MeContext, ROLE_LABELS, type Me } from "./me";
-import Login from "./pages/Login";
-import Tenants from "./pages/Tenants";
-import IndiaContent from "./pages/IndiaContent";
-import { TenantContext, type Tenant } from "./tenant";
-import { DEFAULT_TENANT_ID, INDIA_TENANT_ID, getCurrentTenantId, setCurrentTenantId } from "./tenant-scope";
-import Dramas from "./pages/Dramas";
-import DramaEdit from "./pages/DramaEdit";
-import Reviews from "./pages/Reviews";
-import Tags from "./pages/Tags";
-import GroupsPage, { GroupDetailPage } from "./pages/Groups";
-import { HomeOpsPage } from "./pages/HomeOps";
-import Moderation from "./pages/Moderation";
-import Rewards from "./pages/Rewards";
-import Staff from "./pages/Staff";
-import ApiKeys from "./pages/ApiKeys";
-import Suppliers from "./pages/Suppliers";
-import PartnerDramas from "./pages/PartnerDramas";
-import PartnerDramaEdit from "./pages/PartnerDramaEdit";
-import PartnerApiKeys from "./pages/PartnerApiKeys";
-import PartnerStats from "./pages/PartnerStats";
-import PartnerSettlements from "./pages/PartnerSettlements";
-import Settlements from "./pages/Settlements";
-import { ChangePasswordModal } from "./components/ChangePasswordModal";
-import {
-  CommentsPage,
-  DashboardPage,
-  FinancePage,
-  // OpsCenterPage, // 运营中心入口已关闭，恢复时连同 ITEMS 与 /ops 路由一起放回
-  PlansPage,
-  UsersPage,
-} from "./pages/StagePages";
+import { useCallback, useEffect, useState } from 'react';
+import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
+import { Alert, Button, Card, Space, Spin, Typography } from 'antd';
+import { ReloadOutlined } from '@ant-design/icons';
+import { api, completeLogout, errorText, forceReauth, getToken } from './api';
+import { CURRENT_ENTRY, contextApi, supportSession } from './entry';
+import { IdentityContext, type Identity } from './identity';
+import { MeContext, type Me } from './me';
+import { TenantContext, type Tenant } from './tenant';
+import { setCurrentTenantId } from './tenant-scope';
+import { navigationLeaves, visibleNavigation, type NavigationNode } from './navigation';
+import BackOfficeShell from './components/BackOfficeShell';
+import { ChangePasswordModal } from './components/ChangePasswordModal';
+import EntryChooser from './pages/EntryChooser';
+import Login from './pages/Login';
+import Tenants from './pages/Tenants';
+import PlatformAudit from './pages/PlatformAudit';
+import TenantStaff from './pages/TenantStaff';
+import TenantRolesPage from './pages/TenantRolesPage';
+import IndiaContent from './pages/IndiaContent';
+import Dramas from './pages/Dramas';
+import DramaEdit from './pages/DramaEdit';
+import Reviews from './pages/Reviews';
+import Tags from './pages/Tags';
+import GroupsPage, { GroupDetailPage } from './pages/Groups';
+import { HomeOpsPage } from './pages/HomeOps';
+import Moderation from './pages/Moderation';
+import Rewards from './pages/Rewards';
+import ApiKeys from './pages/ApiKeys';
+import Suppliers from './pages/Suppliers';
+import Settlements from './pages/Settlements';
+import PartnerDramas from './pages/PartnerDramas';
+import PartnerDramaEdit from './pages/PartnerDramaEdit';
+import PartnerApiKeys from './pages/PartnerApiKeys';
+import PartnerStats from './pages/PartnerStats';
+import PartnerSettlements from './pages/PartnerSettlements';
+import { CommentsPage, DashboardPage, FinancePage, PlansPage, UsersPage } from './pages/StagePages';
 
-const { Sider, Header, Content } = Layout;
-const { useBreakpoint } = Grid;
-
-const SIDER_WIDTH = 208;
-/** lg breakpoint (antd `lg`): below this the sider becomes a drawer so it
- *  stops squeezing the page on tablets and phones. */
-const DESKTOP_QUERY = "(min-width: 992px)";
-
-const ITEMS: { key: string; label: string; roles?: string[] }[] = [
-  { key: "/dashboard", label: "数据看板", roles: ["ops", "finance", "admin"] },
-  { key: "/dramas", label: "剧集管理", roles: ["ops", "admin"] },
-  { key: "/reviews", label: "待审核", roles: ["ops", "admin"] },
-  { key: "/groups", label: "首页分组", roles: ["ops", "admin"] },
-  { key: "/users", label: "用户管理", roles: ["finance", "admin"] },
-  // 运营中心（推送记录）暂不开放：当前只是台账占位，没有真实推送通道，先隐藏入口。
-  // 恢复时把下面一行和 /ops 路由一起放回来即可。
-  // { key: "/ops", label: "运营中心" },
-  { key: "/home-ops", label: "首页运营", roles: ["ops", "admin"] },
-  { key: "/rewards", label: "金币与任务", roles: ["ops", "admin"] },
-  { key: "/comments", label: "评论审核", roles: ["ops", "admin"] },
-  { key: "/moderation", label: "自动审核", roles: ["ops", "admin"] },
-  { key: "/finance", label: "财务订单", roles: ["finance", "admin"] },
-  { key: "/settlements", label: "结算单", roles: ["finance", "admin"] },
-  { key: "/plans", label: "会员套餐", roles: ["finance", "admin"] },
-  { key: "/tags", label: "标签库", roles: ["ops", "admin"] },
-  // 员工账号只对管理员开放：运营/财务看到入口也只会拿到 403。
-  { key: "/staff", label: "账号管理", roles: ["admin"] },
-  // 密钥签发是超管动作，与账号管理同级。
-  { key: "/api-keys", label: "API 密钥", roles: ["admin"] },
-  { key: "/suppliers", label: "上剧方管理", roles: ["admin"] },
-  // 上剧方（partner）只看到自己的剧集；其它入口一律不渲染。
-  { key: "/partner/dramas", label: "我的剧集", roles: ["partner"] },
-  { key: "/partner/stats", label: "数据中心", roles: ["partner"] },
-  { key: "/partner/settlements", label: "结算单", roles: ["partner"] },
-  { key: "/partner/api-keys", label: "API 密钥", roles: ["partner"] },
-];
-
+const PLATFORM_NAV: NavigationNode[] = [{ key: '/tenants', label: '业务租户' }, { key: '/audit', label: '平台审计' }];
+function identityMe(value: Identity): Me {
+  return { ...value.user, account_scope: value.account_scope, session_kind: value.session_kind, is_platform_admin: value.is_platform_admin, is_tenant_admin: value.is_tenant_admin,
+    permissions: value.permissions, menu_keys: value.menu_keys, enabled_modules: value.enabled_modules, tenant_role_name: value.role_name };
+}
+function validIdentity(value: Identity): boolean {
+  if (!value?.user || !Array.isArray(value.permissions) || !Array.isArray(value.menu_keys) || !Array.isArray(value.enabled_modules)) return false;
+  if (CURRENT_ENTRY.kind === 'platform') return value.account_scope === 'platform' && value.session_kind === 'normal' && value.is_platform_admin;
+  if (CURRENT_ENTRY.kind === 'tenant') return value.account_scope === 'tenant' && value.session_kind === 'normal' && value.tenant?.code === CURRENT_ENTRY.code;
+  if (CURRENT_ENTRY.kind === 'support') return value.session_kind === 'support' && value.tenant?.code === CURRENT_ENTRY.code;
+  return false;
+}
 export default function App() {
-  const navigate = useNavigate();
-  const location = useLocation();
-  const token = getToken();
-  const [me, setMe] = useState<Me | null>(null);
-  const [tenants, setTenants] = useState<Tenant[]>([]);
-  const [tenantId, setTenantId] = useState(getCurrentTenantId);
-  const [tenantState, setTenantState] = useState<"loading" | "ready" | "failed">("loading");
-  const refreshTenants = useCallback(async () => {
-    const rows = await api<Tenant[]>("/admin/v1/tenants");
-    setTenants(rows);
-    const next = rows.find(t => t.id === getCurrentTenantId()) ?? rows.find(t => t.status === "active") ?? rows[0];
-    if (next) { setCurrentTenantId(next.id); setTenantId(next.id); }
-    setTenantState("ready");
+  const token = getToken(); const [identity, setIdentity] = useState<Identity | null>(null); const [state, setState] = useState<'loading' | 'ready' | 'failed'>(token ? 'loading' : 'ready');
+  const [error, setError] = useState(''); const [logoutLoading, setLogoutLoading] = useState(false); const [passwordOpen, setPasswordOpen] = useState(false);
+  const acceptIdentity = useCallback((value: Identity) => { if (!validIdentity(value)) throw new Error('登录身份与当前入口不匹配，请从正确入口重新登录。'); setCurrentTenantId(value.tenant?.id || ''); setIdentity(value); setState('ready'); setError(''); }, []);
+  const refresh = useCallback(async () => { const value = await api<Identity>(contextApi() + '/context'); acceptIdentity(value); }, [acceptIdentity]);
+  useEffect(() => {
+    if (!token) { setIdentity(null); setState('ready'); if (CURRENT_ENTRY.kind === 'support') forceReauth('support_expired'); return; }
+    let live = true; setState('loading');
+    void api<Identity>(contextApi() + '/context').then(value => { if (live) acceptIdentity(value); }).catch(e => { if (live) { setError(errorText(e)); setState('failed'); } });
+    return () => { live = false; };
+  }, [token, acceptIdentity]);
+  const logout = useCallback(async () => {
+    setLogoutLoading(true);
+    try { await api(contextApi() + '/auth/logout', { method: 'POST', body: '{}' }); } catch { /* Local logout always completes. */ }
+    completeLogout();
   }, []);
-  // 页面必须等身份确认后再渲染：上剧方账号一旦先落到员工页（旧书签、直接
-  // 输 URL、登录后默认跳转），每个请求都会吃 403「接口仅对平台员工开放」，
-  // 用户看到的是「数据全空 + 一排红条」，却不会被送回登录页。
-  const [meState, setMeState] = useState<"loading" | "ready" | "failed">(token ? "loading" : "ready");
-  const [navOpen, setNavOpen] = useState(false);
-  // Desktop sidebar can be folded away so wide tables get the whole viewport.
-  const [siderCollapsed, setSiderCollapsed] = useState(false);
-  const [loggingOut, setLoggingOut] = useState(false);
-  const [passwordOpen, setPasswordOpen] = useState(false);
-  const screens = useBreakpoint();
-  // useBreakpoint() is empty on the first render; fall back to a media query so
-  // phones do not flash the desktop shell before hydration settles.
-  const [desktopFallback] = useState(
-    () => typeof window !== "undefined" && window.matchMedia(DESKTOP_QUERY).matches
-  );
-  const isDesktop = screens.lg ?? desktopFallback;
-  const isNarrow = screens.md === false;
-
+  if (CURRENT_ENTRY.kind === 'choose') return <EntryChooser />;
+  if (!token) return CURRENT_ENTRY.kind === 'support' ? <div className="entry-page"><Spin /></div> : <Login onLogin={acceptIdentity} />;
+  if (state === 'loading') return <div className="entry-page"><Card><Space><Spin /><Typography.Text>正在验证当前入口的登录身份…</Typography.Text></Space></Card></div>;
+  if (state === 'failed' || !identity) return <div className="entry-page"><Card className="entry-card"><Space direction="vertical" size="middle"><Alert showIcon type="error" message={error || '暂时无法验证身份'} /><Button type="primary" onClick={() => { setState('loading'); void refresh().catch(e => { setError(errorText(e)); setState('failed'); }); }}>重试</Button><Button onClick={() => forceReauth('manual')}>重新登录当前入口</Button></Space></Card></div>;
+  const me = identityMe(identity);
+  return <IdentityContext.Provider value={identity}><MeContext.Provider value={me}>
+    {identity.user.must_change_password && identity.session_kind !== 'support' ? <div className="entry-page"><Card className="entry-card"><Typography.Title level={4}>请先设置自己的密码</Typography.Title><Typography.Text type="secondary">当前临时密码尚未更换，业务功能将在修改后开放。</Typography.Text><Button block style={{ marginTop: 16 }} onClick={() => void logout()}>退出登录</Button></Card><ChangePasswordModal open force onClose={() => {}} onChanged={acceptIdentity} onLogout={() => void logout()} /></div>
+      : CURRENT_ENTRY.kind === 'platform' ? <PlatformApplication identity={identity} onLogout={logout} loggingOut={logoutLoading} onPassword={() => setPasswordOpen(true)} />
+      : <TenantApplication identity={identity} refresh={refresh} onLogout={logout} loggingOut={logoutLoading} onPassword={identity.session_kind === 'support' ? undefined : () => setPasswordOpen(true)} />}
+    {identity.session_kind !== 'support' && !identity.user.must_change_password && <ChangePasswordModal open={passwordOpen} onClose={() => setPasswordOpen(false)} onChanged={acceptIdentity} />}
+  </MeContext.Provider></IdentityContext.Provider>;
+}
+function PlatformApplication({ identity, onLogout, loggingOut, onPassword }: { identity: Identity; onLogout: () => void; loggingOut: boolean; onPassword: () => void }) {
+  const location = useLocation(); const navigate = useNavigate(); const notice = new URLSearchParams(location.search).get('notice');
+  return <BackOfficeShell brand="JJTV 平台管理" items={PLATFORM_NAV} route={location.pathname} scope="platform" onNavigate={key => navigate(key)} accountName={identity.user.display_name || identity.user.username} accountLabel="平台管理员" onLogout={onLogout} loadingLogout={loggingOut} onPassword={onPassword}>
+    {notice === 'support-ended' && <Alert showIcon type="info" message="临时租户访问已结束，已返回平台管理。" style={{ marginBottom: 16 }} />}
+    <Routes><Route path="/tenants" element={<Tenants />} /><Route path="/audit" element={<PlatformAudit />} /><Route path="*" element={<Navigate to="/tenants" replace />} /></Routes>
+  </BackOfficeShell>;
+}
+function TenantApplication({ identity, refresh, onLogout, loggingOut, onPassword }: { identity: Identity; refresh: () => Promise<void>; onLogout: () => void; loggingOut: boolean; onPassword?: () => void }) {
+  const location = useLocation(); const navigate = useNavigate(); const [refreshing, setRefreshing] = useState(false); const [error, setError] = useState('');
+  const tenant = identity.tenant!; const support = identity.session_kind === 'support'; const systemAdmin = identity.is_tenant_admin || support; const partner = identity.user.role === 'partner';
+  const current: Tenant = { ...tenant, permissions: identity.permissions, menu_keys: identity.menu_keys, role_name: identity.role_name };
+  const refreshPermissions = useCallback(async () => { setRefreshing(true); try { await refresh(); setError(''); } catch (e) { setError(errorText(e)); } finally { setRefreshing(false); } }, [refresh]);
+  useEffect(() => { const focus = () => void refreshPermissions(); window.addEventListener('focus', focus); return () => window.removeEventListener('focus', focus); }, [refreshPermissions]);
   useEffect(() => {
-    if (!token) {
-      setMe(null);
-      setMeState("ready");
-      return;
-    }
-    let alive = true;
-    setMeState("loading");
-    api<Me>("/admin/v1/auth/me")
-      .then((value) => {
-        if (!alive) return;
-        setMe(value);
-        setMeState("ready");
-      })
-      .catch((error) => {
-        if (!alive) return;
-        // 401 / 账号被禁用：api() 已经清掉 token 并跳登录页，别再打第二个请求。
-        if (isDeadCredential(error?.status ?? 0, error?.detail)) return;
-        // 403 staff_only 就是上剧方账号，改问合作方自己的身份接口。
-        api<Me>("/partner/v1/me")
-          .then((value) => {
-            if (!alive) return;
-            setMe(value);
-            setMeState("ready");
-          })
-          .catch((partnerError) => {
-            if (!alive) return;
-            if (isDeadCredential(partnerError?.status ?? 0, partnerError?.detail)) return;
-            // 会话服务 503 / 网络异常：不能留下一个没菜单、没数据的空壳。
-            setMe(null);
-            setMeState("failed");
-          });
-      });
-    return () => {
-      alive = false;
-    };
-  }, [token]);
-
-  useEffect(() => {
-    if (!token || meState !== "ready" || !me) return;
-    if (me.role === "partner") { setCurrentTenantId(DEFAULT_TENANT_ID); setTenantId(DEFAULT_TENANT_ID); setTenantState("ready"); return; }
-    setTenantState("loading");
-    void refreshTenants().catch(() => setTenantState("failed"));
-  }, [token, meState, me?.id, me?.role, refreshTenants]);
-
-  useEffect(() => {
-    setNavOpen(false);
-  }, [location.pathname]);
-
-  /**
-   * 退出登录：先让服务端销毁 Redis 会话，再清本地 token。
-   * 服务端失败（会话已过期 / Redis 不可用）也必须清掉本地凭据，不能卡住退出。
-   * token 清空后 `token` 变 null，整个路由切回登录页。
-   */
-  const onLogout = async () => {
-    setLoggingOut(true);
-    try {
-      const path = me?.role === "partner" ? "/partner/v1/auth/logout" : "/admin/v1/auth/logout";
-      await api(path, { method: "POST" });
-    } catch {
-      /* 本地凭据仍然要清，退出不能被服务端错误阻塞 */
-    } finally {
-      clearToken();
-      setMe(null);
-      setLoggingOut(false);
-      message.success("已退出登录");
-      navigate("/login", { replace: true });
-    }
-  };
-
-  const accountMenu = (account: Me): MenuProps => ({
-    items: [
-      {
-        type: "group",
-        label: `登录账号：${account.username}（${ROLE_LABELS[account.role] ?? account.role}）`,
-        children: [
-          {
-            key: "password",
-            icon: <KeyOutlined />,
-            label: "修改密码",
-          },
-          {
-            key: "logout",
-            danger: true,
-            icon: <LogoutOutlined />,
-            label: "退出登录",
-          },
-        ],
-      },
-    ],
-    onClick: ({ key }) => {
-      if (key === "logout") onLogout();
-      if (key === "password") setPasswordOpen(true);
-    },
-  });
-
-  if (!token) {
-    return (
-      <Routes>
-        <Route path="/login" element={<Login />} />
-        <Route path="*" element={<Navigate to="/login" replace />} />
-      </Routes>
-    );
-  }
-
-  // 身份没确认前先不渲染业务页：否则 403 会先于角色跳转到达，页面闪一排红条。
-  if (meState === "loading") {
-    return (
-      <div
-        style={{
-          minHeight: "100vh",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          gap: 12,
-          background: "#f5f6f8",
-        }}
-      >
-        <Spin />
-        <Typography.Text type="secondary">正在校验登录状态…</Typography.Text>
-      </div>
-    );
-  }
-
-  if (meState === "failed") {
-    return (
-      <div
-        style={{
-          minHeight: "100vh",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          padding: 16,
-          background: "#f5f6f8",
-        }}
-      >
-        <Card style={{ maxWidth: 420, width: "100%" }}>
-          <Space direction="vertical" size="middle" style={{ width: "100%" }}>
-            <Typography.Title level={4} style={{ margin: 0 }}>
-              无法验证登录状态
-            </Typography.Title>
-            <Typography.Text type="secondary">
-              会话服务暂时不可用（或网络中断），后台无法确认你的账号，因此不会展示任何数据。
-              可以直接重试；如果反复失败，请重新登录并联系管理员。
-            </Typography.Text>
-            <Space>
-              <Button type="primary" onClick={() => window.location.reload()}>
-                重试
-              </Button>
-              <Button onClick={() => forceReauth("manual")}>重新登录</Button>
-            </Space>
-          </Space>
-        </Card>
-      </div>
-    );
-  }
-
-  // 两个方向都要拦：上剧方不许进员工页，员工也不许进合作方面（那边只会 403）。
-  const onPartnerPath = location.pathname.startsWith("/partner");
-  if (me?.role === "partner" && !onPartnerPath) {
-    return <Navigate to="/partner/dramas" replace />;
-  }
-  if (me !== null && me.role !== "partner" && onPartnerPath) {
-    return <Navigate to="/dashboard" replace />;
-  }
-
-  const currentTenant = tenants.find(t => t.id === tenantId);
-  const isIndia = currentTenant?.kind === "india_legacy";
-  const isPartner = me?.role === "partner";
-  const platformAdmin = me?.role === "admin";
-  const effectiveRole = platformAdmin ? "admin" : currentTenant?.own_role ?? currentTenant?.role ?? currentTenant?.ownrole ?? me?.role ?? "";
-  const effectiveMe = me ? { ...me, role: effectiveRole, platform_role: me.role } : null;
-  const contentKeys = ["/dramas", "/reviews", "/tags"];
-  const selectTenant = (id: string) => {
-    const row = tenants.find(t => t.id === id);
-    if (!row || row.status !== "active") { message.warning("此租户已暂停"); return; }
-    setCurrentTenantId(id); setTenantId(id);
-    navigate(row.kind === "india_legacy" ? "/india-content" : "/dramas", { replace: true });
-  };
-  if (!isPartner && tenantState !== "ready") return <div style={{ padding: 32 }}><Card>
-    {tenantState === "loading" ? <Space><Spin /><span>正在加载获授权租户…</span></Space> : <Space direction="vertical"><Alert type="error" message="无法加载租户，请重试" /><Button onClick={() => { setTenantState("loading"); void refreshTenants().catch(() => setTenantState("failed")); }}>重试</Button></Space>}
-  </Card></div>;
-  if (!isPartner && !currentTenant) return <div style={{ padding: 32 }}><Alert showIcon type="info" message="当前账号未获授权访问任何租户" description="请联系平台管理员分配租户权限。" /><Button style={{ marginTop: 16 }} onClick={() => void onLogout()}>退出登录</Button></div>;
-  const onTenantManagement = location.pathname === "/tenants";
-  if (!isPartner && !onTenantManagement && currentTenant?.status === "active") {
-    if (isIndia && location.pathname !== "/india-content") return <Navigate to="/india-content" replace />;
-    if (!isIndia && location.pathname === "/india-content") return <Navigate to="/dramas" replace />;
-    if (!isIndia && tenantId !== DEFAULT_TENANT_ID && effectiveRole === "finance" && !location.pathname.startsWith("/dramas")) return <Navigate to="/dramas" replace />;
-    if (!isIndia && tenantId !== DEFAULT_TENANT_ID && !contentKeys.some(key => location.pathname === key || location.pathname.startsWith(key + "/"))) return <Navigate to="/dramas" replace />;
-  }
-  const tenantItems = [...ITEMS, { key: "/tenants", label: "租户管理", roles: ["admin"] }, { key: "/india-content", label: "India 内容运营" }];
-  const selectedItem = [...tenantItems]
-    .sort((a, b) => b.key.length - a.key.length)
-    .find((item) => location.pathname === item.key || location.pathname.startsWith(`${item.key}/`));
-  const selected = selectedItem?.key ?? "/dramas";
-  const pageTitle = selectedItem?.label ?? "剧集管理";
-
-  // Role-gated entries stay hidden until `/auth/me` resolves, so a non-admin
-  // never sees a menu item that would only 403. Unrestricted items pass through.
-  const visibleItems = tenantItems.filter(item => {
-    if (item.key === "/tenants") return platformAdmin;
-    if (isPartner) return !!item.roles?.includes("partner");
-    if (isIndia) return item.key === "/india-content";
-    if (item.key === "/india-content") return false;
-    if (tenantId !== DEFAULT_TENANT_ID && !contentKeys.includes(item.key)) return false;
-    if (tenantId !== DEFAULT_TENANT_ID && effectiveRole === "finance") return item.key === "/dramas";
-    return !item.roles || item.roles.includes(effectiveRole);
-  });
-
-  const nav = (
-    <>
-      {!(isDesktop && siderCollapsed) && (
-        <div
-          style={{ color: "#E53B3E", fontSize: 18, fontWeight: 700, padding: "20px 16px 8px" }}
-        >
-          {me?.role === "partner" ? "JJTV 合作方" : "JJTV 后台"}
-        </div>
-      )}
-      <Menu
-        mode="inline"
-        style={{ borderInlineEnd: "none" }}
-        selectedKeys={[selected]}
-        items={visibleItems}
-        onClick={({ key }) => {
-          navigate(key);
-          setNavOpen(false);
-        }}
-      />
-    </>
-  );
-
-  return (
-    <TenantContext.Provider value={{ items: tenants, current: currentTenant, refresh: refreshTenants, select: selectTenant }}>
-    <MeContext.Provider value={effectiveMe}>
-      <Layout style={{ minHeight: "100vh", background: "#f5f6f8" }}>
-        {isDesktop ? (
-          <Sider
-            width={SIDER_WIDTH}
-            collapsedWidth={0}
-            collapsed={siderCollapsed}
-            trigger={null}
-            theme="light"
-            style={{ overflow: "hidden" }}
-          >
-            {nav}
-          </Sider>
-        ) : (
-          <Drawer
-            open={navOpen}
-            placement="left"
-            width={SIDER_WIDTH}
-            closable={false}
-            onClose={() => setNavOpen(false)}
-            styles={{ body: { padding: 0 } }}
-          >
-            {nav}
-          </Drawer>
-        )}
-        <Layout style={{ minWidth: 0 }}>
-          <Header
-            style={{
-              background: "#fff",
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              gap: 12,
-              paddingInline: isNarrow ? 12 : 24,
-              borderBottom: "1px solid #f0f0f0",
-            }}
-          >
-            <Space size={4}>
-              {isDesktop ? (
-                <Button
-                  type="text"
-                  aria-label={siderCollapsed ? "展开导航" : "收起导航"}
-                  icon={siderCollapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
-                  onClick={() => setSiderCollapsed((value) => !value)}
-                />
-              ) : (
-                <Button
-                  type="text"
-                  aria-label="打开导航菜单"
-                  icon={<MenuOutlined />}
-                  onClick={() => setNavOpen(true)}
-                />
-              )}
-              {!isNarrow && <Typography.Text strong style={{ fontSize: 15 }}>{pageTitle}</Typography.Text>}
-            </Space>
-            <Space size={8}>
-              {!isPartner && <Select aria-label="当前租户" value={tenantId} onChange={selectTenant}
-                style={{ width: isNarrow ? 132 : 220 }} popupMatchSelectWidth={260}
-                options={tenants.map(t => ({ value: t.id, label: t.name + (t.status === "paused" ? " · 已暂停" : ""), disabled: t.status !== "active" }))} />}
-              {me && (
-                // 账号区即退出入口：头像 + 名字 + 角色，点开是「退出登录」菜单。
-                <Dropdown menu={accountMenu(me)} placement="bottomRight" trigger={["click"]}>
-                  <Button
-                    type="text"
-                    aria-label="账号菜单"
-                    loading={loggingOut}
-                    style={{ paddingInline: 8, height: 40 }}
-                  >
-                    <Space size={8}>
-                      <Avatar size={26} style={{ background: "#E53B3E", fontSize: 13 }}>
-                        {(me.display_name || me.username).slice(0, 1)}
-                      </Avatar>
-                      {!isNarrow && <Typography.Text ellipsis style={{ maxWidth: 160 }}>{me.display_name || me.username}</Typography.Text>}
-                      {!isNarrow && (
-                        <Tag color="red" style={{ marginInlineEnd: 0 }}>
-                          {ROLE_LABELS[me.role] ?? me.role}
-                        </Tag>
-                      )}
-                      <DownOutlined style={{ fontSize: 10, color: "rgba(0,0,0,0.45)" }} />
-                    </Space>
-                  </Button>
-                </Dropdown>
-              )}
-            </Space>
-          </Header>
-          {/* Fluid container: the table fills the viewport instead of leaving a
-              dead column of whitespace on wide monitors. */}
-          <Content key={tenantId} style={{ padding: isNarrow ? 12 : 24, width: "100%", minWidth: 0 }}>
-            {!isPartner && <div className="tenant-context-bar"><Typography.Text strong>{currentTenant?.name}</Typography.Text><Typography.Text type="secondary">当前运营租户</Typography.Text><Tag style={{ margin: 0 }}>{ROLE_LABELS[effectiveRole] || effectiveRole}</Tag></div>}
-            {currentTenant?.status === "paused" && !onTenantManagement ? <Alert type="warning" showIcon message="此租户已暂停" description="请切换其他租户，或由平台管理员在租户管理中重新启用。" action={platformAdmin ? <Button onClick={() => navigate("/tenants")}>管理租户</Button> : undefined} /> : <Routes>
-              <Route path="/tenants" element={<Tenants />} />
-              <Route path="/india-content" element={<IndiaContent />} />
-              <Route path="/" element={<Navigate to="/dashboard" replace />} />
-              <Route path="/dashboard" element={<DashboardPage />} />
-              <Route path="/dramas" element={<Dramas />} />
-              <Route path="/dramas/:id" element={<DramaEdit />} />
-              <Route path="/reviews" element={<Reviews />} />
-              <Route path="/groups" element={<GroupsPage />} />
-              <Route path="/groups/:id" element={<GroupDetailPage />} />
-              <Route path="/users" element={<UsersPage />} />
-              {/* 入口已关闭：/ops 落到下面的 * 通配，自动回数据看板。 */}
-              {/* <Route path="/ops" element={<OpsCenterPage />} /> */}
-              <Route path="/home-ops" element={<HomeOpsPage />} />
-              <Route path="/rewards" element={<Rewards />} />
-              <Route path="/comments" element={<CommentsPage />} />
-              <Route path="/moderation" element={<Moderation />} />
-              <Route path="/finance" element={<FinancePage />} />
-              <Route path="/plans" element={<PlansPage />} />
-              <Route path="/tags" element={<Tags />} />
-              <Route path="/staff" element={<Staff />} />
-              <Route path="/suppliers" element={<Suppliers />} />
-              <Route path="/partner/dramas" element={<PartnerDramas />} />
-              <Route path="/partner/dramas/:id" element={<PartnerDramaEdit />} />
-              <Route path="/partner/api-keys" element={<PartnerApiKeys />} />
-              <Route path="/partner/stats" element={<PartnerStats />} />
-              <Route path="/partner/settlements" element={<PartnerSettlements />} />
-              <Route path="/settlements" element={<Settlements />} />
-              <Route path="/api-keys" element={<ApiKeys />} />
-              <Route path="*" element={<Navigate to="/dashboard" replace />} />
-            </Routes>}
-          </Content>
-        </Layout>
-      </Layout>
-      <ChangePasswordModal open={passwordOpen} onClose={() => setPasswordOpen(false)} />
-    </MeContext.Provider>
-    </TenantContext.Provider>
-  );
+    if (!support) return; const expires = supportSession()?.expires_at; if (!expires) return; const remaining = new Date(expires).getTime() - Date.now();
+    if (!Number.isFinite(remaining)) return; const timer = window.setTimeout(() => forceReauth('support_expired'), Math.max(0, remaining)); return () => window.clearTimeout(timer);
+  }, [support]);
+  const items = visibleNavigation({ menuKeys: identity.menu_keys, platformAdmin: false, partner, india: tenant.kind === 'india_legacy', tenantAdmin: systemAdmin });
+  const leaves = navigationLeaves(items); const first = leaves[0]?.key; const requested = [...leaves].sort((a, b) => b.key.length - a.key.length).find(item => location.pathname === item.key || location.pathname.startsWith(item.key + '/'));
+  const reviewDetail = tenant.kind === 'native' && /^\/dramas\/[^/]+$/.test(location.pathname) && identity.permissions.includes('reviews.view');
+  const contentKey = tenant.id + ':' + identity.permissions.slice().sort().join(',') + ':' + identity.menu_keys.slice().sort().join(',') + ':' + systemAdmin + ':' + identity.enabled_modules.slice().sort().join(',');
+  const session = supportSession();
+  const banner = support ? <Alert className="support-session-banner" type="warning" showIcon message={'平台临时访问 · ' + tenant.name}
+    description={<Space wrap><span>操作人：{session?.operator || identity.user.display_name || identity.user.username}</span>{session?.expires_at && <span>到期：{new Date(session.expires_at).toLocaleString()}</span>}<span>本次访问有时限，操作将记录审计。</span></Space>}
+    action={<Button onClick={onLogout} loading={loggingOut}>退出租户，返回平台</Button>} /> : undefined;
+  return <TenantContext.Provider value={{ current, items: [current], refresh, select: () => {} }}><BackOfficeShell brand={tenant.name + ' 后台'} items={items} route={location.pathname} scope={tenant.id} onNavigate={key => navigate(key)} accountName={identity.user.display_name || identity.user.username}
+    accountLabel={support ? '平台支持访问' : identity.is_tenant_admin ? '租户管理员' : identity.role_name} onLogout={onLogout} loadingLogout={loggingOut} onPassword={onPassword} contentKey={contentKey} banner={banner}
+    headerExtra={<Button type="text" aria-label="刷新当前租户权限" icon={<ReloadOutlined aria-hidden />} loading={refreshing} onClick={() => void refreshPermissions()} />}>
+    {error ? <Alert type="error" showIcon message={error} action={<Button onClick={() => void refreshPermissions()}>重试</Button>} /> : tenant.status !== 'active' ? <Alert type="warning" showIcon message="此租户已暂停" description="请联系平台管理员重新启用。" /> : !first ? <Alert type="info" showIcon message="当前账号没有已开放的菜单" description="请联系本租户管理员分配权限。" /> : !requested && !reviewDetail && location.pathname !== '/' ? <Navigate to={first} replace /> : <BusinessRoutes first={first} systemAdmin={systemAdmin} />}
+  </BackOfficeShell></TenantContext.Provider>;
+}
+function BusinessRoutes({ first, systemAdmin }: { first: string; systemAdmin: boolean }) {
+  return <Routes>
+    <Route path="/" element={<Navigate to={first} replace />} />
+    <Route path="/dashboard" element={<DashboardPage />} /><Route path="/dramas" element={<Dramas />} /><Route path="/dramas/:id" element={<DramaEdit />} /><Route path="/reviews" element={<Reviews />} />
+    <Route path="/groups" element={<GroupsPage />} /><Route path="/groups/:id" element={<GroupDetailPage />} /><Route path="/home-ops" element={<HomeOpsPage />} /><Route path="/tags" element={<Tags />} />
+    <Route path="/users" element={<UsersPage />} /><Route path="/rewards" element={<Rewards />} /><Route path="/comments" element={<CommentsPage />} /><Route path="/moderation" element={<Moderation />} />
+    <Route path="/plans" element={<PlansPage />} /><Route path="/finance" element={<FinancePage />} /><Route path="/suppliers" element={<Suppliers />} /><Route path="/settlements" element={<Settlements />} />
+    <Route path="/staff" element={systemAdmin ? <TenantStaff /> : <Navigate to={first} replace />} /><Route path="/roles" element={systemAdmin ? <TenantRolesPage /> : <Navigate to={first} replace />} /><Route path="/api-keys" element={systemAdmin ? <ApiKeys /> : <Navigate to={first} replace />} />
+    <Route path="/india-content" element={<IndiaContent />} />
+    <Route path="/partner/dramas" element={<PartnerDramas />} /><Route path="/partner/dramas/:id" element={<PartnerDramaEdit />} /><Route path="/partner/stats" element={<PartnerStats />} /><Route path="/partner/settlements" element={<PartnerSettlements />} /><Route path="/partner/api-keys" element={<PartnerApiKeys />} />
+    <Route path="*" element={<Navigate to={first} replace />} />
+  </Routes>;
 }

@@ -85,3 +85,11 @@ edge through a repository release command. Database migrations are not
 automatically reversed; keep database backups before subsequent upgrades.
 
 HTML entry points use Cache-Control: no-store and disable ETag/If-Modified-Since validation. Exact index locations also handle SPA fallback redirects, ensuring an older browser reload receives current HTML even when archived entry files have the same size and epoch mtime. Existing hashed-asset caching rules are retained.
+
+## Independent tenant account cutover
+
+Every video upgrade now stops the JJTV API before schema changes and writes a private backup under `/opt/jjtv/backups/<UTC>-<source SHA>/`. It verifies a full PostgreSQL custom archive, preserves the runtime environment and India client key directory, and exports account/permission snapshots before and after migration. The new-image helper checks original account IDs, password hashes, statuses, historical audit payloads and unaffected business table counts without exporting password hashes.
+
+Only migration-created tenant administrators and cloned tenant employees receive new one-time credentials, recorded in `tenant-credentials.json` with mode 0600 and initialization audit events. Existing platform accounts and original JJTV staff keep their passwords. New tenant accounts must change their temporary password on first login; India users reconnect their own old-site operator after signing in. JJTV content defaults are backfilled once, without replacing existing configuration; future native tenants initialize their own defaults on creation.
+
+A failed upgrade keeps the old API stopped and writes private diagnostics. After the independent identity migration, repair forward using the new account model; never restart the old global-account image against the migrated database. Database restore is a separately controlled recovery operation. Public DNS and old India services are unchanged.
