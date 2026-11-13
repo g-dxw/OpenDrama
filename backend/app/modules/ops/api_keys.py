@@ -56,6 +56,7 @@ RATE_LIMIT_ENV = "API_KEY_RATE_LIMIT"
 DEFAULT_RATE_LIMIT = 600  # requests per minute per key
 
 _STAFF_PATH = re.compile(r"^/admin/v1/(?:api-keys|staff)(?:/|$)")
+_TENANT_STAFF_PATH = re.compile(r"^/admin/v1/tenants/[^/]+(?:$|/(?:roles|members)(?:/|$))")
 _PARTNER_KEY_PATH = re.compile(r"^/partner/v1/(?:api-keys|auth/keys)(?:/|$)")
 _PARTNER_UPLOAD_PATH = re.compile(
     r"^/partner/v1/(?:episodes/\d+/(?:upload-session|upload-headers)"
@@ -106,7 +107,7 @@ def scope_for_request(method: str, path: str) -> str:
     if _SELF_CREDENTIAL.match(path):
         # Changing the account password must never be reachable with a key.
         return "staff"
-    if _STAFF_PATH.match(path):
+    if _STAFF_PATH.match(path) or _TENANT_STAFF_PATH.match(path) or (path == "/admin/v1/tenants" and method.upper() != "GET"):
         return "staff"
     if _PARTNER_KEY_PATH.match(path):
         # A supplier key may read its own key list (read scope); every mutation

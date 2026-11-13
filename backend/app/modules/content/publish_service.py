@@ -128,6 +128,10 @@ def apply_due_schedules(session: Session, now: datetime | None = None) -> int:
     ).all()
     count = 0
     for drama in due:
+        # Scheduling cannot bypass the same supplier approval gate as manual publication.
+        # Keep the plan pending so approval can make it eligible on a later run.
+        if drama.supplier_id is not None and drama.review_state != 'approved':
+            continue
         if drama.status == "unpublished":
             transition_drama(session, drama, "in_review")
         transition_drama(session, drama, "published")

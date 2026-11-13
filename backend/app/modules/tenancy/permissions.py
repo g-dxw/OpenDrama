@@ -32,6 +32,7 @@ for code, label, menu in GLOBAL_MODULES:
     if code not in ('dashboard','finance'):
         define(code+'.manage', '管理'+label, label, requires=[code+'.view'])
 ALL_KEYS = {item['key'] for item in CATALOG}
+STAFF_READ_KEYS = {item['key'] for item in CATALOG if item['key'].endswith('.view')} - CONTENT_KEYS - {'staff.view','api_keys.view','settlements.view'}
 INDIA_KEYS = {'dramas.view','dramas.edit','dramas.upload','dramas.publish','dramas.pricing','reviews.view','reviews.decide'}
 OPS_GLOBAL = {'dashboard.view','home_ops.view','home_ops.manage','rewards.view','rewards.manage','comments.view','comments.manage','moderation.view'}
 FINANCE_GLOBAL = {'dashboard.view','users.view','finance.view','settlements.view','settlements.manage','plans.view'}
@@ -87,7 +88,7 @@ def effective_grants(db, user, tenant):
     keys = set(role.permissions) & capability_keys(tenant)
     if tenant.id == DEFAULT_TENANT:
         # A tenant content role cannot turn an employee into a platform admin.
-        ceiling = OPS_GLOBAL if user.role == 'ops' else FINANCE_GLOBAL if user.role == 'finance' else set()
+        ceiling = (STAFF_READ_KEYS | OPS_GLOBAL) if user.role == 'ops' else (STAFF_READ_KEYS | FINANCE_GLOBAL) if user.role == 'finance' else set()
         keys &= CONTENT_KEYS | ceiling
     return dict(role_id=role.id, role_name=role.name, own_role=role.builtin_key or 'custom', permissions=sorted(keys), menu_keys=menus_for(tenant, keys), platform_admin=False)
 
@@ -107,7 +108,8 @@ def require_permission(request, *keys, any_of=False):
 # Every result is an OR-list; mixed-field commands add checks inside the handler.
 READ_CONTENT = ('dramas.view','reviews.view')
 CONTENT_RULES = [
- ('GET', r'dramas(?:/[0-9]+(?:/(?:episodes|preview))?)?', READ_CONTENT),
+ ('GET', r'dramas', ('dramas.view','reviews.view','groups.view','home_ops.view')),
+ ('GET', r'dramas/[0-9]+(?:/(?:episodes|preview))?', READ_CONTENT),
  ('GET', r'episodes/[0-9]+/preview-url', READ_CONTENT),
  ('GET', r'dramas/[0-9]+/groups', ('dramas.view','groups.view')),
  ('GET', r'search', READ_CONTENT),
@@ -136,8 +138,8 @@ CONTENT_RULES = [
  ('POST', r'tags', ('tags.manage',)),
  ('PATCH', r'tags/[0-9]+', ('tags.manage',)),
  ('DELETE', r'tags/[0-9]+', ('tags.manage',)),
- ('GET', r'groups(?:/[0-9]+/dramas)?', ('groups.view',)),
- ('POST', r'groups(?:/[0-9]+/dramas)?', ('groups.manage',)),
+ ('GET', r'groups(?:/[0-9]+/dramas)?', ('groups.view','home_ops.view')),
+ ('POST', r'groups(?:/[0-9]+/dramas)?', ('groups.manage','home_ops.manage')),
  ('PATCH', r'groups/[0-9]+(?:/dramas/[0-9]+)?', ('groups.manage',)),
  ('DELETE', r'groups/[0-9]+/dramas/[0-9]+', ('groups.manage',)),
 ]
@@ -163,6 +165,10 @@ def authorize_native_request(request, tenant, grants):
         for pattern, module in GLOBAL_PREFIXES:
             if re.fullmatch(pattern, path):
                 view = request.method in ('GET','HEAD','OPTIONS') or (module == 'moderation' and path == 'moderation/test')
-                require_permission(request, module + ('.view' if view else '.manage'))
+                if view and module == 'plans' and path in {'plans','billing/settings'}:
+                    # User membership and order details use the public plan catalog.
+                    require_permission(request, 'plans.view','users.view','finance.view', any_of=True)
+                else:
+                    require_permission(request, module + ('.view' if view else '.manage'))
                 return
     deny(('registered_tenant_action',))

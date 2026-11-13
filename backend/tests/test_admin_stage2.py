@@ -49,7 +49,8 @@ def test_finance_role_cannot_write_content(make, session, client):
 
     r = client.post("/admin/v1/dramas", json={"title": "X"}, headers=headers)
     assert r.status_code == 403
-    assert "cannot write content" in r.json()["detail"]
+    assert r.json()["detail"]["code"] == "tenant_permission_denied"
+    assert r.json()["detail"]["required"] == ["dramas.edit"]
 
     # finance may read
     r = client.get("/admin/v1/dramas", headers=headers)

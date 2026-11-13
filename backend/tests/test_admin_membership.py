@@ -364,7 +364,8 @@ def test_ops_can_read_but_not_write(session, make, client):
     user = make.user(email="ops@example.com")
     headers = _staff(client, make, role="ops")
 
-    assert client.get(f"/admin/v1/users/{user.id}/membership", headers=headers).status_code == 200
+    # The default ops role has no users menu permission.
+    assert client.get(f"/admin/v1/users/{user.id}/membership", headers=headers).status_code == 403
     for response in (
         client.post(
             f"/admin/v1/users/{user.id}/membership",

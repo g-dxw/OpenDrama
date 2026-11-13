@@ -78,7 +78,10 @@ def read_connection(db, request, user):
         raise HTTPException(409, detail={"code": "india_auth_required", "message": "旧站授权已失效，请重新连接"}) from None
 
 def save_connection(db, request, user, data, *, commit=True):
-    tenant_access(db, user, INDIA_TENANT)
+    tenant, _ = tenant_access(db, user, INDIA_TENANT)
+    if not set(effective_grants(db, user, tenant)['permissions']) & {'dramas.view','reviews.view'}:
+        from app.modules.tenancy.permissions import deny
+        deny(('dramas.view','reviews.view'))
     key = connection_key(request)
     value = connection_cipher().encrypt(json.dumps(data, ensure_ascii=False).encode()).decode()
     row = db.get(IndiaConnection, (INDIA_TENANT, user.id, key))

@@ -112,6 +112,60 @@ def test_role_catalog_and_CRUD_require_platform_admin_and_version_match(ctx):
     assert unused["id"] not in {item["id"] for item in role_catalog(ctx, tenant)["roles"]}
 
 
+def test_admin_api_key_requires_staff_scope_for_tenant_authorization_changes(ctx):
+    client, owner_headers = ctx["client"], ctx["owner_headers"]
+    tenant = new_tenant(ctx)
+    role = create_role(ctx, tenant, ["dramas.view"], "Protected role")
+
+    def issue(name, scopes):
+        result = client.post("/admin/v1/api-keys", json={"user_id": ctx["owner"].id, "name": name,
+                             "scopes": scopes, "expires_in_days": 90}, headers=owner_headers)
+        assert result.status_code == 201, result.text
+        return {"Authorization": "Bearer " + result.json()["key"]}
+
+    narrowed = issue("Tenant content bot", ["read", "write"])
+    privileged = issue("Tenant permission manager", ["read", "write", "staff"])
+    directory = client.get(ROOT, headers=narrowed)
+    assert directory.status_code == 200 and tenant in {item["id"] for item in directory.json()}
+    member_body = {"members": [{"user_id": ctx["operator"].id, "role_id": role["id"]}]}
+    denied = [
+        ("GET", ROOT + f"/{tenant}/roles", None),
+        ("GET", ROOT + f"/{tenant}/members", None),
+        ("POST", ROOT, {"name": "Forbidden key-created tenant"}),
+        ("PATCH", ROOT + f"/{tenant}", {"name": "Unauthorized rename", "status": "paused"}),
+        ("POST", ROOT + f"/{tenant}/roles", {"name": "Unauthorized grant", "permissions": sorted(CONTENT_KEYS)}),
+        ("PATCH", ROOT + f"/{tenant}/roles/{role['id']}", {"version": role["version"], "permissions": sorted(CONTENT_KEYS)}),
+        ("DELETE", ROOT + f"/{tenant}/roles/{role['id']}?version={role['version']}", None),
+        ("PUT", ROOT + f"/{tenant}/members", member_body),
+    ]
+    for method, path, payload in denied:
+        kwargs = {"headers": narrowed}
+        if payload is not None: kwargs["json"] = payload
+        result = client.request(method, path, **kwargs)
+        assert result.status_code == 403, (method, path, result.text)
+        assert result.json()["detail"]["code"] == "scope_denied"
+    catalog = role_catalog(ctx, tenant)
+    assert next(item for item in catalog["roles"] if item["id"] == role["id"])["permissions"] == ["dramas.view"]
+    assert client.get(ROOT + f"/{tenant}/members", headers=owner_headers).json()["members"] == []
+    directory = client.get(ROOT, headers=owner_headers).json()
+    assert next(item for item in directory if item["id"] == tenant)["status"] == "active"
+    assert not any(item["name"] == "Forbidden key-created tenant" for item in directory)
+
+    assert client.get(ROOT + f"/{tenant}/roles", headers=privileged).status_code == 200
+    assert client.get(ROOT + f"/{tenant}/members", headers=privileged).status_code == 200
+    assert client.post(ROOT, json={"name": "Staff-scoped key tenant"}, headers=privileged).status_code == 201
+    assert client.patch(ROOT + f"/{tenant}", json={"name": "Authorized rename"}, headers=privileged).status_code == 200
+    created = client.post(ROOT + f"/{tenant}/roles", json={"name": "Staff-scoped role", "permissions": ["tags.view"]}, headers=privileged)
+    assert created.status_code == 201, created.text
+    editable = created.json()
+    edited = client.patch(ROOT + f"/{tenant}/roles/{editable['id']}", json={"version": editable["version"], "name": "Staff-scoped edited"}, headers=privileged)
+    assert edited.status_code == 200, edited.text
+    assert client.put(ROOT + f"/{tenant}/members", json=member_body, headers=privileged).status_code == 200
+    assert client.delete(ROOT + f"/{tenant}/roles/{editable['id']}?version={edited.json()['version']}", headers=privileged).status_code == 200
+    # Even a staff-scoped key cannot open the interactive old-site authorization surface.
+    assert client.get(INDIA + "/session", headers=privileged).status_code == 403
+
+
 @pytest.mark.parametrize("permissions", [["dramas.*"], ["platform.superadmin"], ["dramas.edit"], ["reviews.decide"], ["tags.manage"], ["groups.manage"]])
 def test_unknown_permissions_and_missing_view_dependencies_are_rejected(ctx, permissions):
     tenant = new_tenant(ctx)
@@ -154,6 +208,52 @@ def test_role_changes_revoke_actions_and_menu_entries_without_relogin(ctx):
     assert set(row["permissions"]) == {"tags.view"} and row["role_name"] == "Now tags only"
     assert catalog["tags.view"]["menu_key"] in row["menu_keys"]
     assert catalog["dramas.view"]["menu_key"] not in row["menu_keys"]
+
+
+def test_explicit_users_view_grant_allows_ops_membership_read_without_writes(ctx):
+    client = ctx["client"]
+    account = ctx["make"].user(email="custom-users-view@example.com")
+    path = f"/admin/v1/users/{account.id}/membership"
+    headers = ctx["operator_headers"]
+    assert client.get(path, headers=headers).status_code == 403
+    role = create_role(ctx, DEFAULT_TENANT, ["users.view"], "Membership support reader")
+    assign(ctx, DEFAULT_TENANT, ctx["operator"], role)
+    current = next(item for item in client.get(ROOT, headers=headers).json() if item["id"] == DEFAULT_TENANT)
+    assert current["permissions"] == ["users.view"] and current["menu_keys"] == ["/users"]
+    detail = client.get(path, headers=headers)
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["user"]["id"] == account.id and detail.json()["active"] is False
+    listed = client.get("/admin/v1/users", headers=headers)
+    assert listed.status_code == 200 and account.id in {item["id"] for item in listed.json()["items"]}
+    writes = [
+        ("POST", path, {"plan_code": "monthly", "days": 30, "reason": "Forbidden grant"}),
+        ("DELETE", path, {"mode": "now", "reason": "Forbidden revoke"}),
+        ("PATCH", f"/admin/v1/users/{account.id}", {"display_name": "Unauthorized change"}),
+    ]
+    for method, target, payload in writes:
+        denied = client.request(method, target, json=payload, headers=headers)
+        assert denied.status_code == 403, denied.text
+        assert denied.json()["detail"]["code"] == "tenant_permission_denied"
+        assert denied.json()["detail"]["required"] == ["users.manage"]
+    unchanged = client.get(path, headers=headers).json()
+    assert unchanged["active"] is False and unchanged["user"]["display_name"] == account.display_name
+
+
+def test_explicit_rewards_view_grant_allows_finance_read_without_writes(ctx):
+    client, headers = ctx["client"], ctx["finance_headers"]
+    assert client.get("/admin/v1/rewards/config", headers=headers).status_code == 403
+    role = create_role(ctx, DEFAULT_TENANT, ["rewards.view"], "Rewards finance reader")
+    assign(ctx, DEFAULT_TENANT, ctx["finance"], role)
+    current = next(item for item in client.get(ROOT, headers=headers).json() if item["id"] == DEFAULT_TENANT)
+    assert current["permissions"] == ["rewards.view"] and current["menu_keys"] == ["/rewards"]
+    overview = client.get("/admin/v1/rewards/config", headers=headers)
+    assert overview.status_code == 200, overview.text
+    assert "ad" in {item["code"] for item in overview.json()["items"]}
+    denied = client.post("/admin/v1/rewards/config", json={"code": "ad", "amounts": [99]}, headers=headers)
+    assert denied.status_code == 403, denied.text
+    assert denied.json()["detail"]["code"] == "tenant_permission_denied"
+    assert denied.json()["detail"]["required"] == ["rewards.manage"]
+    assert client.get("/admin/v1/rewards/config", headers=headers).json() == overview.json()
 
 
 def test_edit_permission_does_not_allow_pricing_or_partial_mixed_patch(ctx):
@@ -372,6 +472,41 @@ def test_publish_permission_works_without_metadata_edit_permission(ctx):
     assert ctx["client"].patch(f"/admin/v1/dramas/{drama.id}", json={"title": "No metadata authority"}, headers=headers).status_code == 403
     ctx["db"].expire_all()
     assert ctx["db"].get(Drama, drama.id).status == "published"
+
+
+@pytest.mark.parametrize("review_state", ["pending", "rejected"])
+def test_scheduled_publish_cannot_bypass_supplier_review(ctx, review_state):
+    from app.modules.ops.models import Supplier
+
+    role = create_role(ctx, DEFAULT_TENANT, ["dramas.view", "dramas.publish"], "Publisher without review authority")
+    assign(ctx, DEFAULT_TENANT, ctx["operator"], role)
+    supplier = Supplier(name="Scheduled supplier")
+    ctx["db"].add(supplier); ctx["db"].flush()
+    due_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+    blocked = Drama(tenant_id=DEFAULT_TENANT, supplier_id=supplier.id, title="Unapproved scheduled content",
+                    status="in_review", review_state=review_state, free_episode_count=1, scheduled_publish_at=due_at)
+    approved = Drama(tenant_id=DEFAULT_TENANT, supplier_id=supplier.id, title="Approved scheduled content",
+                     status="in_review", review_state="approved", free_episode_count=1, scheduled_publish_at=due_at)
+    ctx["db"].add_all([blocked, approved]); ctx["db"].flush()
+    ctx["db"].add_all([Episode(drama_id=drama.id, episode_number=1, status="published", bunny_video_id="fake-scheduled-video")
+                       for drama in (blocked, approved)])
+    ctx["db"].commit()
+    headers = ctx["operator_headers"]
+    direct = ctx["client"].post(f"/admin/v1/dramas/{blocked.id}/status", json={"to_status": "published"}, headers=headers)
+    assert direct.status_code == 409 and direct.json()["detail"]["code"] == "not_approved"
+    applied = ctx["client"].post("/admin/v1/schedules/apply", json={}, headers=headers)
+    assert applied.status_code == 200, applied.text
+    assert applied.json()["published"] == 1
+    ctx["db"].expire_all()
+    stored = ctx["db"].get(Drama, blocked.id)
+    assert stored.status == "in_review" and stored.review_state == review_state
+    assert stored.scheduled_publish_at == due_at and stored.published_at is None
+    published = ctx["db"].get(Drama, approved.id)
+    assert published.status == "published" and published.scheduled_publish_at is None
+    assert ctx["client"].get(f"/v1/preview/dramas/{blocked.id}").status_code == 404
+    assert ctx["client"].get(f"/v1/preview/dramas/{approved.id}").status_code == 200
+    public_ids = {drama["id"] for group in ctx["client"].get("/v1/preview").json()["categories"] for drama in group["dramas"]}
+    assert blocked.id not in public_ids and approved.id in public_ids
 
 
 def test_custom_role_does_not_bypass_native_tenant_object_ownership(ctx):
