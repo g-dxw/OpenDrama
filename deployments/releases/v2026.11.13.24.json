@@ -1,0 +1,23 @@
+{
+  "version": "v2026.11.13.24",
+  "target": "video",
+  "status": "failed",
+  "sha": "04d67963b33de9516aab5b1a1307e7983d6f2908",
+  "short_sha": "04d67963",
+  "command": [
+    "python3",
+    "/mnt/c/Users/Administrator/AppData/Local/Temp/jjtv-client-release-20261113/coordinator.py"
+  ],
+  "exit_code": 1,
+  "started_at": "2026-11-13T22:55:53+08:00",
+  "finished_at": "2026-11-13T22:56:40+08:00",
+  "operator": {
+    "user": "root",
+    "host": "MM-202608191734",
+    "pid": 14365,
+    "agent_session": null,
+    "cwd": "/mnt/d/workspace/new"
+  },
+  "note": "User-approved one-time India API21bcc5c/main-CI-browser exception; candidate d1cf1219, adapter96c12c47, preserve worker/financial modules; ops.admin-only client password; then JJTV04d6796 PR6.",
+  "dirty": false
+}
