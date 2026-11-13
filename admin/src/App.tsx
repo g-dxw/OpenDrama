@@ -25,6 +25,7 @@ import {
   MenuFoldOutlined,
   MenuOutlined,
   MenuUnfoldOutlined,
+  ReloadOutlined,
 } from "@ant-design/icons";
 import { api, clearToken, forceReauth, getToken, isDeadCredential } from "./api";
 import { MeContext, ROLE_LABELS, type Me } from "./me";
@@ -103,6 +104,8 @@ export default function App() {
   const token = getToken();
   const [me, setMe] = useState<Me | null>(null);
   const [tenants, setTenants] = useState<Tenant[]>([]);
+  const [permissionError, setPermissionError] = useState("");
+  const [refreshingPermissions, setRefreshingPermissions] = useState(false);
   const [tenantId, setTenantId] = useState(getCurrentTenantId);
   const [tenantState, setTenantState] = useState<"loading" | "ready" | "failed">("loading");
   const refreshTenants = useCallback(async () => {
@@ -174,6 +177,19 @@ export default function App() {
     setTenantState("loading");
     void refreshTenants().catch(() => setTenantState("failed"));
   }, [token, meState, me?.id, me?.role, refreshTenants]);
+
+  const refreshPermissions = useCallback(async () => {
+    setRefreshingPermissions(true);
+    try { const [identity] = await Promise.all([api<Me>("/admin/v1/auth/me"), refreshTenants()]); setMe(identity); setPermissionError(""); }
+    catch { setPermissionError("权限信息暂时无法更新，请重试后继续操作。"); }
+    finally { setRefreshingPermissions(false); }
+  }, [refreshTenants]);
+  useEffect(() => {
+    if (!token || meState !== "ready" || !me || me.role === "partner") return;
+    const onFocus = () => { void refreshPermissions(); };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [token, meState, me?.id, me?.role, refreshPermissions]);
 
   useEffect(() => {
     setNavOpen(false);
@@ -297,30 +313,30 @@ export default function App() {
   }
 
   const currentTenant = tenants.find(t => t.id === tenantId);
-  const isIndia = currentTenant?.kind === "india_legacy";
   const isPartner = me?.role === "partner";
   const platformAdmin = me?.role === "admin";
-  const effectiveRole = platformAdmin ? "admin" : currentTenant?.own_role ?? currentTenant?.role ?? currentTenant?.ownrole ?? me?.role ?? "";
-  const effectiveMe = me ? { ...me, role: effectiveRole, platform_role: me.role } : null;
-  const contentKeys = ["/dramas", "/reviews", "/tags"];
+  const effectiveRole = currentTenant?.role_name || currentTenant?.own_role || me?.role || "";
+  const effectiveMe = me ? { ...me, platform_role: me.role, permissions: currentTenant?.permissions ?? [], menu_keys: currentTenant?.menu_keys ?? [], tenant_role_name: currentTenant?.role_name } : null;
+  const allowedMenus = new Set(currentTenant?.menu_keys ?? []);
+  const tenantItems = [...ITEMS, { key: "/tenants", label: "租户管理", roles: ["admin"] }, { key: "/india-content", label: "India 内容运营" }];
+  const firstMenu = tenantItems.find(item => item.key !== "/tenants" && allowedMenus.has(item.key))?.key;
   const selectTenant = (id: string) => {
     const row = tenants.find(t => t.id === id);
     if (!row || row.status !== "active") { message.warning("此租户已暂停"); return; }
-    setCurrentTenantId(id); setTenantId(id);
-    navigate(row.kind === "india_legacy" ? "/india-content" : "/dramas", { replace: true });
+    setCurrentTenantId(id); setTenantId(id); setPermissionError("");
+    const target = tenantItems.find(item => item.key !== "/tenants" && (row.menu_keys ?? []).includes(item.key))?.key;
+    navigate(target || "/", { replace: true });
   };
   if (!isPartner && tenantState !== "ready") return <div style={{ padding: 32 }}><Card>
     {tenantState === "loading" ? <Space><Spin /><span>正在加载获授权租户…</span></Space> : <Space direction="vertical"><Alert type="error" message="无法加载租户，请重试" /><Button onClick={() => { setTenantState("loading"); void refreshTenants().catch(() => setTenantState("failed")); }}>重试</Button></Space>}
   </Card></div>;
   if (!isPartner && !currentTenant) return <div style={{ padding: 32 }}><Alert showIcon type="info" message="当前账号未获授权访问任何租户" description="请联系平台管理员分配租户权限。" /><Button style={{ marginTop: 16 }} onClick={() => void onLogout()}>退出登录</Button></div>;
   const onTenantManagement = location.pathname === "/tenants";
-  if (!isPartner && !onTenantManagement && currentTenant?.status === "active") {
-    if (isIndia && location.pathname !== "/india-content") return <Navigate to="/india-content" replace />;
-    if (!isIndia && location.pathname === "/india-content") return <Navigate to="/dramas" replace />;
-    if (!isIndia && tenantId !== DEFAULT_TENANT_ID && effectiveRole === "finance" && !location.pathname.startsWith("/dramas")) return <Navigate to="/dramas" replace />;
-    if (!isIndia && tenantId !== DEFAULT_TENANT_ID && !contentKeys.some(key => location.pathname === key || location.pathname.startsWith(key + "/"))) return <Navigate to="/dramas" replace />;
+  if (!isPartner && !onTenantManagement && currentTenant?.status === "active" && firstMenu) {
+    const requested = [...tenantItems].sort((a, b) => b.key.length - a.key.length).find(item => location.pathname === item.key || location.pathname.startsWith(item.key + "/"));
+    const reviewDetail = /^\/dramas\/[^/]+$/.test(location.pathname) && (currentTenant.permissions ?? []).includes("reviews.view");
+    if ((!requested || !allowedMenus.has(requested.key)) && !reviewDetail) return <Navigate to={firstMenu} replace />;
   }
-  const tenantItems = [...ITEMS, { key: "/tenants", label: "租户管理", roles: ["admin"] }, { key: "/india-content", label: "India 内容运营" }];
   const selectedItem = [...tenantItems]
     .sort((a, b) => b.key.length - a.key.length)
     .find((item) => location.pathname === item.key || location.pathname.startsWith(`${item.key}/`));
@@ -332,11 +348,7 @@ export default function App() {
   const visibleItems = tenantItems.filter(item => {
     if (item.key === "/tenants") return platformAdmin;
     if (isPartner) return !!item.roles?.includes("partner");
-    if (isIndia) return item.key === "/india-content";
-    if (item.key === "/india-content") return false;
-    if (tenantId !== DEFAULT_TENANT_ID && !contentKeys.includes(item.key)) return false;
-    if (tenantId !== DEFAULT_TENANT_ID && effectiveRole === "finance") return item.key === "/dramas";
-    return !item.roles || item.roles.includes(effectiveRole);
+    return allowedMenus.has(item.key);
   });
 
   const nav = (
@@ -419,6 +431,7 @@ export default function App() {
               {!isNarrow && <Typography.Text strong style={{ fontSize: 15 }}>{pageTitle}</Typography.Text>}
             </Space>
             <Space size={8}>
+              {!isPartner && <Button type="text" aria-label="刷新租户权限" icon={<ReloadOutlined aria-hidden />} loading={refreshingPermissions} onClick={() => void refreshPermissions()} />}
               {!isPartner && <Select aria-label="当前租户" value={tenantId} onChange={selectTenant}
                 style={{ width: isNarrow ? 132 : 220 }} popupMatchSelectWidth={260}
                 options={tenants.map(t => ({ value: t.id, label: t.name + (t.status === "paused" ? " · 已暂停" : ""), disabled: t.status !== "active" }))} />}
@@ -450,12 +463,12 @@ export default function App() {
           </Header>
           {/* Fluid container: the table fills the viewport instead of leaving a
               dead column of whitespace on wide monitors. */}
-          <Content key={tenantId} style={{ padding: isNarrow ? 12 : 24, width: "100%", minWidth: 0 }}>
+          <Content key={tenantId + ":" + (currentTenant?.permissions ?? []).slice().sort().join(",") + ":" + (currentTenant?.menu_keys ?? []).slice().sort().join(",") + ":" + (currentTenant?.role_id ?? "")} style={{ padding: isNarrow ? 12 : 24, width: "100%", minWidth: 0 }}>
             {!isPartner && <div className="tenant-context-bar"><Typography.Text strong>{currentTenant?.name}</Typography.Text><Typography.Text type="secondary">当前运营租户</Typography.Text><Tag style={{ margin: 0 }}>{ROLE_LABELS[effectiveRole] || effectiveRole}</Tag></div>}
-            {currentTenant?.status === "paused" && !onTenantManagement ? <Alert type="warning" showIcon message="此租户已暂停" description="请切换其他租户，或由平台管理员在租户管理中重新启用。" action={platformAdmin ? <Button onClick={() => navigate("/tenants")}>管理租户</Button> : undefined} /> : <Routes>
+            {permissionError && !onTenantManagement ? <Alert type="error" showIcon message={permissionError} action={<Button onClick={() => void refreshPermissions()} loading={refreshingPermissions}>重试</Button>} /> : currentTenant?.status === "paused" && !onTenantManagement ? <Alert type="warning" showIcon message="此租户已暂停" description="请切换其他租户，或由平台管理员在租户管理中重新启用。" action={platformAdmin ? <Button onClick={() => navigate("/tenants")}>管理租户</Button> : undefined} /> : !isPartner && !firstMenu && !onTenantManagement ? <Alert type="info" showIcon message="当前租户角色未开放任何菜单" description="请联系平台管理员分配角色权限。" /> : <Routes>
               <Route path="/tenants" element={<Tenants />} />
               <Route path="/india-content" element={<IndiaContent />} />
-              <Route path="/" element={<Navigate to="/dashboard" replace />} />
+              <Route path="/" element={<Navigate to={firstMenu || "/tenants"} replace />} />
               <Route path="/dashboard" element={<DashboardPage />} />
               <Route path="/dramas" element={<Dramas />} />
               <Route path="/dramas/:id" element={<DramaEdit />} />
@@ -481,7 +494,7 @@ export default function App() {
               <Route path="/partner/settlements" element={<PartnerSettlements />} />
               <Route path="/settlements" element={<Settlements />} />
               <Route path="/api-keys" element={<ApiKeys />} />
-              <Route path="*" element={<Navigate to="/dashboard" replace />} />
+              <Route path="*" element={<Navigate to={firstMenu || "/tenants"} replace />} />
             </Routes>}
           </Content>
         </Layout>

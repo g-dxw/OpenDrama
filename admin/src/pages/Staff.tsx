@@ -17,7 +17,7 @@ import {
 import { api, errorText } from "../api";
 import { useConfirm } from "../confirm";
 import { formatTime, useLoad } from "../hooks";
-import { ROLE_LABELS, ROLE_OPTIONS, useIsAdmin, useMe } from "../me";
+import { ROLE_LABELS, ROLE_OPTIONS, useIsAdmin, useMe, usePermission } from "../me";
 
 type StaffRow = {
   id: number;
@@ -49,6 +49,7 @@ function roleTag(role: string) {
 export default function Staff() {
   const me = useMe();
   const isAdmin = useIsAdmin();
+  const canManage = usePermission("staff.manage") && isAdmin;
   const { confirm, confirmModal } = useConfirm();
 
   const [query, setQuery] = useState("");
@@ -72,12 +73,14 @@ export default function Staff() {
   const [createForm] = Form.useForm();
 
   const openCreate = () => {
+    if (!canManage) return;
     createForm.resetFields();
     createForm.setFieldsValue({ role: "ops", password: randomPassword() });
     setCreateOpen(true);
   };
 
   const onCreate = async (values: any) => {
+    if (!canManage) return;
     try {
       await api("/admin/v1/staff", { method: "POST", body: JSON.stringify(values) });
       message.success(`已创建账号 ${values.username}`);
@@ -93,12 +96,13 @@ export default function Staff() {
   const [editForm] = Form.useForm();
 
   const openEdit = (row: StaffRow) => {
+    if (!canManage) return;
     setEditing(row);
     editForm.setFieldsValue({ display_name: row.display_name, role: row.role });
   };
 
   const onEdit = async (values: any) => {
-    if (!editing) return;
+    if (!editing || !canManage) return;
     try {
       await api(`/admin/v1/staff/${editing.id}`, {
         method: "PATCH",
@@ -119,6 +123,7 @@ export default function Staff() {
   const [resetting, setResetting] = useState(false);
 
   const openReset = (row: StaffRow) => {
+    if (!canManage) return;
     setResetTarget(row);
     setGenerated(randomPassword());
     setAcknowledged(false);
@@ -134,7 +139,7 @@ export default function Staff() {
   };
 
   const onReset = async () => {
-    if (!resetTarget) return;
+    if (!resetTarget || !canManage) return;
     setResetting(true);
     try {
       await api(`/admin/v1/staff/${resetTarget.id}/password`, {
@@ -157,12 +162,13 @@ export default function Staff() {
   const [disabling, setDisabling] = useState(false);
 
   const openDisable = (row: StaffRow) => {
+    if (!canManage) return;
     setDisableTarget(row);
     setReason("");
   };
 
   const onDisable = async () => {
-    if (!disableTarget) return;
+    if (!disableTarget || !canManage) return;
     setDisabling(true);
     try {
       await api(`/admin/v1/staff/${disableTarget.id}/status`, {
@@ -180,11 +186,13 @@ export default function Staff() {
   };
 
   const onEnable = (row: StaffRow) => {
+    if (!canManage) return;
     confirm({
       title: `启用账号 ${row.username}`,
       content: "启用后该账号可以立即用原密码登录（若密码已被重置，请使用新密码）。",
       okText: "启用",
       onOk: async () => {
+        if (!canManage) return;
         try {
           await api(`/admin/v1/staff/${row.id}/status`, {
             method: "POST",
@@ -214,7 +222,7 @@ export default function Staff() {
   return (
     <Space direction="vertical" style={{ width: "100%" }} size="middle">
       <Space wrap>
-        <Button type="primary" onClick={openCreate}>
+        <Button type="primary" disabled={!canManage} onClick={openCreate}>
           + 新增账号
         </Button>
         <Input.Search
@@ -317,10 +325,10 @@ export default function Staff() {
               const self = row.id === me?.id;
               return (
                 <Space size={4}>
-                  <Button type="link" size="small" onClick={() => openEdit(row)}>
+                  <Button type="link" size="small" disabled={!canManage} onClick={() => openEdit(row)}>
                     编辑
                   </Button>
-                  <Button type="link" size="small" onClick={() => openReset(row)}>
+                  <Button type="link" size="small" disabled={!canManage} onClick={() => openReset(row)}>
                     重置密码
                   </Button>
                   {row.status === "active" ? (
@@ -329,14 +337,14 @@ export default function Staff() {
                         type="link"
                         size="small"
                         danger
-                        disabled={self}
+                        disabled={self || !canManage}
                         onClick={() => openDisable(row)}
                       >
                         禁用
                       </Button>
                     </Tooltip>
                   ) : (
-                    <Button type="link" size="small" onClick={() => onEnable(row)}>
+                    <Button type="link" size="small" disabled={!canManage} onClick={() => onEnable(row)}>
                       启用
                     </Button>
                   )}
@@ -353,9 +361,10 @@ export default function Staff() {
         onCancel={() => setCreateOpen(false)}
         onOk={() => createForm.submit()}
         okText="创建"
+        okButtonProps={{ disabled: !canManage }}
         forceRender
       >
-        <Form form={createForm} layout="vertical" onFinish={onCreate} preserve={false}>
+        <Form form={createForm} disabled={!canManage} layout="vertical" onFinish={onCreate} preserve={false}>
           <Form.Item
             label="账号"
             name="username"
@@ -405,9 +414,10 @@ export default function Staff() {
         onCancel={() => setEditing(null)}
         onOk={() => editForm.submit()}
         okText="保存"
+        okButtonProps={{ disabled: !canManage }}
         forceRender
       >
-        <Form form={editForm} layout="vertical" onFinish={onEdit} preserve={false}>
+        <Form form={editForm} disabled={!canManage} layout="vertical" onFinish={onEdit} preserve={false}>
           <Form.Item label="显示名" name="display_name">
             <Input maxLength={64} />
           </Form.Item>
@@ -417,7 +427,7 @@ export default function Staff() {
             extra={editing?.id === me?.id ? "不能修改自己的角色" : undefined}
             rules={[{ required: true }]}
           >
-            <Select options={ROLE_OPTIONS} disabled={editing?.id === me?.id} />
+            <Select options={ROLE_OPTIONS} disabled={!canManage || editing?.id === me?.id} />
           </Form.Item>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             账号（用户名）创建后不可修改；改角色只影响写权限，不影响已登录会话。
@@ -430,7 +440,7 @@ export default function Staff() {
         open={resetTarget !== null}
         onCancel={() => setResetTarget(null)}
         okText="确认重置"
-        okButtonProps={{ danger: true, disabled: !acknowledged, loading: resetting }}
+        okButtonProps={{ danger: true, disabled: !acknowledged || !canManage, loading: resetting }}
         onOk={onReset}
         destroyOnHidden
       >
@@ -449,9 +459,10 @@ export default function Staff() {
               onFocus={(e) => e.target.select()}
             />
             <Button onClick={copyPassword}>复制</Button>
-            <Button onClick={() => setGenerated(randomPassword())}>重新生成</Button>
+            <Button disabled={!canManage} onClick={() => setGenerated(randomPassword())}>重新生成</Button>
           </Space.Compact>
           <Checkbox
+            disabled={!canManage}
             checked={acknowledged}
             onChange={(e) => setAcknowledged(e.target.checked)}
           >
@@ -465,7 +476,7 @@ export default function Staff() {
         open={disableTarget !== null}
         onCancel={() => setDisableTarget(null)}
         okText="确认禁用"
-        okButtonProps={{ danger: true, loading: disabling }}
+        okButtonProps={{ danger: true, loading: disabling, disabled: !canManage }}
         onOk={onDisable}
         destroyOnHidden
       >
@@ -479,6 +490,7 @@ export default function Staff() {
           <div style={{ marginBottom: 12 }}>
             <div style={{ marginBottom: 6, fontSize: 13 }}>禁用原因（可选）</div>
             <Input.TextArea
+              disabled={!canManage}
               rows={3}
               maxLength={200}
               showCount

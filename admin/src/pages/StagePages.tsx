@@ -48,7 +48,7 @@ import {
 } from "@ant-design/icons";
 import { ApiError, api, errorText } from "../api";
 import { useConfirm } from "../confirm";
-import { useIsAdmin } from "../me";
+import { useIsAdmin, usePermission } from "../me";
 
 function useLoad<T>(path: string, fallback: T) {
   const [data, setData] = useState<T>(fallback);
@@ -897,6 +897,8 @@ function UserCell({ row }: { row: AdminUserRow }) {
 
 /** 行内「调账」弹窗：预选用户、方向切换、快捷金额、改后余额实时预览。 */
 function CoinAdjustModal({ user, onClose, onSaved }: { user: AdminUserRow; onClose: () => void; onSaved: (text: string) => void }) {
+  const isAdmin = useIsAdmin();
+  const canManage = usePermission("users.manage") && isAdmin;
   const [form] = Form.useForm<{ amount: number; reason: string }>();
   const [direction, setDirection] = useState<"add" | "sub">("add");
   const [saving, setSaving] = useState(false);
@@ -906,6 +908,7 @@ function CoinAdjustModal({ user, onClose, onSaved }: { user: AdminUserRow; onClo
   const negative = after < 0;
 
   const submit = async () => {
+    if (!canManage) return;
     const values = await form.validateFields().catch(() => null);
     if (!values) return; // antd 已经把出错字段标红了
     setSaving(true);
@@ -928,7 +931,7 @@ function CoinAdjustModal({ user, onClose, onSaved }: { user: AdminUserRow; onClo
       okText="确认调账"
       cancelText="取消"
       confirmLoading={saving}
-      okButtonProps={{ disabled: negative }}
+      okButtonProps={{ disabled: !canManage || negative }}
       onOk={submit}
       onCancel={onClose}
     >
@@ -949,7 +952,7 @@ function CoinAdjustModal({ user, onClose, onSaved }: { user: AdminUserRow; onClo
             </span>
           </Space>
         </Card>
-        <Form
+        <Form disabled={!canManage}
           form={form}
           layout="vertical"
           initialValues={{ amount: 100, reason: "" }}
@@ -995,10 +998,13 @@ function CoinAdjustModal({ user, onClose, onSaved }: { user: AdminUserRow; onClo
 
 /** 行内「编辑」弹窗：管理员修改昵称 / 邮箱 / 性别 / 地区 / 语言 / 头像 / 简介。 */
 function UserEditModal({ user, onClose, onSaved }: { user: AdminUserRow; onClose: () => void; onSaved: (text: string) => void }) {
+  const isAdmin = useIsAdmin();
+  const canManage = usePermission("users.manage") && isAdmin;
   const [form] = Form.useForm();
   const [saving, setSaving] = useState(false);
 
   const submit = async () => {
+    if (!canManage) return;
     const values = await form.validateFields().catch(() => null);
     if (!values) return; // antd 已经把出错字段标红了
     setSaving(true);
@@ -1019,10 +1025,11 @@ function UserEditModal({ user, onClose, onSaved }: { user: AdminUserRow; onClose
       cancelText="取消"
       width={560}
       confirmLoading={saving}
+      okButtonProps={{ disabled: !canManage }}
       onOk={submit}
       onCancel={onClose}
     >
-      <Form
+      <Form disabled={!canManage}
         form={form}
         layout="vertical"
         initialValues={{
@@ -1127,6 +1134,7 @@ function previewExpiry(detail: MembershipDetail | null, days: number, mode: stri
 /** 行内「会员」弹窗：真实状态 + 开通/续期 + 取消会员。 */
 function MembershipModal({ user, onClose, onSaved }: { user: AdminUserRow; onClose: () => void; onSaved: (text: string) => void }) {
   const isAdmin = useIsAdmin();
+  const canManage = usePermission("users.manage") && isAdmin;
   const [detail, setDetail] = useState<MembershipDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [granting, setGranting] = useState(false);
@@ -1177,6 +1185,7 @@ function MembershipModal({ user, onClose, onSaved }: { user: AdminUserRow; onClo
   const overwrite = mode === "restart" && remainDays > 0;
 
   const submitGrant = async () => {
+    if (!canManage) return;
     const values = await form.validateFields().catch(() => null);
     if (!values) return;
     setGranting(true);
@@ -1198,6 +1207,7 @@ function MembershipModal({ user, onClose, onSaved }: { user: AdminUserRow; onClo
   };
 
   const submitRevoke = async () => {
+    if (!canManage) return;
     const values = await revokeForm.validateFields().catch(() => null);
     if (!values) return;
     setRevoking(true);
@@ -1268,8 +1278,8 @@ function MembershipModal({ user, onClose, onSaved }: { user: AdminUserRow; onClo
             </Space>
           </Card>
 
-          {!isAdmin ? (
-            <Alert type="info" showIcon message="仅管理员可调整会员，当前账号只读。" />
+          {!canManage ? (
+            <Alert type="info" showIcon message="当前账号没有用户管理权限，会员信息只读。" />
           ) : (
             <>
               <Form
@@ -1403,6 +1413,7 @@ function MembershipModal({ user, onClose, onSaved }: { user: AdminUserRow; onClo
 
 export function UsersPage() {
   const isAdmin = useIsAdmin();
+  const canManage = usePermission("users.manage") && isAdmin;
   const [keyword, setKeyword] = useState("");
   const [query, setQuery] = useState("");
   const [coinTarget, setCoinTarget] = useState<AdminUserRow | null>(null);
@@ -1427,7 +1438,7 @@ export function UsersPage() {
     reload();
   };
 
-  const adminOnly = isAdmin ? "" : "仅管理员可操作";
+  const adminOnly = canManage ? "" : "需要用户管理权限和平台管理员角色";
 
   return (
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
@@ -1516,17 +1527,17 @@ export function UsersPage() {
               render: (_, row) => (
                 <Space size={0}>
                   <Tooltip title={adminOnly}>
-                    <Button type="link" size="small" disabled={!isAdmin} onClick={() => setCoinTarget(row)}>
+                    <Button type="link" size="small" disabled={!canManage} onClick={() => setCoinTarget(row)}>
                       调账
                     </Button>
                   </Tooltip>
                   <Tooltip title={adminOnly}>
-                    <Button type="link" size="small" disabled={!isAdmin} onClick={() => setEditTarget(row)}>
+                    <Button type="link" size="small" disabled={!canManage} onClick={() => setEditTarget(row)}>
                       编辑
                     </Button>
                   </Tooltip>
                   <Button type="link" size="small" onClick={() => setMemberTarget(row)}>
-                    {row.member ? "会员" : isAdmin ? "开通" : "会员"}
+                    {row.member ? "会员" : canManage ? "开通" : "会员"}
                   </Button>
                 </Space>
               ),
@@ -1583,6 +1594,7 @@ type CommentCounts = { pending: number; approved: number; deleted: number; total
 const EMPTY_COMMENT_COUNTS: CommentCounts = { pending: 0, approved: 0, deleted: 0, total: 0 };
 
 export function CommentsPage() {
+  const canManage = usePermission("comments.manage");
   const [status, setStatus] = useState("");
   const [q, setQ] = useState("");
   const [page, setPage] = useState(1);
@@ -1617,6 +1629,7 @@ export function CommentsPage() {
   }, [status, page, pageSize, q]);
 
   const moderate = async (row: CommentRow, next: "approved" | "deleted") => {
+    if (!canManage) return;
     try {
       await api(`/admin/v1/comments/${row.id}`, {
         method: "POST",
@@ -1806,10 +1819,10 @@ export function CommentsPage() {
             width: 150,
             render: (_, row) => (
               <Space>
-                <Button size="small" disabled={row.status === "approved"} onClick={() => moderate(row, "approved")}>
+                <Button size="small" disabled={!canManage || row.status === "approved"} onClick={() => moderate(row, "approved")}>
                   通过
                 </Button>
-                <Button size="small" danger disabled={row.status === "deleted"} onClick={() => moderate(row, "deleted")}>
+                <Button size="small" danger disabled={!canManage || row.status === "deleted"} onClick={() => moderate(row, "deleted")}>
                   删除
                 </Button>
               </Space>
@@ -2529,6 +2542,8 @@ function dollarsToCents(value: number) {
 }
 
 export function PlansPage() {
+  const isAdmin = useIsAdmin();
+  const canManage = usePermission("plans.manage") && isAdmin;
   const { data, reload, loading } = useLoad<{ items: PlanItem[]; billing_mode?: BillingMode }>(
     "/admin/v1/plans",
     { items: [] },
@@ -2545,7 +2560,7 @@ export function PlansPage() {
   }, [data.billing_mode]);
 
   const switchMode = async () => {
-    if (!pendingMode) return;
+    if (!canManage || !pendingMode) return;
     setSwitching(true);
     try {
       const result = await api<{ billing_mode: BillingMode; prices: { code: string; ok: boolean }[] }>(
@@ -2570,6 +2585,7 @@ export function PlansPage() {
   };
 
   const openEdit = (plan: PlanItem) => {
+    if (!canManage) return;
     setEditing(plan);
     form.setFieldsValue({
       price: Number(centsToDollars(plan.price_cents)),
@@ -2584,7 +2600,7 @@ export function PlansPage() {
   };
 
   const onSave = async (values: { price: number; benefits: string; best: boolean }) => {
-    if (!editing) return;
+    if (!canManage || !editing) return;
     const priceCents = dollarsToCents(values.price);
     if (!Number.isFinite(priceCents) || priceCents <= 0) {
       message.error("价格必须大于 0");
@@ -2642,7 +2658,7 @@ export function PlansPage() {
               全局生效，三个套餐共用
             </Typography.Text>
           </Space>
-          <Segmented
+          <Segmented disabled={!canManage}
             value={mode}
             options={[
               { label: "自动续费", value: "subscription" },
@@ -2665,6 +2681,7 @@ export function PlansPage() {
         okText="确认切换"
         cancelText="取消"
         confirmLoading={switching}
+        okButtonProps={{ disabled: !canManage }}
         onCancel={() => (switching ? undefined : setPendingMode(null))}
         onOk={switchMode}
       >
@@ -2814,6 +2831,7 @@ export function PlansPage() {
                     icon={<EditOutlined />}
                     block
                     size="middle"
+                    disabled={!canManage}
                     onClick={() => openEdit(plan)}
                     style={{ borderRadius: 6, fontWeight: 500 }}
                   >
@@ -2835,13 +2853,14 @@ export function PlansPage() {
         okText="保存新版本"
         cancelText="取消"
         confirmLoading={saving}
+        okButtonProps={{ disabled: !canManage }}
         maskClosable={!saving}
         keyboard={!saving}
         destroyOnClose
         width={480}
       >
         {editing ? (
-          <Form form={form} layout="vertical" onFinish={onSave} requiredMark={false} style={{ marginTop: 8 }}>
+          <Form disabled={!canManage} form={form} layout="vertical" onFinish={onSave} requiredMark={false} style={{ marginTop: 8 }}>
             <Alert
               type="warning"
               showIcon
@@ -3095,10 +3114,11 @@ export function PublishPanel({
   const [deleting, setDeleting] = useState(false);
   const { confirm, confirmModal } = useConfirm();
   const navigate = useNavigate();
-  // 删除剧集是高危操作，后端只放行 admin（docs/software-architecture.md 角色矩阵）。
-  const isAdmin = useIsAdmin();
+  const canPublish = usePermission("dramas.publish");
+  const canDelete = usePermission("dramas.delete");
 
   const submitStatus = async (to_status: string, label: string) => {
+    if (!canPublish) return;
     setBusy(to_status);
     try {
       await api(`/admin/v1/dramas/${dramaId}/status`, {
@@ -3138,6 +3158,7 @@ export function PublishPanel({
   };
 
   const onDelete = async () => {
+    if (!canDelete) return;
     setDeleting(true);
     let impact: DeleteImpact | null = null;
     try {
@@ -3145,7 +3166,7 @@ export function PublishPanel({
     } catch (e) {
       message.error(
         e instanceof ApiError && e.status === 403
-          ? "删除失败：只有管理员可以删除剧集，请用 admin 账号登录"
+          ? "删除失败：当前租户角色无删除权限，请刷新权限后重试"
           : `获取删除影响范围失败：${errorText(e)}`,
       );
       return;
@@ -3179,7 +3200,7 @@ export function PublishPanel({
         } catch (e) {
           message.error(
             e instanceof ApiError && e.status === 403
-              ? "删除失败：只有管理员可以删除剧集，请用 admin 账号登录"
+              ? "删除失败：当前租户角色无删除权限，请刷新权限后重试"
               : `删除失败：${errorText(e)}`,
           );
           throw e;
@@ -3233,7 +3254,7 @@ export function PublishPanel({
       )}
 
       <Space wrap>
-        {actions.map((action) => (
+        {(canPublish ? actions : []).map((action) => (
           <Button
             key={action.to}
             type={action.primary ? "primary" : "default"}
@@ -3251,14 +3272,7 @@ export function PublishPanel({
         流程：草稿 → 提交审核 → 上架；已上架可下架，下架后可重新上架。
       </Typography.Text>
 
-      <Tooltip title={isAdmin ? "" : "仅管理员可删除剧集"}>
-        {/* Tooltip 在 disabled 元素上不触发，所以包一层 span */}
-        <span style={{ display: "inline-block" }}>
-          <Button danger disabled={!isAdmin} loading={deleting} onClick={onDelete}>
-            删除剧集
-          </Button>
-        </span>
-      </Tooltip>
+      {canDelete && <Button danger loading={deleting} onClick={onDelete}>删除剧集</Button>}
 
       </Space>
 

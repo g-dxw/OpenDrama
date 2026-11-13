@@ -14,6 +14,7 @@ import {
 import { api, errorText } from "../api";
 import { useConfirm } from "../confirm";
 import { formatTime, useLoad } from "../hooks";
+import { useIsAdmin, usePermission } from "../me";
 
 type SupplierAccount = {
   id: number;
@@ -35,6 +36,10 @@ type SupplierRow = {
 };
 
 export default function Suppliers() {
+  const isAdmin = useIsAdmin();
+  const canManage = usePermission("suppliers.manage") && isAdmin;
+  const canManageStaff = usePermission("staff.manage");
+  const canManageAccounts = canManage && canManageStaff;
   const { confirm, confirmModal } = useConfirm();
   const { data, reload, loading } = useLoad<{ items: SupplierRow[] }>("/admin/v1/suppliers", {
     items: [],
@@ -50,12 +55,14 @@ export default function Suppliers() {
   const [accountForm] = Form.useForm();
 
   const openCreate = () => {
+    if (!canManage) return;
     createForm.resetFields();
     createForm.setFieldsValue({ revenue_share_bps: 80 });
     setCreateOpen(true);
   };
 
   const onCreate = async (values: any) => {
+    if (!canManage) return;
     try {
       await api("/admin/v1/suppliers", {
         method: "POST",
@@ -76,6 +83,7 @@ export default function Suppliers() {
   };
 
   const openShare = (row: SupplierRow) => {
+    if (!canManage) return;
     setShareTarget(row);
     shareForm.setFieldsValue({
       share_percent: row.revenue_share_bps / 100,
@@ -84,7 +92,7 @@ export default function Suppliers() {
   };
 
   const onShare = async (values: any) => {
-    if (!shareTarget) return;
+    if (!shareTarget || !canManage) return;
     try {
       await api(`/admin/v1/suppliers/${shareTarget.id}/share`, {
         method: "POST",
@@ -102,6 +110,7 @@ export default function Suppliers() {
   };
 
   const onToggle = (row: SupplierRow) => {
+    if (!canManage) return;
     const disabling = row.status === "active";
     confirm({
       title: `${disabling ? "禁用" : "启用"}供应商：${row.name}`,
@@ -111,6 +120,7 @@ export default function Suppliers() {
       danger: disabling,
       okText: disabling ? "禁用" : "启用",
       onOk: async () => {
+        if (!canManage) return;
         try {
           await api(`/admin/v1/suppliers/${row.id}/status`, {
             method: "POST",
@@ -127,13 +137,14 @@ export default function Suppliers() {
   };
 
   const openAccount = (row: SupplierRow) => {
+    if (!canManageAccounts) return;
     setAccountTarget(row);
     accountForm.resetFields();
     accountForm.setFieldsValue({ username: `sp-${row.id}` });
   };
 
   const onAccount = async (values: any) => {
-    if (!accountTarget) return;
+    if (!accountTarget || !canManageAccounts) return;
     try {
       await api("/admin/v1/staff", {
         method: "POST",
@@ -156,7 +167,7 @@ export default function Suppliers() {
   return (
     <Space direction="vertical" style={{ width: "100%" }} size="middle">
       <Space wrap>
-        <Button type="primary" onClick={openCreate}>
+        <Button type="primary" disabled={!canManage} onClick={openCreate}>
           + 新建供应商
         </Button>
         <Typography.Text type="secondary">
@@ -199,7 +210,7 @@ export default function Suppliers() {
                   </div>
                 </div>
               ) : (
-                <Button size="small" onClick={() => openAccount(row)}>
+                <Button size="small" disabled={!canManageAccounts} onClick={() => openAccount(row)}>
                   创建账号
                 </Button>
               ),
@@ -224,13 +235,14 @@ export default function Suppliers() {
             width: 180,
             render: (_, row) => (
               <Space size={4}>
-                <Button type="link" size="small" onClick={() => openShare(row)}>
+                <Button type="link" size="small" disabled={!canManage} onClick={() => openShare(row)}>
                   改分成
                 </Button>
                 <Button
                   type="link"
                   size="small"
                   danger={row.status === "active"}
+                  disabled={!canManage}
                   onClick={() => onToggle(row)}
                 >
                   {row.status === "active" ? "禁用" : "启用"}
@@ -247,9 +259,10 @@ export default function Suppliers() {
         onCancel={() => setCreateOpen(false)}
         onOk={() => createForm.submit()}
         okText="创建"
+        okButtonProps={{ disabled: !canManage }}
         forceRender
       >
-        <Form form={createForm} layout="vertical" onFinish={onCreate} preserve={false}>
+        <Form form={createForm} disabled={!canManage} layout="vertical" onFinish={onCreate} preserve={false}>
           <Form.Item
             label="供应商名称"
             name="name"
@@ -284,9 +297,10 @@ export default function Suppliers() {
         onCancel={() => setShareTarget(null)}
         onOk={() => shareForm.submit()}
         okText="保存"
+        okButtonProps={{ disabled: !canManage }}
         forceRender
       >
-        <Form form={shareForm} layout="vertical" onFinish={onShare} preserve={false}>
+        <Form form={shareForm} disabled={!canManage} layout="vertical" onFinish={onShare} preserve={false}>
           <Form.Item
             label="新分成比例（%）"
             name="share_percent"
@@ -309,9 +323,10 @@ export default function Suppliers() {
         onCancel={() => setAccountTarget(null)}
         onOk={() => accountForm.submit()}
         okText="创建账号"
+        okButtonProps={{ disabled: !canManageAccounts }}
         forceRender
       >
-        <Form form={accountForm} layout="vertical" onFinish={onAccount} preserve={false}>
+        <Form form={accountForm} disabled={!canManageAccounts} layout="vertical" onFinish={onAccount} preserve={false}>
           <Form.Item
             label="登录账号"
             name="username"

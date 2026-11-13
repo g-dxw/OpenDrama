@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Button, Card, Drawer, Empty, Form, Input, Modal, Popconfirm, QRCode, Select, Space, Spin, Table, Tabs, Tag, Typography, message } from "antd";
 import { LinkOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import { api } from "../api";
-import { useMe } from "../me";
+import { usePermission } from "../me";
 import { useTenant } from "../tenant";
 import { INDIA_BASE, indiaApi, indiaErrorText, STATUS, type IndiaSeries, type IndiaSession } from "./india-api";
 import IndiaSeriesForm from "./IndiaSeriesForm";
@@ -14,7 +14,6 @@ type Enrollment = { secret_base32: string; otpauth_uri: string; expires_at?: str
 const id = encodeURIComponent;
 export default function IndiaContent() {
   const { current } = useTenant();
-  const me = useMe();
   const [session, setSession] = useState<IndiaSession | null>(null);
   const [sessionLoading, setSessionLoading] = useState(true);
   const [sessionError, setSessionError] = useState("");
@@ -44,11 +43,14 @@ export default function IndiaContent() {
   const detailGeneration = useRef(0);
   const listGeneration = useRef(0);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; detailGeneration.current++; listGeneration.current++; }; }, []);
-  const tenantRole = (me?.platform_role ?? me?.role) === "admin" ? "admin" : current?.own_role ?? me?.role;
-  const tenantWrite = ["admin", "ops"].includes(tenantRole || "");
-  const writable = tenantWrite && ["admin", "editor"].includes(session?.role || "");
-  const reviewer = tenantWrite && ["admin", "reviewer"].includes(session?.role || "");
-  const oldAdmin = tenantWrite && session?.role === "admin";
+  const oldEditor = ["admin", "editor"].includes(session?.role || "");
+  const oldReviewer = ["admin", "reviewer"].includes(session?.role || "");
+  const writable = usePermission("dramas.edit") && oldEditor;
+  const canUpload = usePermission("dramas.upload") && oldEditor;
+  const canPricing = usePermission("dramas.pricing") && oldEditor;
+  const reviewer = usePermission("reviews.decide") && oldReviewer;
+  const canPublish = usePermission("dramas.publish") && oldReviewer;
+  const oldAdmin = canUpload && session?.role === "admin";
   const readSession = useCallback(async () => {
     setSessionLoading(true); setSessionError("");
     try { const value = await api<IndiaSession>(INDIA_BASE + "/session"); if (mounted.current) setSession(value); }
@@ -136,6 +138,7 @@ export default function IndiaContent() {
   };
   const execute = async () => {
     if (!detail || !action || !actionReason.trim()) return;
+    if (action === "submit" ? !writable : action.startsWith("review") ? !reviewer : !canPublish) return;
     setActing(true);
     try {
       const operation = action.startsWith("review") ? "review" : action;
@@ -192,7 +195,7 @@ export default function IndiaContent() {
       </Space>
     </> : !sessionLoading && <Card><Empty description="连接旧站运营账号后，即可管理 India 的剧集和视频" /></Card>}
     <Modal title="新增 India 剧集" open={creating} onCancel={() => setCreating(false)} width={900} footer={null} destroyOnHidden>
-      {creating && <IndiaSeriesForm writable={writable} onSaved={row => { setCreating(false); openDetail(row.id); void load(); }} />}
+      {creating && <IndiaSeriesForm writable={writable} canPricing={canPricing} onSaved={row => { setCreating(false); openDetail(row.id); void load(); }} />}
     </Modal>
     <Drawer title={detail ? detail.title : "剧集详情"} open={!!selected && !!session?.connected} width="min(1120px, 100vw)"
       onClose={() => { setSelected(null); setDetail(null); detailGeneration.current++; }} destroyOnHidden
@@ -202,14 +205,14 @@ export default function IndiaContent() {
           <Typography.Text type="secondary">版本 {detail.version}</Typography.Text>
           {writable && <Button disabled={!["draft", "suspended", "expired"].includes(detail.status)} onClick={() => { setAction("submit"); setActionReason(""); }}>提交审核</Button>}
           {reviewer && <><Button disabled={detail.status !== "rights_review"} onClick={() => { setAction("review-approve"); setActionReason(""); }}>审核通过</Button>
-            <Button disabled={detail.status !== "rights_review"} onClick={() => { setAction("review-reject"); setActionReason(""); }}>审核退回</Button>
-            <Button type="primary" disabled={!["ready", "suspended"].includes(detail.status)} onClick={() => { setAction("publish"); setActionReason(""); }}>上架</Button>
+            <Button disabled={detail.status !== "rights_review"} onClick={() => { setAction("review-reject"); setActionReason(""); }}>审核退回</Button></>}
+           {canPublish && <><Button type="primary" disabled={!["ready", "suspended"].includes(detail.status)} onClick={() => { setAction("publish"); setActionReason(""); }}>上架</Button>
             <Button danger disabled={!["published", "scheduled"].includes(detail.status)} onClick={() => { setAction("unpublish"); setActionReason(""); }}>下架</Button></>}
         </Space>
         <Tabs items={[
-          { key: "metadata", label: "剧集资料与版权", children: <IndiaSeriesForm key={detail.id} record={detail} writable={writable} onSaved={() => changed()} /> },
-          { key: "episodes", label: "分集与视频", children: <IndiaEpisodes series={detail} writable={writable} oldAdmin={oldAdmin} onChanged={changed} /> },
-          { key: "files", label: "封面与版权证明", children: <IndiaAssets series={detail} writable={writable && !["published", "scheduled"].includes(detail.status)} onChanged={changed} /> },
+          { key: "metadata", label: "剧集资料与版权", children: <IndiaSeriesForm key={detail.id} record={detail} writable={writable} canPricing={canPricing} onSaved={() => changed()} /> },
+          { key: "episodes", label: "分集与视频", children: <IndiaEpisodes series={detail} writable={writable} canUpload={canUpload} oldAdmin={oldAdmin} onChanged={changed} /> },
+          { key: "files", label: "封面与版权证明", children: <IndiaAssets series={detail} writable={canUpload && !["published", "scheduled"].includes(detail.status)} onChanged={changed} /> },
         ]} />
       </>}
     </Drawer>

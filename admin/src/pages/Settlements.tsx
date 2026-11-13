@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Button, Input, Modal, Space, Table, Tag, Typography, message } from "antd";
 import { api, errorText } from "../api";
 import { formatTime, useLoad } from "../hooks";
+import { usePermission } from "../me";
 
 type Row = {
   id: number;
@@ -28,6 +29,7 @@ const money = (cents: number, currency = "USD") =>
   `${currency === "USD" ? "$" : ""}${(cents / 100).toFixed(2)}`;
 
 export default function Settlements() {
+  const canManage = usePermission("settlements.manage");
   const current = new Date().toISOString().slice(0, 7);
   const [month, setMonth] = useState(current);
   const [query, setQuery] = useState(current);
@@ -37,6 +39,7 @@ export default function Settlements() {
   );
 
   const generate = async () => {
+    if (!canManage) return;
     try {
       const result = await api<{ created: number; updated: number; skipped: number }>(
         "/admin/v1/settlements/generate",
@@ -52,6 +55,7 @@ export default function Settlements() {
   };
 
   const change = (row: Row, status: "confirmed" | "paid") => {
+    if (!canManage) return;
     Modal.confirm({
       title: status === "confirmed" ? "确认对账单" : "标记已打款",
       content:
@@ -59,7 +63,9 @@ export default function Settlements() {
           ? `确认 ${row.supplier?.name ?? ""} ${row.month} 的金额 ${money(row.revenue_cents, row.currency)}？确认后重新生成不会覆盖。`
           : `记录 ${row.month} 的 ${money(row.revenue_cents, row.currency)} 已打款？`,
       okText: status === "confirmed" ? "确认" : "已打款",
+      okButtonProps: { disabled: !canManage },
       onOk: async () => {
+        if (!canManage) return;
         try {
           await api(`/admin/v1/settlements/${row.id}/status`, {
             method: "POST",
@@ -85,7 +91,7 @@ export default function Settlements() {
           style={{ width: 160 }}
         />
         <Button onClick={() => setQuery(month)}>查询</Button>
-        <Button type="primary" onClick={generate}>
+        <Button type="primary" disabled={!canManage} onClick={generate}>
           生成 / 更新该月对账单
         </Button>
         <Typography.Text type="secondary">
@@ -149,12 +155,12 @@ export default function Settlements() {
             render: (_, row) => (
               <Space size={4}>
                 {row.status === "draft" && (
-                  <Button type="link" size="small" onClick={() => change(row, "confirmed")}>
+                  <Button type="link" size="small" disabled={!canManage} onClick={() => change(row, "confirmed")}>
                     确认
                   </Button>
                 )}
                 {row.status === "confirmed" && (
-                  <Button type="link" size="small" onClick={() => change(row, "paid")}>
+                  <Button type="link" size="small" disabled={!canManage} onClick={() => change(row, "paid")}>
                     标记打款
                   </Button>
                 )}

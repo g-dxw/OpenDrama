@@ -8,6 +8,11 @@ export type Tenant = {
   role?: string;
   own_role?: string;
   ownrole?: string;
+  permissions?: string[];
+  menu_keys?: string[];
+  role_id?: string | null;
+  role_name?: string;
+  platform_admin?: boolean;
 };
 export type TenantState = {
   items: Tenant[];

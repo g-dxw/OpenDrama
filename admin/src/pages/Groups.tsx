@@ -1,3 +1,4 @@
+import { usePermission } from "../me";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
@@ -142,6 +143,7 @@ function ListHead({ columns, labels }: { columns: string; labels: React.ReactNod
 }
 
 export default function GroupsPage() {
+  const canManage = usePermission("groups.manage");
   const [rows, setRows] = useState<GroupRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -177,6 +179,7 @@ export default function GroupsPage() {
   };
 
   const moveRow = async (fromId: number, toId: number) => {
+    if (!canManage) return;
     const from = ordered.findIndex((row) => row.id === fromId);
     const to = ordered.findIndex((row) => row.id === toId);
     if (from < 0 || to < 0 || from === to) return;
@@ -195,6 +198,7 @@ export default function GroupsPage() {
   };
 
   const saveName = async (values: { name: string }) => {
+    if (!canManage) return;
     const name = values.name.trim();
     if (!name) return;
     try {
@@ -216,6 +220,7 @@ export default function GroupsPage() {
   };
 
   const toggle = async (row: GroupRow) => {
+    if (!canManage) return;
     try {
       await api(`/admin/v1/groups/${row.id}`, {
         method: "PATCH",
@@ -249,6 +254,7 @@ export default function GroupsPage() {
         <Button
           type="primary"
           icon={<PlusOutlined />}
+          disabled={!canManage}
           style={{ fontWeight: 500 }}
           onClick={() => {
             setEditing(null);
@@ -306,7 +312,7 @@ export default function GroupsPage() {
                 <DragRow
                   key={row.id}
                   columns={GROUP_COLS}
-                  draggable
+                  draggable={canManage}
                   visual={visual}
                   style={{
                     padding: "10px 16px",
@@ -328,7 +334,7 @@ export default function GroupsPage() {
                     <>
                       {/* 排序手柄与圆角序号 */}
                       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <Handle onArm={onArm} />
+                        {canManage && <Handle onArm={onArm} />}
                         <span
                           style={{
                             display: "inline-flex",
@@ -421,6 +427,7 @@ export default function GroupsPage() {
                         <Button
                           type="text"
                           size="small"
+                          disabled={!canManage}
                           icon={<EditOutlined style={{ fontSize: 13, color: "#667085" }} />}
                           style={{ color: "#475467", paddingInline: 6 }}
                           onClick={() => {
@@ -440,7 +447,7 @@ export default function GroupsPage() {
                             cancelText="取消"
                             okButtonProps={{ danger: true }}
                           >
-                            <Button type="text" size="small" danger style={{ paddingInline: 6 }}>
+                            <Button disabled={!canManage} type="text" size="small" danger style={{ paddingInline: 6 }}>
                               停用
                             </Button>
                           </Popconfirm>
@@ -449,6 +456,7 @@ export default function GroupsPage() {
                             type="text"
                             size="small"
                             style={{ color: "#027a48", paddingInline: 6, fontWeight: 500 }}
+                            disabled={!canManage}
                             onClick={() => toggle(row)}
                           >
                             启用
@@ -477,9 +485,10 @@ export default function GroupsPage() {
         onCancel={() => setCreating(false)}
         onOk={() => form.submit()}
         okText="保存"
+        okButtonProps={{ disabled: !canManage }}
         destroyOnClose
       >
-        <Form form={form} layout="vertical" onFinish={saveName} style={{ marginTop: 12 }}>
+        <Form disabled={!canManage} form={form} layout="vertical" onFinish={saveName} style={{ marginTop: 12 }}>
           <Form.Item name="name" label="分组名称" rules={[{ required: true, message: "请填写分组名称" }]}>
             <Input maxLength={64} placeholder="例如：本周推荐、逆袭霸总" autoFocus />
           </Form.Item>
@@ -490,6 +499,7 @@ export default function GroupsPage() {
 }
 
 export function GroupDetailPage() {
+  const canManage = usePermission("groups.manage");
   const { id } = useParams();
   const [group, setGroup] = useState<GroupRow | null>(null);
   const [items, setItems] = useState<Member[]>([]);
@@ -522,6 +532,7 @@ export function GroupDetailPage() {
   };
 
   const moveRow = async (fromId: number, toId: number) => {
+    if (!canManage) return;
     const from = items.findIndex((row) => row.id === fromId);
     const to = items.findIndex((row) => row.id === toId);
     if (from < 0 || to < 0 || from === to) return;
@@ -543,6 +554,7 @@ export function GroupDetailPage() {
   };
 
   const remove = async (dramaId: number) => {
+    if (!canManage) return;
     try {
       await api(`/admin/v1/groups/${id}/dramas/${dramaId}`, { method: "DELETE" });
       message.success("已移出");
@@ -596,7 +608,7 @@ export function GroupDetailPage() {
         <Button
           type="primary"
           icon={<PlusOutlined />}
-          disabled={full}
+          disabled={!canManage || full}
           onClick={() => setPickerOpen(true)}
           style={{ fontWeight: 500 }}
         >
@@ -645,7 +657,7 @@ export function GroupDetailPage() {
                 <DragRow
                   key={row.id}
                   columns={DETAIL_COLS}
-                  draggable
+                  draggable={canManage}
                   visual={visual}
                   style={{
                     padding: "8px 16px",
@@ -667,7 +679,7 @@ export function GroupDetailPage() {
                     <>
                       {/* 排序手柄与圆角序号 */}
                       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <Handle onArm={onArm} />
+                        {canManage && <Handle onArm={onArm} />}
                         <span
                           style={{
                             display: "inline-flex",
@@ -722,7 +734,7 @@ export function GroupDetailPage() {
                           cancelText="取消"
                           okButtonProps={{ danger: true }}
                         >
-                          <Button type="text" size="small" danger icon={<DeleteOutlined />} style={{ paddingInline: 6 }}>
+                          <Button disabled={!canManage} type="text" size="small" danger icon={<DeleteOutlined />} style={{ paddingInline: 6 }}>
                             移出
                           </Button>
                         </Popconfirm>
@@ -772,6 +784,7 @@ function AddDramasModal({
   onClose: () => void;
   onSaved: () => Promise<void>;
 }) {
+  const canManage = usePermission("groups.manage");
   const [q, setQ] = useState("");
   const [catalog, setCatalog] = useState<DramaHit[]>([]);
   const [picked, setPicked] = useState<number[]>([]);
@@ -811,6 +824,7 @@ function AddDramasModal({
   };
 
   const confirm = async () => {
+    if (!canManage) return;
     setSaving(true);
     try {
       for (const dramaId of picked) {
@@ -836,7 +850,7 @@ function AddDramasModal({
       onOk={confirm}
       okText={picked.length ? `确认添加 (${picked.length})` : "确认添加"}
       cancelText="取消"
-      okButtonProps={{ disabled: picked.length === 0 }}
+      okButtonProps={{ disabled: !canManage || picked.length === 0 }}
       confirmLoading={saving}
       destroyOnClose
       width={560}
@@ -936,6 +950,7 @@ function AddDramasModal({
 }
 
 export function DramaGroupsPanel({ dramaId }: { dramaId: string }) {
+  const canManage = usePermission("groups.manage");
   const [rows, setRows] = useState<(GroupRow & { joined: boolean; position_in_group: number | null })[]>([]);
   const [loading, setLoading] = useState(false);
 
@@ -961,6 +976,7 @@ export function DramaGroupsPanel({ dramaId }: { dramaId: string }) {
   const available = rows.filter((row) => !row.joined);
 
   const join = async (groupId: number) => {
+    if (!canManage) return;
     try {
       await api(`/admin/v1/groups/${groupId}/dramas`, {
         method: "POST",
@@ -974,6 +990,7 @@ export function DramaGroupsPanel({ dramaId }: { dramaId: string }) {
   };
 
   const leave = async (groupId: number) => {
+    if (!canManage) return;
     try {
       await api(`/admin/v1/groups/${groupId}/dramas/${dramaId}`, { method: "DELETE" });
       message.success("已移出");
@@ -1029,7 +1046,7 @@ export function DramaGroupsPanel({ dramaId }: { dramaId: string }) {
         </div>
         {joinedCard ? (
           <Popconfirm title="从该分组移出？" onConfirm={() => leave(row.id)} okText="移出" cancelText="取消">
-            <Button size="small" danger block>
+            <Button disabled={!canManage} size="small" danger block>
               移出
             </Button>
           </Popconfirm>
@@ -1038,7 +1055,7 @@ export function DramaGroupsPanel({ dramaId }: { dramaId: string }) {
             {full ? "已满" : "已停用"}
           </Button>
         ) : (
-          <Button size="small" type="primary" ghost block onClick={() => join(row.id)}>
+          <Button disabled={!canManage} size="small" type="primary" ghost block onClick={() => join(row.id)}>
             加入
           </Button>
         )}

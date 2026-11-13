@@ -130,14 +130,17 @@ function EpisodeMedia({ episode, writable, admin, onChanged }: { episode: IndiaE
   </Space>;
 }
 
-export default function IndiaEpisodes({ series, writable, oldAdmin, onChanged }: { series: IndiaSeries; writable: boolean; oldAdmin: boolean; onChanged: () => void }) {
+export default function IndiaEpisodes({ series, writable, canUpload, oldAdmin, onChanged }: { series: IndiaSeries; writable: boolean; canUpload: boolean; oldAdmin: boolean; onChanged: () => void }) {
   const [adding, setAdding] = useState(false);
   const [form] = Form.useForm();
   const [saving, setSaving] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
-  const editable = writable && !["published", "scheduled"].includes(series.status);
+  const unlocked = !["published", "scheduled"].includes(series.status);
+  const editable = writable && unlocked;
+  const uploadable = canUpload && unlocked;
   const episode = series.episodes?.find(ep => ep.id === selected);
   const create = async () => {
+    if (!editable) return;
     const value = await form.validateFields().catch(() => null);
     if (!value) return;
     setSaving(true);
@@ -168,7 +171,7 @@ export default function IndiaEpisodes({ series, writable, oldAdmin, onChanged }:
       </Form>
     </Modal>
     <Modal title={episode ? "第 " + episode.episode_no + " 集 · " + episode.title : "分集媒体"} open={!!episode} onCancel={() => setSelected(null)} footer={null} width={820} destroyOnHidden>
-      {episode && <EpisodeMedia key={episode.id} episode={episode} writable={editable} admin={oldAdmin} onChanged={onChanged} />}
+      {episode && <EpisodeMedia key={episode.id} episode={episode} writable={uploadable} admin={oldAdmin && uploadable} onChanged={onChanged} />}
     </Modal>
   </Space>;
 }

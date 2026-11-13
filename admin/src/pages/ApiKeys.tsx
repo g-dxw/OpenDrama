@@ -17,7 +17,7 @@ import {
 import { api, errorText } from "../api";
 import { useConfirm } from "../confirm";
 import { formatTime, useLoad } from "../hooks";
-import { ROLE_LABELS } from "../me";
+import { ROLE_LABELS, useIsAdmin, usePermission } from "../me";
 
 type KeyState = "active" | "expiring" | "expired" | "revoked";
 
@@ -91,6 +91,8 @@ function scopeText(scopes: string[]): string {
 }
 
 export default function ApiKeys() {
+  const isAdmin = useIsAdmin();
+  const canManage = usePermission("api_keys.manage") && isAdmin;
   const { confirm, confirmModal } = useConfirm();
 
   const [query, setQuery] = useState("");
@@ -122,7 +124,7 @@ export default function ApiKeys() {
     { items: [], summary: { active: 0, expiring: 0, expired: 0, revoked: 0, total: 0 }, total: 0 }
   );
 
-  const staff = useLoad<{ items: StaffRow[] }>("/admin/v1/staff", { items: [] });
+  const staff = useLoad<{ items: StaffRow[] }>("/admin/v1/staff", { items: [] }, { enabled: canManage && createOpen });
   const staffOptions = useMemo(
     () =>
       staff.data.items
@@ -143,6 +145,7 @@ export default function ApiKeys() {
   }, [data.items, stateFilter]);
 
   const onCreate = async (values: any) => {
+    if (!canManage) return;
     try {
       const created = await api<KeyRow & { key: string }>("/admin/v1/api-keys", {
         method: "POST",
@@ -163,7 +166,7 @@ export default function ApiKeys() {
   };
 
   const onEdit = async (values: any) => {
-    if (!editing) return;
+    if (!editing || !canManage) return;
     try {
       await api(`/admin/v1/api-keys/${editing.id}`, {
         method: "PATCH",
@@ -178,11 +181,13 @@ export default function ApiKeys() {
   };
 
   const onRotate = (row: KeyRow) => {
+    if (!canManage) return;
     confirm({
       title: `轮换密钥 ${row.name}`,
       content: "旧密钥会立即失效，正在使用它的自动化会中断。",
       okText: "轮换",
       onOk: async () => {
+        if (!canManage) return;
         try {
           const fresh = await api<KeyRow & { key: string }>(
             `/admin/v1/api-keys/${row.id}/rotate`,
@@ -199,12 +204,14 @@ export default function ApiKeys() {
   };
 
   const onRevoke = (row: KeyRow) => {
+    if (!canManage) return;
     confirm({
       title: `撤销密钥 ${row.name}`,
       content: "撤销后立即失效且不可恢复；需要继续使用请新建或轮换。",
       okText: "撤销",
       danger: true,
       onOk: async () => {
+        if (!canManage) return;
         try {
           await api(`/admin/v1/api-keys/${row.id}/revoke`, {
             method: "POST",
@@ -221,12 +228,14 @@ export default function ApiKeys() {
   };
 
   const onDelete = (row: KeyRow) => {
+    if (!canManage) return;
     confirm({
       title: `删除密钥 ${row.name}`,
       content: "仅从未使用过的密钥可以删除。",
       okText: "删除",
       danger: true,
       onOk: async () => {
+        if (!canManage) return;
         try {
           await api(`/admin/v1/api-keys/${row.id}`, { method: "DELETE" });
           reload();
@@ -280,7 +289,7 @@ export default function ApiKeys() {
         <Space>
           <Button onClick={() => setAgentOpen(true)}>接入 Agent</Button>
           <Button onClick={() => reload()}>刷新</Button>
-          <Button type="primary" onClick={() => setCreateOpen(true)}>
+          <Button type="primary" disabled={!canManage} onClick={() => setCreateOpen(true)}>
             新建密钥
           </Button>
         </Space>
@@ -372,7 +381,7 @@ export default function ApiKeys() {
                   <Button
                     type="link"
                     size="small"
-                    disabled={revoked}
+                    disabled={revoked || !canManage}
                     onClick={() => {
                       setEditing(row);
                       editForm.setFieldsValue({ name: row.name, scopes: row.scopes });
@@ -384,7 +393,7 @@ export default function ApiKeys() {
                     <Button
                       type="link"
                       size="small"
-                      disabled={revoked}
+                      disabled={revoked || !canManage}
                       onClick={() => onRotate(row)}
                     >
                       轮换
@@ -394,7 +403,7 @@ export default function ApiKeys() {
                     type="link"
                     size="small"
                     danger
-                    disabled={revoked}
+                    disabled={revoked || !canManage}
                     onClick={() => onRevoke(row)}
                   >
                     撤销
@@ -404,7 +413,7 @@ export default function ApiKeys() {
                       type="link"
                       size="small"
                       danger
-                      disabled={row.last_used_at !== null}
+                      disabled={row.last_used_at !== null || !canManage}
                       onClick={() => onDelete(row)}
                     >
                       删除
@@ -427,6 +436,7 @@ export default function ApiKeys() {
         onCancel={() => setCreateOpen(false)}
         onOk={() => createForm.submit()}
         okText="签发"
+        okButtonProps={{ disabled: !canManage }}
         forceRender
         afterClose={() => {
           if (pendingSecret) {
@@ -437,6 +447,7 @@ export default function ApiKeys() {
       >
         <Form
           form={createForm}
+          disabled={!canManage}
           layout="vertical"
           onFinish={onCreate}
           preserve={false}
@@ -478,9 +489,10 @@ export default function ApiKeys() {
         onCancel={() => setEditing(null)}
         onOk={() => editForm.submit()}
         okText="保存"
+        okButtonProps={{ disabled: !canManage }}
         forceRender
       >
-        <Form form={editForm} layout="vertical" onFinish={onEdit}>
+        <Form form={editForm} disabled={!canManage} layout="vertical" onFinish={onEdit}>
           <Form.Item label="名称" name="name" rules={[{ required: true }]}>
             <Input maxLength={64} />
           </Form.Item>
