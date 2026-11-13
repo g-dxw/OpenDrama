@@ -22,8 +22,9 @@ Do not disable host-key verification.
 
 ```bash
 # Run after committing the desired source, from this same working tree.
-python3 scripts/build_frontends.py --node \
-  /mnt/c/Users/Administrator/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node.exe
+# Windows Node must use Windows Python so VITE_API_BASE reaches Vite.
+/mnt/d/workspace/new/minitv/.venv/Scripts/python.exe scripts/build_frontends.py --node \
+  C:/Users/Administrator/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node.exe
 python3 scripts/deploy_video.py --check
 python3 scripts/release.py status
 python3 scripts/release.py run --target video --note "JJTV isolated stack" -- \
@@ -93,3 +94,5 @@ Every video upgrade now stops the JJTV API before schema changes and writes a pr
 Only migration-created tenant administrators and cloned tenant employees receive new one-time credentials, recorded in `tenant-credentials.json` with mode 0600 and initialization audit events. Existing platform accounts and original JJTV staff keep their passwords. New tenant accounts must change their temporary password on first login; India users reconnect their own old-site operator after signing in. JJTV content defaults are backfilled once, without replacing existing configuration; future native tenants initialize their own defaults on creation.
 
 A failed upgrade keeps the old API stopped and writes private diagnostics. After the independent identity migration, repair forward using the new account model; never restart the old global-account image against the migrated database. Database restore is a separately controlled recovery operation. Public DNS and old India services are unchanged.
+
+When using Linux Python to build, select a Linux Node binary. WSL does not automatically forward a newly set `VITE_API_BASE` to a Windows Node child; Windows Python with Windows Node preserves the intended JJTV API origin. Verify the JJTV API literal in all three JavaScript builds before deployment.
