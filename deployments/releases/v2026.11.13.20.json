@@ -1,0 +1,29 @@
+{
+  "version": "v2026.11.13.20",
+  "target": "video-test-services",
+  "status": "published",
+  "sha": "7a896e606a4b506114865293491a0c865f23f3ce",
+  "short_sha": "7a896e60",
+  "command": [
+    "python3",
+    "scripts/test_tenancy_services.py",
+    "--credentials",
+    "/mnt/c/Users/Administrator/.codex/private/jjtv-tenancy-test-services.json",
+    "remote-run",
+    "tests/test_independent_tenants.py",
+    "-q",
+    "--maxfail=0"
+  ],
+  "exit_code": 0,
+  "started_at": "2026-11-13T20:10:36+08:00",
+  "finished_at": "2026-11-13T20:11:12+08:00",
+  "operator": {
+    "user": "root",
+    "host": "MM-202608191734",
+    "pid": 13886,
+    "agent_session": null,
+    "cwd": "/mnt/d/workspace/new/minitv"
+  },
+  "note": "Committed final audit resource response regression; frontend audit display pending local preview only, no product deployment",
+  "dirty": false
+}
