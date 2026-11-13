@@ -2,7 +2,7 @@
 
 JJTV 是基于 MiniTV 的短剧分发与运营项目，包含官网、H5、Flutter App、管理后台和 FastAPI 服务。
 
-当前完成 JJTV 品牌更名与独立部署准备。站点级租户管理、通过适配层接入 india-short-drama 属于后续建设范围，目前尚未实现。
+2026-11-13 已完成 JJTV 品牌更名和 video 独立基础部署，四个入口已启用 HTTPS、HTTP 自动跳转及证书自动续期。站点级租户管理、通过适配层接入 india-short-drama 属于后续建设范围，目前尚未实现。
 
 ## 访问地址
 
@@ -13,7 +13,7 @@ JJTV 是基于 MiniTV 的短剧分发与运营项目，包含官网、H5、Flutt
 | 管理后台 | https://jjtv-admin.8jj.net |
 | API | https://jjtv-api.8jj.net |
 
-这些是 JJTV 的部署目标，公网可用性取决于 DNS、证书和服务器发布状态。老站的 8jj.net / 8jj.ai 域名继续由原系统提供服务。
+四个入口已完成公网 HTTPS 和后台登录验证；发布记录见 `deployments/releases/v2026.11.13.6.json`。老站的 8jj.net / 8jj.ai 域名继续由原系统提供服务。
 
 ## 技术栈
 
