@@ -1,0 +1,28 @@
+{
+  "version": "v2026.11.13.9",
+  "target": "video-test-services",
+  "status": "published",
+  "sha": "959e724e7a72bb8f0fe2a10d1b41abcc57a938ff",
+  "short_sha": "959e724e",
+  "command": [
+    "python3",
+    "scripts/test_tenancy_services.py",
+    "--credentials",
+    "/mnt/c/Users/Administrator/.codex/private/jjtv-tenancy-test-services.json",
+    "remote-run",
+    "tests/test_tenancy.py",
+    "-q"
+  ],
+  "exit_code": 0,
+  "started_at": "2026-11-13T17:29:14+08:00",
+  "finished_at": "2026-11-13T17:29:46+08:00",
+  "operator": {
+    "user": "root",
+    "host": "MM-202608191734",
+    "pid": 13424,
+    "agent_session": null,
+    "cwd": "/mnt/d/workspace/new/minitv"
+  },
+  "note": "Recheck 18 tenancy integration cases after fixture corrections",
+  "dirty": false
+}
