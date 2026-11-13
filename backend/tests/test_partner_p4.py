@@ -49,11 +49,18 @@ def _setup(make, client, session, title="数据剧", share=8000) -> tuple[dict, 
         json={
             "username": "sp-data",
             "role": "partner",
-            "password": "partner-pass-1234",
+            "password": "temporary-partner-pass-1234",
             "supplier_id": sup["id"],
         },
         headers=admin,
     )
+    initial = _login(client, "sp-data", "temporary-partner-pass-1234")
+    rotated = client.post(
+        "/partner/v1/auth/password",
+        json={"old_password": "temporary-partner-pass-1234", "new_password": "partner-pass-1234"},
+        headers=initial,
+    )
+    assert rotated.status_code == 200, rotated.text
     partner = _login(client, "sp-data", "partner-pass-1234")
     drama = Drama(
         title=title,

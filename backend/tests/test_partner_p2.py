@@ -38,16 +38,28 @@ def _supplier_with_partner(client, headers, name="星野传媒", username="sp-a"
             "username": username,
             "display_name": name,
             "role": "partner",
-            "password": "partner-pass-1234",
+            "password": "temporary-partner-pass-1234",
             "supplier_id": body["id"],
         },
         headers=headers,
     )
     assert acc.status_code == 201, acc.text
     login = client.post(
+        "/admin/v1/auth/login", json={"tenant_code": "jjtv", "username": username, "password": "temporary-partner-pass-1234"}
+    )
+    assert login.status_code == 200, login.text
+    assert login.json()["user"]["must_change_password"] is True
+    rotated = client.post(
+        "/partner/v1/auth/password",
+        json={"old_password": "temporary-partner-pass-1234", "new_password": "partner-pass-1234"},
+        headers={"Authorization": f"Bearer {login.json()['token']}"},
+    )
+    assert rotated.status_code == 200, rotated.text
+    login = client.post(
         "/admin/v1/auth/login", json={"tenant_code": "jjtv", "username": username, "password": "partner-pass-1234"}
     )
     assert login.status_code == 200, login.text
+    assert login.json()["user"]["must_change_password"] is False
     return body, {"Authorization": f"Bearer {login.json()['token']}"}
 
 

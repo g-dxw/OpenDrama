@@ -174,7 +174,7 @@ def test_due_schedules_cannot_bypass_supplier_approval(ctx,state):
 
 def test_tenant_api_key_staff_scope_is_bounded_and_cannot_enter_platform(ctx):
     def issue(scopes):
-        r=ctx['client'].post('/admin/v1/api-keys',json={'user_id':ctx['owner'].id,'name':'Scoped key','scopes':scopes,'expires_in_days':90},headers=ctx['owner_headers'])
+        r=ctx['client'].post('/admin/v1/api-keys',json={'user_id':ctx['owner'].id,'name':'Scoped key '+','.join(scopes),'scopes':scopes,'expires_in_days':90},headers=ctx['owner_headers'])
         assert r.status_code==201,r.text
         return {'Authorization':'Bearer '+r.json()['key']}
     read_write=issue(['read','write'])

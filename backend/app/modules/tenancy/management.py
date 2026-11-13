@@ -30,7 +30,7 @@ class Strict(BaseModel): model_config=ConfigDict(extra='forbid')
 class Login(Strict):
     username:str=Field(min_length=1,max_length=64)
     password:str=Field(min_length=1,max_length=128)
-class TenantLogin(Login): tenant_code:str=Field(min_length=1,max_length=64)
+class TenantLogin(Login): tenant_code:str|None=Field(default=None,max_length=64)
 class Password(Strict):
     old_password:str
     new_password:str=Field(min_length=8,max_length=128)
@@ -117,7 +117,9 @@ def platform_login(body:Login,request:Request,db:Session=Depends(get_db)):
 
 @tenant_router.post('/auth/login')
 def tenant_login(body:TenantLogin,request:Request,db:Session=Depends(get_db)):
-    tenant=db.scalar(select(Tenant).where(Tenant.code==body.tenant_code))
+    code=(body.tenant_code or '').strip()
+    if not code: raise HTTPException(400,detail=dict(code='tenant_required',message='请使用平台入口或提供租户编码'))
+    tenant=db.scalar(select(Tenant).where(Tenant.code==code))
     if tenant is None: raise HTTPException(401,detail='账号、密码或所属入口不正确')
     validate_entry_origin(request,db,tenant)
     return login_response(db,ops_service.login(db,username=body.username,password=body.password,tenant_code=tenant.code,account_scope='tenant'))

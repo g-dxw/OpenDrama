@@ -37,6 +37,17 @@ def bind_tenant_context(request,db,user):
     request.state.tenant_permissions=grants['permissions']; request.state.db_for_tenant=db
     db.info['content_tenant_id']=tenant.id
     db.info['actor_scope']=principal.account_scope
+    # Only explicit tenant business requests bind audit context. The default
+    # public JJTV scope must not turn platform control-plane events into JJTV events.
+    route=getattr(request.scope.get('route'),'path',None) or request.url.path
+    safe_params={}
+    for key,value in request.path_params.items():
+        if any(part in key.lower() for part in ('token','password','secret','credential','signature','session')):
+            continue
+        if type(value) is int or isinstance(value,str):
+            safe_params[key[:64]]=value if type(value) is int else value[:128]
+    db.info['tenant_audit_context']=dict(actor_id=user.id,actor_scope=principal.account_scope,
+        tenant_id=tenant.id,method=request.method,path=route[:512],path_params=safe_params)
     return tenant
 
 def configure_request_scope(request,db,user):

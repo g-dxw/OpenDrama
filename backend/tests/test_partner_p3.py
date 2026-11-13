@@ -37,11 +37,18 @@ def _partner(make, client, headers, name="星野传媒", username="sp-a") -> tup
         json={
             "username": username,
             "role": "partner",
-            "password": "partner-pass-1234",
+            "password": "temporary-partner-pass-1234",
             "supplier_id": sup["id"],
         },
         headers=headers,
     )
+    initial = _headers(client, username, "temporary-partner-pass-1234")
+    rotated = client.post(
+        "/partner/v1/auth/password",
+        json={"old_password": "temporary-partner-pass-1234", "new_password": "partner-pass-1234"},
+        headers=initial,
+    )
+    assert rotated.status_code == 200, rotated.text
     return sup, _headers(client, username, "partner-pass-1234")
 
 

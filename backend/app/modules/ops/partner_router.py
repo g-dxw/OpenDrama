@@ -88,9 +88,11 @@ def _resolve(request: Request,db: Session) -> tuple[AdminUser,AdminApiKey|None]:
     selected=request.headers.get('X-JJTV-Tenant')
     if selected and selected!=principal.tenant_id: raise HTTPException(403,detail=dict(code='tenant_scope_mismatch',message='账号不能切换租户'))
     tenant=db.get(Tenant,principal.tenant_id)
+    from app.modules.tenancy.domains import validate_entry_origin
+    validate_entry_origin(request,db,tenant)
     modules=enabled_modules(db,tenant)
     path=request.url.path
-    module='settlements' if '/settlements' in path else 'suppliers' if '/stats' in path else 'dramas'
+    module='tags' if path.endswith('/tags') else 'settlements' if '/settlements' in path else 'suppliers' if '/stats' in path else 'dramas'
     own_credential=path.endswith('/me') or '/auth/' in path or '/api-keys' in path
     if not own_credential and module not in modules: raise HTTPException(403,detail='该租户未开通此功能')
     if user.must_change_password and not path.endswith(('/me','/auth/password','/auth/logout')):
@@ -346,15 +348,23 @@ def me(user: AdminUser = Depends(require_partner), db: Session = Depends(get_db)
 @router.post("/auth/password")
 def change_password(
     body: PartnerPasswordIn,
+    request: Request,
     user: AdminUser = Depends(require_partner_session),
     db: Session = Depends(get_db),
 ):
+    from app.modules.ops.router import lock_password_account, _validate_password
+    principal=request.state.principal
+    user=lock_password_account(db,user,principal)
     if not ops_service.verify_password(body.old_password, user.password_hash):
         raise HTTPException(status_code=400, detail="原密码不正确")
     if body.new_password == body.old_password:
         raise HTTPException(status_code=422, detail="新密码不能与原密码相同")
+    _validate_password(body.new_password,user.username)
     killed = ops_service.revoke_user_sessions(user.id)
     user.password_hash = ops_service.hash_password(body.new_password)
+    user.auth_version += 1
+    user.must_change_password = False
+    db.add(AuditLog(actor_type='admin',actor_id=user.id,actor_scope='tenant',tenant_id=principal.tenant_id,action='staff_password_change',target_type='admin_user',target_id=user.id,payload={'revoked_sessions':killed}))
     db.commit()
     return {"revoked_sessions": killed}
 

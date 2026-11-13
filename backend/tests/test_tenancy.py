@@ -311,11 +311,15 @@ def test_india_tenant_readonly_and_pause_revoke_write_and_connection(context, in
                          headers={**context["operator_headers"], "Idempotency-Key": str(uuid4())})
     assert denied.status_code == 403
     assert not any(call["action"] == "series_create" for call in india_mock[0][before:])
-    assert client.patch(TENANTS + "/" + INDIA_TENANT, json={"status": "paused"}, headers=context["platform_headers"]).status_code == 200
+    configuration = client.get(TENANTS + "/" + INDIA_TENANT + "/modules", headers=context["platform_headers"])
+    assert configuration.status_code == 200, configuration.text
+    assert client.patch(TENANTS + "/" + INDIA_TENANT, json={"status": "paused", "version": configuration.json()["version"]}, headers=context["platform_headers"]).status_code == 200
     assert client.get(INDIA + "/admin/series", headers=context["operator_headers"]).status_code in (401, 403, 409)
     db.expire_all()
     assert db.scalar(select(IndiaConnection).where(IndiaConnection.user_id == context["operator"].id)) is None
-    assert client.patch(TENANTS + "/" + INDIA_TENANT, json={"status": "active"}, headers=context["platform_headers"]).status_code == 200
+    configuration = client.get(TENANTS + "/" + INDIA_TENANT + "/modules", headers=context["platform_headers"])
+    assert configuration.status_code == 200, configuration.text
+    assert client.patch(TENANTS + "/" + INDIA_TENANT, json={"status": "active", "version": configuration.json()["version"]}, headers=context["platform_headers"]).status_code == 200
     context["operator_headers"] = login(client, context["operator"])
     assert client.get(INDIA + "/session", headers=context["operator_headers"]).json()["connected"] is False
 

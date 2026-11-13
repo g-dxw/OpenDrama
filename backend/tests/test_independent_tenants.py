@@ -64,6 +64,8 @@ def test_tenant_login_always_requires_context_and_never_falls_back_to_platform(e
     for path in (TENANT+'/auth/login','/admin/v1/auth/login'):
         missing=env['client'].post(path,json={'username':native.username,'password':'pass-1234'})
         assert missing.status_code==400 and missing.json()['detail']['code']=='tenant_required'
+        empty=env['client'].post(path,json={'tenant_code':'','username':native.username,'password':'pass-1234'})
+        assert empty.status_code==400 and empty.json()['detail']['code']=='tenant_required'
     tenant=tenant_login(env['client'],'jjtv','same-name')
     assert tenant.status_code==200 and tenant.json()['context']['account_scope']=='tenant'
     assert tenant.json()['context']['user']['id']==native.id
@@ -247,3 +249,18 @@ def test_new_owner_cannot_satisfy_rotation_by_reusing_temporary_password(env):
     context=env["client"].get(TENANT+"/context",headers=headers)
     assert context.status_code==200 and context.json()["user"]["must_change_password"] is True
     assert env["client"].post("/admin/v1/dramas",json={"title":"Still requires rotation"},headers=headers).status_code==403
+
+
+def test_disabled_selector_modules_reject_shared_readers_and_writers(env):
+    tenant='jjtv'
+    actor=env['make'].admin(role='admin')
+    headers=logged(env['client'],actor,tenant)
+    state=module_data(env,tenant)
+    enabled=[x['key'] for x in state['items'] if x['enabled'] and x['key'] not in {'tags','groups','dramas','reviews'}]
+    response=env['client'].put(PLATFORM+'/tenants/'+tenant+'/modules',json={'version':state['version'],'module_keys':enabled},headers=env['pheaders'])
+    assert response.status_code==200,response.text
+    # The account still has drama/homepage permissions, but selector aliases
+    # must not reopen the functions that the platform explicitly closed.
+    for path in ('/admin/v1/tags','/admin/v1/groups','/admin/v1/dramas'):
+        assert env['client'].get(path,headers=headers).status_code==403
+        assert env['client'].post(path,json={'name':'closed'},headers=headers).status_code==403

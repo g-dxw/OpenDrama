@@ -168,6 +168,15 @@ GLOBAL_PREFIXES = [
 def authorize_native_request(request,tenant,grants):
     path=request.url.path.removeprefix('/admin/v1/').rstrip('/')
     request.state.tenant_permissions=grants['permissions']
+    # Selector permissions never reopen a function explicitly disabled by the platform.
+    target=path.split('/',1)[0]
+    modules=business_modules.enabled_modules(request.state.db_for_tenant,tenant)
+    if target in {'tags','groups'} and target not in modules:
+        deny((target+'.view',))
+    if target in {'dramas','episodes','search','schedules','dev-tus'} and 'dramas' not in modules:
+        # Review remains a supported consumer of read-only drama details.
+        if request.method not in {'GET','HEAD'} or 'reviews.view' not in grants['permissions']:
+            deny(('dramas.view',))
     for method,pattern,required in CONTENT_RULES:
         if request.method==method and re.fullmatch(pattern,path):
             require_permission(request,*required,any_of=True)

@@ -23,6 +23,9 @@ Examples::
     python3 scripts/import_hotlist.py --dir ... --dry-run
 """
 
+# Authentication uses a tenant-local account selected by --tenant-code or
+# JJTV_TENANT_CODE (default jjtv). Set ADMIN_USER and ADMIN_PASS to that tenant
+# account; platform administrator credentials cannot access business operations.
 from __future__ import annotations
 
 import argparse
@@ -54,10 +57,11 @@ class ApiError(RuntimeError):
 
 
 class Client:
-    def __init__(self, base: str, username: str, password: str):
+    def __init__(self, base: str, username: str, password: str, tenant_code: str | None = None):
         self.base = base.rstrip("/")
         self.username = username
         self.password = password
+        self.tenant_code = tenant_code if tenant_code is not None else os.environ.get("JJTV_TENANT_CODE") or "jjtv"
         self.token = ""
 
     def _request(self, method: str, path: str, *, body: bytes | None = None, content_type: str = "application/json"):
@@ -75,7 +79,7 @@ class Client:
             raise ApiError(exc.code, exc.read().decode("utf-8", "replace")) from exc
 
     def login(self) -> dict:
-        payload = json.dumps({"username": self.username, "password": self.password}).encode()
+        payload = json.dumps({"tenant_code": self.tenant_code, "username": self.username, "password": self.password}).encode()
         data = self._request("POST", "/admin/v1/auth/login", body=payload)
         self.token = data["token"]
         return data["user"]
@@ -197,6 +201,7 @@ def main() -> None:
     )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--api", default=os.environ.get("MINITV_API", API_DEFAULT))
+    parser.add_argument("--tenant-code", default=os.environ.get("JJTV_TENANT_CODE") or "jjtv", help="tenant code (JJTV_TENANT_CODE or jjtv); ADMIN_USER/ADMIN_PASS must be tenant account credentials")
     args = parser.parse_args()
 
     folder = Path(args.dir).resolve()
@@ -219,7 +224,7 @@ def main() -> None:
     if not key or not library:
         raise SystemExit("BUNNY_STREAM_API_KEY and BUNNY_STREAM_LIBRARY_ID must be exported")
 
-    client = Client(args.api, os.environ.get("ADMIN_USER", "admin"), os.environ.get("ADMIN_PASS", "admin-1234"))
+    client = Client(args.api, os.environ.get("ADMIN_USER", "admin"), os.environ.get("ADMIN_PASS", "admin-1234"), tenant_code=args.tenant_code)
     user = client.login()
     print(f"logged in as {user['username']}")
 

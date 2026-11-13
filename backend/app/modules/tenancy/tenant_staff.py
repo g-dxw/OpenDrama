@@ -108,8 +108,8 @@ def staff_out(db, user):
 
 def reset_tenant_password(db, user):
     if user.account_scope != 'tenant': raise HTTPException(403,detail='只能重置租户账号')
-    # All credential/status mutations serialize on the account, including a
-    # self-service password change that does not take the tenant row lock.
+    # Routes acquire Tenant before User; refresh under the shared account lock
+    # so password/status mutations keep that order and never reuse a stale version.
     user = _owned_user(db,user.tenant_id,user.id)
     temporary = secrets.token_urlsafe(18)
     try: ops_service.revoke_user_sessions(user.id)
@@ -232,9 +232,13 @@ def _patch_user(db,request,actor,staff_id,body,disable_reason=None):
     if role_id is not None:
         if user.role == 'partner': raise HTTPException(400,detail='上剧方账号的角色不可修改')
         new_role = _role(db,tenant.id,role_id)
-        if member is None: raise HTTPException(409,detail='员工角色绑定缺失，请刷新后重试')
-        if member.role_id != new_role.id and user.id == actor.id and request.url.path.startswith('/admin/'):
+        if member is not None and member.role_id != new_role.id and user.id == actor.id and request.url.path.startswith('/admin/'):
             raise HTTPException(400,detail='不能修改自己的角色')
+        if member is None:
+            # Migration leaves previously unauthorized accounts without a
+            # membership. Only an explicit, validated role assignment grants it.
+            member = TenantMember(tenant_id=tenant.id,user_id=user.id,role='ops',role_id=new_role.id)
+            db.add(member)
     new_status = body.status or user.status
     if new_status not in {'active','disabled'}: raise HTTPException(422,detail='账号状态无效')
     if new_status == 'disabled' and user.id == actor.id and request.url.path.startswith('/admin/'):

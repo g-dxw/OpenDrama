@@ -71,12 +71,17 @@ def export_snapshot(connection):
     if 'admin_api_keys' in tables:
         table = tables['admin_api_keys']
         keys = [dict(r) for r in connection.execute(select(*(c for c in table.c if c.name in key_fields)).order_by(table.c.id)).mappings()]
+    mappings = []
+    if independent:
+        table = tables['audit_logs']
+        fields = [table.c[name] for name in ('id','tenant_id','action','target_id','payload','created_at')]
+        mappings = [dict(r) for r in connection.execute(select(*fields).where(table.c.action.in_(['tenant.identity.migrated','api_key.identity_migration_revoked'])).order_by(table.c.id)).mappings()]
     counts = {name:connection.scalar(select(func.count()).select_from(table)) for name,table in sorted(tables.items()) if name != 'alembic_version'}
     return dict(format='jjtv-tenant-identity-snapshot-v1',exported_at=datetime.now(timezone.utc).isoformat(),
                 model='independent' if independent else 'legacy',
                 revisions=list(connection.execute(text('SELECT version_num FROM alembic_version')).scalars()),
                 users=users,tenants=tenants,roles=roles,memberships=memberships,
-                effective_business_grants=grants,api_keys=keys,
+                effective_business_grants=grants,api_keys=keys,identity_mappings=mappings,
                 modules=rows('tenant_modules') if 'tenant_modules' in tables else [],
                 legacy_bindings=rows('legacy_business_bindings') if 'legacy_business_bindings' in tables else [],
                 domains=rows('tenant_domains') if 'tenant_domains' in tables else [],table_counts=counts)
