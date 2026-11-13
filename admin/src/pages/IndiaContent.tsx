@@ -1,0 +1,247 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Alert, Button, Card, Drawer, Empty, Form, Input, Modal, Popconfirm, QRCode, Select, Space, Spin, Table, Tabs, Tag, Typography, message } from "antd";
+import { LinkOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
+import { api } from "../api";
+import { useMe } from "../me";
+import { useTenant } from "../tenant";
+import { INDIA_BASE, indiaApi, indiaErrorText, STATUS, type IndiaSeries, type IndiaSession } from "./india-api";
+import IndiaSeriesForm from "./IndiaSeriesForm";
+import IndiaEpisodes from "./IndiaEpisodes";
+import IndiaAssets from "./IndiaAssets";
+
+type Challenge = { challenge_token: string; expires_at?: string; enrollment_required?: boolean };
+type Enrollment = { secret_base32: string; otpauth_uri: string; expires_at?: string };
+const id = encodeURIComponent;
+export default function IndiaContent() {
+  const { current } = useTenant();
+  const me = useMe();
+  const [session, setSession] = useState<IndiaSession | null>(null);
+  const [sessionLoading, setSessionLoading] = useState(true);
+  const [sessionError, setSessionError] = useState("");
+  const [connectOpen, setConnectOpen] = useState(false);
+  const [connecting, setConnecting] = useState(false);
+  const [challenge, setChallenge] = useState<Challenge | null>(null);
+  const [enrollment, setEnrollment] = useState<Enrollment | null>(null);
+  const [connectError, setConnectError] = useState("");
+  const [loginForm] = Form.useForm();
+  const [mfaForm] = Form.useForm();
+  const [rows, setRows] = useState<IndiaSeries[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [listError, setListError] = useState("");
+  const [query, setQuery] = useState("");
+  const [status, setStatus] = useState("");
+  const [cursors, setCursors] = useState<string[]>([""]);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [detail, setDetail] = useState<IndiaSeries | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [action, setAction] = useState<string | null>(null);
+  const [actionReason, setActionReason] = useState("");
+  const [acting, setActing] = useState(false);
+  const mounted = useRef(true);
+  const detailGeneration = useRef(0);
+  const listGeneration = useRef(0);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; detailGeneration.current++; listGeneration.current++; }; }, []);
+  const tenantRole = (me?.platform_role ?? me?.role) === "admin" ? "admin" : current?.own_role ?? me?.role;
+  const tenantWrite = ["admin", "ops"].includes(tenantRole || "");
+  const writable = tenantWrite && ["admin", "editor"].includes(session?.role || "");
+  const reviewer = tenantWrite && ["admin", "reviewer"].includes(session?.role || "");
+  const oldAdmin = tenantWrite && session?.role === "admin";
+  const readSession = useCallback(async () => {
+    setSessionLoading(true); setSessionError("");
+    try { const value = await api<IndiaSession>(INDIA_BASE + "/session"); if (mounted.current) setSession(value); }
+    catch (e) { if (mounted.current) setSessionError(indiaErrorText(e)); }
+    finally { if (mounted.current) setSessionLoading(false); }
+  }, []);
+  useEffect(() => { void readSession(); }, [readSession]);
+  const load = useCallback(async () => {
+    if (!session?.connected) return;
+    const generation = ++listGeneration.current;
+    setLoading(true); setListError("");
+    try {
+      const params = new URLSearchParams({ limit: "30" });
+      if (query) params.set("q", query);
+      if (status) params.set("status", status);
+      if (cursors[cursors.length - 1]) params.set("cursor", cursors[cursors.length - 1]!);
+      const value = await indiaApi<{ items: IndiaSeries[]; next_cursor: string | null }>("/admin/series?" + params);
+      if (mounted.current && generation === listGeneration.current) { setRows(value.items); setNextCursor(value.next_cursor); }
+    } catch (e) {
+      if (mounted.current && generation === listGeneration.current) {
+        setRows([]); setListError(indiaErrorText(e));
+        if ((e as any)?.detail?.code === "india_auth_required") { setSession(s => s ? { ...s, connected: false } : s); setSelected(null); }
+      }
+    } finally { if (mounted.current && generation === listGeneration.current) setLoading(false); }
+  }, [session?.connected, session?.username, query, status, cursors]);
+  useEffect(() => { void load(); }, [load]);
+  const loadDetail = useCallback(async (seriesId: string) => {
+    const generation = ++detailGeneration.current;
+    setDetailLoading(true); setDetailError("");
+    try { const value = await indiaApi<IndiaSeries>("/admin/series/" + id(seriesId)); if (mounted.current && generation === detailGeneration.current) setDetail(value); }
+    catch (e) { if (mounted.current && generation === detailGeneration.current) setDetailError(indiaErrorText(e)); }
+    finally { if (mounted.current && generation === detailGeneration.current) setDetailLoading(false); }
+  }, []);
+  const openDetail = (seriesId: string) => { setSelected(seriesId); setDetail(null); void loadDetail(seriesId); };
+  const changed = () => { if (selected) void loadDetail(selected); void load(); };
+  const closeConnect = () => {
+    if (connecting) return;
+    if (challenge) void api(INDIA_BASE + "/session/cancel", { method: "POST", body: JSON.stringify({ challenge_token: challenge.challenge_token }) }).catch(() => {});
+    loginForm.resetFields(); mfaForm.resetFields(); setChallenge(null); setEnrollment(null); setConnectError(""); setConnectOpen(false);
+  };
+  const connected = async () => {
+    loginForm.resetFields(); mfaForm.resetFields(); setChallenge(null); setEnrollment(null); setConnectOpen(false); setConnectError("");
+    setRows([]); setCursors([""]); setSelected(null); setDetail(null); await readSession();
+  };
+  const login = async (values: { username: string; password: string }) => {
+    const credentials = { username: values.username, password: values.password };
+    setConnecting(true); setConnectError(""); loginForm.setFieldValue("password", undefined);
+    try {
+      const result = await api<IndiaSession & Partial<Challenge> & { mfa_required?: boolean }>(INDIA_BASE + "/session", { method: "POST", body: JSON.stringify(credentials) });
+      if (!mounted.current) return;
+      if (result.mfa_required && result.challenge_token) setChallenge({ challenge_token: result.challenge_token, expires_at: result.expires_at, enrollment_required: result.enrollment_required });
+      else if (result.connected) { await connected(); message.success("旧站运营账号已连接"); }
+      else throw new Error("旧站未返回有效连接，请重新验证");
+    } catch (e) { if (mounted.current) setConnectError(indiaErrorText(e)); }
+    finally { if (mounted.current) setConnecting(false); }
+  };
+  const verify = async (values: { code: string }) => {
+    if (!challenge) return;
+    const code = values.code;
+    setConnecting(true); setConnectError(""); mfaForm.resetFields();
+    try {
+      const result = await api<IndiaSession>(INDIA_BASE + "/session/mfa", { method: "POST", body: JSON.stringify({ challenge_token: challenge.challenge_token, code }) });
+      if (!mounted.current) return;
+      if (!result.connected) throw new Error("验证尚未建立有效连接");
+      await connected(); message.success("旧站运营账号已连接");
+    } catch (e) { if (mounted.current) setConnectError(indiaErrorText(e)); }
+    finally { if (mounted.current) setConnecting(false); }
+  };
+  const setup = async () => {
+    if (!challenge) return;
+    setConnecting(true); setConnectError("");
+    try { const envelope = await api<Enrollment | { data: Enrollment }>(INDIA_BASE + "/session/enrollment", { method: "POST", body: JSON.stringify({ challenge_token: challenge.challenge_token }) }); const result = "data" in envelope ? envelope.data : envelope; if (!result.secret_base32 || !result.otpauth_uri) throw new Error("旧站未返回有效验证器设置"); if (mounted.current) setEnrollment(result); }
+    catch (e) { if (mounted.current) setConnectError(indiaErrorText(e)); }
+    finally { if (mounted.current) setConnecting(false); }
+  };
+  const renewConnection = async () => {
+    setConnecting(true);
+    try { const result = await api<IndiaSession>(INDIA_BASE + "/session/refresh", { method: "POST" }); setSession(result); message.success("连接已续期"); }
+    catch (e) { message.error(indiaErrorText(e)); }
+    finally { setConnecting(false); }
+  };
+  const disconnect = async () => {
+    try { await api(INDIA_BASE + "/session", { method: "DELETE" }); setSession(s => s ? { ...s, connected: false } : s); setRows([]); setSelected(null); setDetail(null); setCreating(false); message.success("当前 JJTV 会话已断开旧站连接"); }
+    catch (e) { message.error(indiaErrorText(e)); }
+  };
+  const execute = async () => {
+    if (!detail || !action || !actionReason.trim()) return;
+    setActing(true);
+    try {
+      const operation = action.startsWith("review") ? "review" : action;
+      await indiaApi("/admin/series/" + id(detail.id) + "/" + operation, { method: "POST", body: JSON.stringify({
+        version: detail.version, reason: actionReason.trim(), ...(operation === "review" ? { approved: action === "review-approve" } : {}),
+      }) });
+      message.success("旧站已接受操作"); setAction(null); setActionReason(""); changed();
+    } catch (e) { message.error(indiaErrorText(e)); }
+    finally { setActing(false); }
+  };
+  if (current?.kind !== "india_legacy") return <Alert type="warning" message="请先选择 India 租户" />;
+  return <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+    <Card>
+      <Space wrap style={{ justifyContent: "space-between", width: "100%" }}>
+        <div><Typography.Title level={4} style={{ margin: "0 0 8px" }}>India 内容运营</Typography.Title>
+          {sessionLoading ? <Space><Spin size="small" /><span>正在检查账号连接…</span></Space> : <Space wrap>
+            <Tag color={session?.connected ? "green" : "default"}>{session?.connected ? "已连接旧站" : "未连接旧站"}</Tag>
+            {session?.connected && <Typography.Text>{session.username} · {({ admin: "管理员", editor: "内容编辑", reviewer: "审核员" } as Record<string, string>)[session.role || ""] || session.role}</Typography.Text>}
+            {session?.expires_at && session.connected && <Typography.Text type="secondary">到期 {new Date(session.expires_at).toLocaleString()}</Typography.Text>}
+          </Space>}
+        </div>
+        <Space wrap>
+          <Button icon={<ReloadOutlined aria-hidden />} onClick={() => void readSession()} loading={sessionLoading}>检查连接</Button>
+          <Button icon={<LinkOutlined aria-hidden />} type={session?.connected ? "default" : "primary"} disabled={sessionLoading || session?.configured === false} onClick={() => { loginForm.resetFields(); setChallenge(null); setEnrollment(null); setConnectError(""); setConnectOpen(true); }}>{session?.connected ? "更换旧站账号" : "连接旧站运营账号"}</Button>
+          {session?.connected && <Button loading={connecting} onClick={() => void renewConnection()}>续期连接</Button>}
+          {session?.connected && <Popconfirm title="断开当前会话的旧站连接？" okText="断开" cancelText="取消" onConfirm={disconnect}><Button>断开</Button></Popconfirm>}
+        </Space>
+      </Space>
+      {sessionError && <Alert type="error" showIcon message={sessionError} style={{ marginTop: 16 }} />}
+      {session?.configured === false && <Alert type="info" showIcon message="India 内容服务暂未就绪，请联系平台管理员" style={{ marginTop: 16 }} />}
+    </Card>
+    {session?.connected ? <>
+      <Space wrap>
+        <Button type="primary" icon={<PlusOutlined aria-hidden />} disabled={!writable} onClick={() => setCreating(true)}>新增剧集</Button>
+        <Input.Search allowClear placeholder="搜索剧集" aria-label="搜索 India 剧集" onSearch={value => { setQuery(value.trim()); setCursors([""]); }} style={{ width: 240 }} />
+        <Select aria-label="India 剧集状态" value={status} onChange={value => { setStatus(value); setCursors([""]); }} style={{ width: 150 }}
+          options={[{ value: "", label: "全部状态" }, ...["draft", "rights_review", "ready", "scheduled", "published", "suspended", "expired"].map(value => ({ value, label: STATUS[value] }))]} />
+        <Button icon={<ReloadOutlined aria-hidden />} onClick={() => void load()}>刷新列表</Button>
+      </Space>
+      {listError && <Alert type="error" showIcon message={listError} />}
+      <Table<IndiaSeries> rowKey="id" loading={loading} dataSource={rows} pagination={false} scroll={{ x: 720 }}
+        columns={[
+          { title: "剧集", dataIndex: "title", render: (title, row) => <Button type="link" style={{ padding: 0, textAlign: "left", height: "auto", whiteSpace: "normal" }} onClick={() => openDetail(row.id)}>{title}</Button> },
+          { title: "语言", dataIndex: "language", width: 85 },
+          { title: "分集", dataIndex: "episode_count", width: 75 },
+          { title: "状态", dataIndex: "status", render: value => <Tag color={value === "published" ? "green" : value === "rights_review" ? "orange" : "default"}>{STATUS[value] || value}</Tag> },
+          { title: "更新时间", dataIndex: "updated_at", render: value => value ? new Date(value).toLocaleString() : "—" },
+          { title: "操作", render: (_, row) => <Button type="link" onClick={() => openDetail(row.id)}>管理内容</Button> },
+        ]} />
+      <Space style={{ justifyContent: "flex-end", width: "100%" }}>
+        <Button disabled={loading || cursors.length < 2} onClick={() => setCursors(values => values.slice(0, -1))}>上一页</Button>
+        <Typography.Text type="secondary">第 {cursors.length} 页</Typography.Text>
+        <Button disabled={loading || !nextCursor} onClick={() => nextCursor && setCursors(values => [...values, nextCursor])}>下一页</Button>
+      </Space>
+    </> : !sessionLoading && <Card><Empty description="连接旧站运营账号后，即可管理 India 的剧集和视频" /></Card>}
+    <Modal title="新增 India 剧集" open={creating} onCancel={() => setCreating(false)} width={900} footer={null} destroyOnHidden>
+      {creating && <IndiaSeriesForm writable={writable} onSaved={row => { setCreating(false); openDetail(row.id); void load(); }} />}
+    </Modal>
+    <Drawer title={detail ? detail.title : "剧集详情"} open={!!selected && !!session?.connected} width="min(1120px, 100vw)"
+      onClose={() => { setSelected(null); setDetail(null); detailGeneration.current++; }} destroyOnHidden
+      extra={<Button icon={<ReloadOutlined aria-hidden />} onClick={changed} disabled={!selected}>刷新详情</Button>}>
+      {detailLoading && !detail ? <Spin /> : detailError ? <Alert type="error" showIcon message={detailError} action={<Button onClick={changed}>重试</Button>} /> : detail && <>
+        <Space wrap style={{ marginBottom: 16 }}><Tag color={detail.status === "published" ? "green" : "default"}>{STATUS[detail.status] || detail.status}</Tag>
+          <Typography.Text type="secondary">版本 {detail.version}</Typography.Text>
+          {writable && <Button disabled={!["draft", "suspended", "expired"].includes(detail.status)} onClick={() => { setAction("submit"); setActionReason(""); }}>提交审核</Button>}
+          {reviewer && <><Button disabled={detail.status !== "rights_review"} onClick={() => { setAction("review-approve"); setActionReason(""); }}>审核通过</Button>
+            <Button disabled={detail.status !== "rights_review"} onClick={() => { setAction("review-reject"); setActionReason(""); }}>审核退回</Button>
+            <Button type="primary" disabled={!["ready", "suspended"].includes(detail.status)} onClick={() => { setAction("publish"); setActionReason(""); }}>上架</Button>
+            <Button danger disabled={!["published", "scheduled"].includes(detail.status)} onClick={() => { setAction("unpublish"); setActionReason(""); }}>下架</Button></>}
+        </Space>
+        <Tabs items={[
+          { key: "metadata", label: "剧集资料与版权", children: <IndiaSeriesForm key={detail.id} record={detail} writable={writable} onSaved={() => changed()} /> },
+          { key: "episodes", label: "分集与视频", children: <IndiaEpisodes series={detail} writable={writable} oldAdmin={oldAdmin} onChanged={changed} /> },
+          { key: "files", label: "封面与版权证明", children: <IndiaAssets series={detail} writable={writable && !["published", "scheduled"].includes(detail.status)} onChanged={changed} /> },
+        ]} />
+      </>}
+    </Drawer>
+    <Modal title={action ? ({ submit: "提交审核", "review-approve": "审核通过", "review-reject": "审核退回", publish: "上架剧集", unpublish: "下架剧集" } as Record<string, string>)[action] : "内容操作"}
+      open={!!action} onCancel={() => { if (!acting) setAction(null); }} onOk={() => void execute()} confirmLoading={acting} okText="提交旧站校验" cancelText="取消" okButtonProps={{ disabled: !actionReason.trim() }}>
+      <Space direction="vertical" style={{ width: "100%" }}>
+        <Typography.Text>当前剧集：{detail?.title}。状态以旧站校验结果为准。</Typography.Text>
+        <label htmlFor="india-action-reason">操作说明</label>
+        <Input.TextArea id="india-action-reason" rows={3} maxLength={500} value={actionReason} onChange={event => setActionReason(event.target.value)} />
+      </Space>
+    </Modal>
+    <Modal title={challenge ? "验证旧站运营账号" : "连接旧站运营账号"} open={connectOpen} onCancel={closeConnect} footer={null} destroyOnHidden maskClosable={!connecting}>
+      <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+        <Typography.Text type="secondary">此连接仅用于当前 JJTV 登录会话。密码与验证码不会保存。</Typography.Text>
+        {connectError && <Alert showIcon type="error" message={connectError} />}
+        {!challenge ? <Form form={loginForm} layout="vertical" onFinish={login} preserve={false}>
+          <Form.Item label="旧站运营账号" name="username" rules={[{ required: true, whitespace: true, message: "请输入账号" }]}><Input autoComplete="off" disabled={connecting} /></Form.Item>
+          <Form.Item label="旧站密码" name="password" rules={[{ required: true, message: "请输入密码" }]}><Input.Password autoComplete="off" disabled={connecting} /></Form.Item>
+          <Button block type="primary" htmlType="submit" loading={connecting} aria-label="连接账号" aria-busy={connecting}>连接账号</Button>
+        </Form> : <>
+          {challenge.enrollment_required && !enrollment && <Button onClick={() => void setup()} loading={connecting} aria-label="设置旧站验证器" aria-busy={connecting}>设置旧站验证器</Button>}
+          {enrollment && <Card size="small" title="添加至验证器后输入验证码"><Space direction="vertical" style={{ width: "100%" }}>
+            <QRCode value={enrollment.otpauth_uri} size={180} />
+            <Typography.Text>无法扫码时，可手动输入密钥：</Typography.Text><Typography.Text copyable code>{enrollment.secret_base32}</Typography.Text>
+          </Space></Card>}
+          <Form form={mfaForm} layout="vertical" onFinish={verify} preserve={false}>
+            <Form.Item label="验证器六位验证码" name="code" rules={[{ required: true, pattern: /^[0-9]{6}$/, message: "请输入六位数字验证码" }]}><Input autoComplete="one-time-code" inputMode="numeric" maxLength={6} disabled={connecting} /></Form.Item>
+            {challenge.expires_at && <Typography.Paragraph type="secondary">本次验证到期：{new Date(challenge.expires_at).toLocaleString()}</Typography.Paragraph>}
+            <Button block type="primary" htmlType="submit" loading={connecting} aria-label="完成连接" aria-busy={connecting}>完成连接</Button>
+          </Form>
+        </>}
+      </Space>
+    </Modal>
+  </Space>;
+}

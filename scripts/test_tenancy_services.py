@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Provision disposable, isolated PostgreSQL/Redis for JJTV tenancy tests.
 
-create/cleanup must run under release.py --target video-test-services.
+create/cleanup/remote-run must run under release.py --target video-test-services.
 check is read-only; run executes local tests against only these disposable services.
 Credentials stay in a private local temporary JSON file, never in Git or logs.
 """
@@ -10,14 +10,18 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
+import io
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import secrets
 import shlex
+import signal
 import socket
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 
@@ -26,18 +30,21 @@ PURPOSE = "jjtv-tenancy-tests"
 TEST_DATABASE = "jjtv_tenancy_test"
 POSTGRES_PORT = 15433
 REDIS_PORT = 16380
+DEFAULT_TEST_IMAGE = "jjtv-api:f6428e9dfaa18148e012eb7bcf5da5c4ab7e50f5"
 
 REMOTE = r'''
-import json,re,subprocess,sys,time
+import json,re,shutil,subprocess,sys,time
+from pathlib import Path
 request=json.load(sys.stdin)
 action=request['action']
-assert action in ['create','check','cleanup']
+assert action in ['create','check','cleanup','remote-run']
 instance=request['instance_id']
 assert re.fullmatch(r'[0-9a-f]{32}',instance)
 specs=[('jjtv-tenancy-test-postgres','postgres:16-alpine','5432/tcp','15433'),
        ('jjtv-tenancy-test-redis','redis:7-alpine','6379/tcp','16380')]
 network='jjtv-tenancy-tests-'+instance[:12]
 secrets=[request['postgres_password'],request['redis_password']]
+if request.get('connection_key'):secrets.append(request['connection_key'])
 def fail(message):
  for value in secrets:message=message.replace(value,'[redacted]')
  raise SystemExit(message)
@@ -46,6 +53,8 @@ def command(args):
  if p.returncode:fail('Test service operation failed: '+p.stderr[-1500:])
  return p.stdout
 network_result=subprocess.run(['docker','network','inspect',network],capture_output=True,text=True,stdin=subprocess.DEVNULL)
+if network_result.returncode and not re.search(r'not found|no such',network_result.stderr,re.I):
+ fail('Could not inspect the owned test network.')
 if network_result.returncode==0:
  labels=json.loads(network_result.stdout)[0].get('Labels',{})
  if labels.get('com.88jj.jjtv.purpose')!='jjtv-tenancy-tests' or labels.get('com.88jj.jjtv.instance')!=instance:
@@ -53,10 +62,40 @@ if network_result.returncode==0:
 elif action=='create':
  command(['docker','network','create','--label','com.88jj.jjtv.purpose=jjtv-tenancy-tests',
           '--label','com.88jj.jjtv.instance='+instance,network])
+runner_name='jjtv-tenancy-test-runner-'+instance[:12]
+scratch=Path('/tmp')/('jjtv-tenancy-tests-'+instance)
+def runner():
+ p=subprocess.run(['docker','inspect',runner_name],capture_output=True,text=True,stdin=subprocess.DEVNULL)
+ if p.returncode:
+  if re.search(r'not found|no such',p.stderr,re.I):return None
+  fail('Could not inspect the owned test runner.')
+ d=json.loads(p.stdout)[0]
+ labels=d['Config'].get('Labels',{})
+ if labels.get('com.88jj.jjtv.purpose')!='jjtv-tenancy-tests' or labels.get('com.88jj.jjtv.instance')!=instance or labels.get('com.88jj.jjtv.role')!='runner':
+  fail('Refusing to touch an unowned test runner.')
+ if d['HostConfig']['NetworkMode']!=network or not re.fullmatch(r'jjtv-api:[0-9a-f]{40}',d['Config']['Image']):
+  fail('Unexpected test runner configuration.')
+ return d
+def remove_runner():
+ if runner():command(['docker','rm','--force',runner_name])
+def remove_scratch():
+ if not scratch.exists() and not scratch.is_symlink():return
+ if scratch.parent!=Path('/tmp') or scratch.name!='jjtv-tenancy-tests-'+instance or scratch.resolve()!=scratch or not scratch.is_dir():
+  fail('Refusing to remove an unexpected test source path.')
+ marker=scratch/'.jjtv-owner.json'
+ if marker.is_symlink() or not marker.is_file() or json.loads(marker.read_text()).get('instance_id')!=instance:
+  fail('Refusing to remove test source without its ownership marker.')
+ shutil.rmtree(scratch)
+ if scratch.exists():fail('Test source cleanup did not complete.')
+if action=='cleanup':
+ remove_runner()
+ remove_scratch()
 def inspect(spec):
  name,image,port,host_port=spec
  p=subprocess.run(['docker','inspect',name],capture_output=True,text=True,stdin=subprocess.DEVNULL)
- if p.returncode:return None
+ if p.returncode:
+  if re.search(r'not found|no such',p.stderr,re.I):return None
+  fail('Could not inspect a tenancy test service.')
  d=json.loads(p.stdout)[0]
  labels=d['Config'].get('Labels',{})
  if labels.get('com.88jj.jjtv.purpose')!='jjtv-tenancy-tests' or labels.get('com.88jj.jjtv.instance')!=instance:
@@ -99,12 +138,103 @@ for spec in specs:
   else:fail('Test service did not become healthy: '+name)
  d=inspect(spec)
  if not d:fail('Missing test service: '+name)
+ if not d['State']['Running']:fail('Stopped test service: '+name)
  status=d['State'].get('Health',{}).get('Status',d['State']['Status'])
  print(name+': '+status+' on 127.0.0.1:'+host_port)
  if status!='healthy':fail('Unhealthy test service: '+name)
 if action=='cleanup' and network_result.returncode==0:
  command(['docker','network','rm',network])
  print('Owned tenancy test network removed.')
+'''
+
+REMOTE_RUN = r'''
+if action=='remote-run':
+ import base64,hashlib,io,os,signal,tarfile
+ from pathlib import PurePosixPath
+ image=request['image']
+ source_sha=request['source_sha']
+ if not re.fullmatch(r'jjtv-api:[0-9a-f]{40}',image) or not re.fullmatch(r'[0-9a-f]{40}',source_sha):
+  fail('Invalid test image or source revision.')
+ image_data=json.loads(command(['docker','image','inspect',image]))[0]
+ for setting in image_data['Config'].get('Env',[]):
+  key,_,value=setting.partition('=')
+  if value and (key in ['DATABASE_URL','REDIS_URL'] or re.search(r'(SECRET|PASSWORD|TOKEN|API_KEY)',key)):
+   fail('The test image unexpectedly contains application credentials.')
+ if runner() or scratch.exists() or scratch.is_symlink():
+  fail('An earlier owned test runner/source remains; inspect it or use cleanup before retrying.')
+ test_args=request['test_args']
+ selected=[]
+ if not isinstance(test_args,list) or not all(isinstance(x,str) and len(x)<1000 for x in test_args):
+  fail('Invalid pytest selection.')
+ for arg in test_args:
+  name=arg.split('::',1)[0]
+  if name.endswith('.py'):
+   path=PurePosixPath(name)
+   if path.is_absolute() or '..' in path.parts or path.parts[:1]!=('tests',):fail('Tests must be explicit backend tests paths.')
+   selected.append(name)
+ if not selected:fail('At least one explicit tests/*.py path is required.')
+ compressed=base64.b64decode(request['archive_base64'],validate=True)
+ if len(compressed)>10*1024*1024 or hashlib.sha256(compressed).hexdigest()!=request['archive_sha256']:
+  fail('Invalid test source archive.')
+ owned=False
+ process=None
+ def stop(signum,frame):raise SystemExit(128+signum)
+ for signum in [signal.SIGTERM,signal.SIGINT,signal.SIGHUP]:signal.signal(signum,stop)
+ try:
+  scratch.mkdir(mode=0o700)
+  (scratch/'.jjtv-owner.json').write_text(json.dumps({'instance_id':instance,'source_sha':source_sha}))
+  owned=True
+  total=0
+  with tarfile.open(fileobj=io.BytesIO(compressed),mode='r:gz') as archive:
+   for member in archive.getmembers():
+    parts=PurePosixPath(member.name).parts
+    if not parts or parts[0]!='backend' or '..' in parts or PurePosixPath(member.name).is_absolute():fail('Unsafe test archive path.')
+    if any(part in ['.venv','__pycache__','.pytest_cache','node_modules'] or part.startswith('.env') for part in parts):fail('Private files are forbidden in the test archive.')
+    if not member.isfile() and not member.isdir():fail('Links and special files are forbidden in the test archive.')
+    destination=scratch.joinpath(*parts)
+    if not destination.resolve().is_relative_to(scratch):fail('Test source escaped its owned directory.')
+    if member.isdir():destination.mkdir(parents=True,exist_ok=True)
+    else:
+     total+=member.size
+     if total>100*1024*1024:fail('Test source exceeds its size limit.')
+     destination.parent.mkdir(parents=True,exist_ok=True)
+     with archive.extractfile(member) as src,destination.open('xb') as dst:shutil.copyfileobj(src,dst)
+     destination.chmod(0o644)
+  for path in selected:
+   if not (scratch/'backend'/path).is_file():fail('A selected test is missing from committed source.')
+  env={
+   'DATABASE_URL':'postgresql+psycopg://jjtv_tenancy_test:'+request['postgres_password']+'@jjtv-tenancy-test-postgres:5432/postgres',
+   'MINITV_TEST_DB':'jjtv_tenancy_test','MINITV_TEST_REDIS_DB':'15',
+   'REDIS_URL':'redis://:'+request['redis_password']+'@jjtv-tenancy-test-redis:6379/15',
+   'TENANT_CONNECTION_KEY':request['connection_key'],'INDIA_API_BASE_URL':'https://8jj.ai/v1',
+   'APP_ENV':'test','BUNNY_MODE':'fake','RESEND_API_KEY':'','RESEND_FROM':'','OPENAI_API_KEY':'',
+   'MODERATION_WORKER':'0','PYTHONPATH':'/work/backend','PYTHONDONTWRITEBYTECODE':'1',
+   'PYTEST_ADDOPTS':'-p no:cacheprovider',
+  }
+  args=['docker','run','--rm','--pull','never','--name',runner_name,
+        '--label','com.88jj.jjtv.purpose=jjtv-tenancy-tests','--label','com.88jj.jjtv.instance='+instance,
+        '--label','com.88jj.jjtv.role=runner','--label','com.88jj.jjtv.source='+source_sha,
+        '--network',network,'--read-only','--tmpfs','/tmp:rw,size=1g','--memory','1536m','--cpus','2',
+        '--cap-drop','ALL','--security-opt','no-new-privileges',
+        '--mount','type=bind,src='+str(scratch/'backend')+',dst=/work/backend,readonly',
+        '--workdir','/work/backend','--entrypoint','python']
+  for key in env:args+=['--env',key]
+  args += [image,'-m','pytest',*test_args]
+  print('Remote tenancy pytest source='+source_sha+'; explicit files='+str(len(selected))+'; isolated services only.',flush=True)
+  process=subprocess.Popen(args,env={**os.environ,**env},stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,bufsize=1)
+  for line in process.stdout:
+   for value in secrets:line=line.replace(value,'[redacted]')
+   print(line,end='',flush=True)
+  code=process.wait()
+ finally:
+  remove_runner()
+  if process is not None and process.poll() is None:
+   process.terminate()
+   try:process.wait(timeout=5)
+   except subprocess.TimeoutExpired:process.kill();process.wait()
+  if owned:remove_scratch()
+  print('Owned remote test runner/source cleanup verified.',flush=True)
+ raise SystemExit(code)
 '''
 
 
@@ -116,7 +246,7 @@ def require_release_lock() -> None:
         common = ROOT / common
     lock = common / "minitv-release.lock"
     if not lock.is_file():
-        raise SystemExit("Use release.py run --target video-test-services for create/cleanup.")
+        raise SystemExit("Use release.py run --target video-test-services for create/cleanup/remote-run.")
     with lock.open("r+") as handle:
         try:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -159,18 +289,96 @@ def ssh_command(args: argparse.Namespace) -> list[str]:
     return command + ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=15", args.host]
 
 
+def selected_tests(test_args: list[str], remote: bool = False) -> list[str]:
+    if test_args[:1] == ["--"]:
+        test_args = test_args[1:]
+    if not test_args:
+        raise SystemExit("Supply explicit pytest files; the full suite is not selected implicitly.")
+    if not remote:
+        return test_args
+    normalized = []
+    files = 0
+    for arg in test_args:
+        path, separator, selector = arg.partition("::")
+        if path.endswith(".py"):
+            if path.startswith("backend/"):
+                path = path[len("backend/"):]
+            parts = PurePosixPath(path).parts
+            if not parts or parts[0] != "tests" or ".." in parts or PurePosixPath(path).is_absolute():
+                raise SystemExit("Remote test files must be explicit backend/tests/*.py paths.")
+            arg = path + (separator + selector if separator else "")
+            files += 1
+        normalized.append(arg)
+    if not files:
+        raise SystemExit("Remote runs require at least one explicit tests/*.py file.")
+    return normalized
+
+
+def source_archive() -> tuple[str, bytes]:
+    status = subprocess.check_output(["git", "status", "--porcelain", "--", "backend"], cwd=ROOT, text=True)
+    if status.strip():
+        raise SystemExit("Commit the backend source and tests before remote-run.")
+    sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+    committed = subprocess.check_output(["git", "-c", "core.autocrlf=false", "archive", "--format=tar", sha, "backend"], cwd=ROOT)
+    output = io.BytesIO()
+    blocked = {".venv", "__pycache__", ".pytest_cache", "node_modules"}
+    with tarfile.open(fileobj=io.BytesIO(committed), mode="r:") as source, tarfile.open(fileobj=output, mode="w:gz") as target:
+        for member in source.getmembers():
+            parts = PurePosixPath(member.name).parts
+            if any(part in blocked or part.startswith(".env") for part in parts):
+                continue
+            if not parts or parts[0] != "backend" or ".." in parts or PurePosixPath(member.name).is_absolute():
+                raise SystemExit("Unexpected source archive path.")
+            if not member.isfile() and not member.isdir():
+                raise SystemExit("Links and special files are not allowed in remote test source.")
+            target.addfile(member, source.extractfile(member) if member.isfile() else None)
+    return sha, output.getvalue()
+
+
+def run_remote_tests(ssh: list[str], state: dict, test_args: list[str], image: str) -> int:
+    test_args = selected_tests(test_args, remote=True)
+    sha, archive = source_archive()
+    request = {**state, "action": "remote-run", "test_args": test_args, "image": image,
+               "source_sha": sha, "archive_sha256": hashlib.sha256(archive).hexdigest(),
+               "archive_base64": base64.b64encode(archive).decode()}
+    print(f"Uploading committed backend {sha} for isolated remote pytest; no environment files included.", flush=True)
+    process = subprocess.Popen(ssh + ["python3 -c " + shlex.quote(REMOTE + REMOTE_RUN)],
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    try:
+        process.stdin.write(json.dumps(request).encode())
+        process.stdin.close()
+        for raw in process.stdout:
+            line = raw.decode(errors="replace")
+            for key in ("postgres_password", "redis_password", "connection_key"):
+                line = line.replace(state[key], "[redacted]")
+            print(line, end="", flush=True)
+        return process.wait()
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+
+
 def run_tests(ssh: list[str], state: dict, test_args: list[str]) -> int:
     import psycopg
     import redis
 
-    if test_args[:1] == ["--"]:
-        test_args = test_args[1:]
-    if not test_args:
-        raise SystemExit("Supply explicit pytest paths after run --; the full suite is not selected implicitly.")
+    test_args = selected_tests(test_args)
     forward = ssh[:-1] + ["-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=15", "-N",
                           "-L", f"127.0.0.1:{POSTGRES_PORT}:127.0.0.1:{POSTGRES_PORT}",
                           "-L", f"127.0.0.1:{REDIS_PORT}:127.0.0.1:{REDIS_PORT}", ssh[-1]]
     tunnel = subprocess.Popen(forward, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    def stop(signum, frame):
+        raise SystemExit(128 + signum)
+    previous = {}
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        previous[signum] = signal.signal(signum, stop)
+    if hasattr(signal, "SIGHUP"):
+        previous[signal.SIGHUP] = signal.signal(signal.SIGHUP, stop)
     try:
         for _ in range(100):
             if tunnel.poll() is not None:
@@ -199,29 +407,37 @@ def run_tests(ssh: list[str], state: dict, test_args: list[str]) -> int:
         print("Running pytest against disposable tenancy PostgreSQL and Redis DB 15; no production credentials loaded.", flush=True)
         return subprocess.run([sys.executable, "-m", "pytest", *test_args], cwd=ROOT, env=env, stdin=subprocess.DEVNULL).returncode
     finally:
-        tunnel.terminate()
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+        if tunnel.poll() is None:
+            tunnel.terminate()
         try:
             tunnel.wait(timeout=5)
         except subprocess.TimeoutExpired:
             tunnel.kill()
             tunnel.wait()
+        if tunnel.stderr is not None:
+            tunnel.stderr.close()
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("create", "check", "cleanup", "run"))
+    parser.add_argument("action", choices=("create", "check", "cleanup", "run", "remote-run"))
     parser.add_argument("--host", default=os.environ.get("JJTV_DEPLOY_HOST", "video"))
     parser.add_argument("--ssh-bin")
+    parser.add_argument("--image", default=DEFAULT_TEST_IMAGE, help="Existing credential-free JJTV API image for remote-run.")
     parser.add_argument("--credentials", type=Path, default=Path(tempfile.gettempdir()) / "jjtv-tenancy-test-services.json")
     args, pytest_args = parser.parse_known_args()
-    if args.action != "run" and pytest_args:
+    if args.action not in {"run", "remote-run"} and pytest_args:
         parser.error("Unexpected arguments: " + " ".join(pytest_args))
-    if args.action in {"create", "cleanup"}:
+    if args.action in {"create", "cleanup", "remote-run"}:
         require_release_lock()
     state = credentials(args.credentials, args.action == "create")
     ssh = ssh_command(args)
     if args.action == "run":
         return run_tests(ssh, state, pytest_args)
+    if args.action == "remote-run":
+        return run_remote_tests(ssh, state, pytest_args, args.image)
     request = {name: state[name] for name in ("instance_id", "postgres_password", "redis_password")}
     request["action"] = args.action
     proc = subprocess.run(ssh + ["python3 -c " + shlex.quote(REMOTE)], input=json.dumps(request).encode(),

@@ -91,6 +91,9 @@ def session(engine):
     ops_service.get_redis().flushdb()  # db 15 is dedicated to tests
     factory = sessionmaker(bind=engine, expire_on_commit=False)
     s = factory()
+    from app.modules.tenancy.models import Tenant
+    s.add_all([Tenant(id="jjtv", name="JJTV 自营", kind="native", status="active"), Tenant(id="india-short-drama", name="India Short Drama", kind="india_legacy", status="active")])
+    s.commit()
     try:
         yield s
     finally:
@@ -178,6 +181,10 @@ def make(session):
                 display_name=f"staff-{role}-{n}",
             )
             session.add(user)
+            session.flush()
+            from app.modules.tenancy.models import TenantMember
+            if role != "partner":
+                session.add(TenantMember(tenant_id="jjtv", user_id=user.id, role=role))
             session.commit()
             return user
 

@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import {
+  Alert,
   Avatar,
   Button,
   Card,
@@ -9,6 +10,7 @@ import {
   Grid,
   Layout,
   Menu,
+  Select,
   Space,
   Spin,
   Tag,
@@ -27,6 +29,10 @@ import {
 import { api, clearToken, forceReauth, getToken, isDeadCredential } from "./api";
 import { MeContext, ROLE_LABELS, type Me } from "./me";
 import Login from "./pages/Login";
+import Tenants from "./pages/Tenants";
+import IndiaContent from "./pages/IndiaContent";
+import { TenantContext, type Tenant } from "./tenant";
+import { DEFAULT_TENANT_ID, INDIA_TENANT_ID, getCurrentTenantId, setCurrentTenantId } from "./tenant-scope";
 import Dramas from "./pages/Dramas";
 import DramaEdit from "./pages/DramaEdit";
 import Reviews from "./pages/Reviews";
@@ -96,6 +102,16 @@ export default function App() {
   const location = useLocation();
   const token = getToken();
   const [me, setMe] = useState<Me | null>(null);
+  const [tenants, setTenants] = useState<Tenant[]>([]);
+  const [tenantId, setTenantId] = useState(getCurrentTenantId);
+  const [tenantState, setTenantState] = useState<"loading" | "ready" | "failed">("loading");
+  const refreshTenants = useCallback(async () => {
+    const rows = await api<Tenant[]>("/admin/v1/tenants");
+    setTenants(rows);
+    const next = rows.find(t => t.id === getCurrentTenantId()) ?? rows.find(t => t.status === "active") ?? rows[0];
+    if (next) { setCurrentTenantId(next.id); setTenantId(next.id); }
+    setTenantState("ready");
+  }, []);
   // 页面必须等身份确认后再渲染：上剧方账号一旦先落到员工页（旧书签、直接
   // 输 URL、登录后默认跳转），每个请求都会吃 403「接口仅对平台员工开放」，
   // 用户看到的是「数据全空 + 一排红条」，却不会被送回登录页。
@@ -151,6 +167,13 @@ export default function App() {
       alive = false;
     };
   }, [token]);
+
+  useEffect(() => {
+    if (!token || meState !== "ready" || !me) return;
+    if (me.role === "partner") { setCurrentTenantId(DEFAULT_TENANT_ID); setTenantId(DEFAULT_TENANT_ID); setTenantState("ready"); return; }
+    setTenantState("loading");
+    void refreshTenants().catch(() => setTenantState("failed"));
+  }, [token, meState, me?.id, me?.role, refreshTenants]);
 
   useEffect(() => {
     setNavOpen(false);
@@ -273,7 +296,32 @@ export default function App() {
     return <Navigate to="/dashboard" replace />;
   }
 
-  const selectedItem = [...ITEMS]
+  const currentTenant = tenants.find(t => t.id === tenantId);
+  const isIndia = currentTenant?.kind === "india_legacy";
+  const isPartner = me?.role === "partner";
+  const platformAdmin = me?.role === "admin";
+  const effectiveRole = platformAdmin ? "admin" : currentTenant?.own_role ?? currentTenant?.role ?? currentTenant?.ownrole ?? me?.role ?? "";
+  const effectiveMe = me ? { ...me, role: effectiveRole, platform_role: me.role } : null;
+  const contentKeys = ["/dramas", "/reviews", "/tags"];
+  const selectTenant = (id: string) => {
+    const row = tenants.find(t => t.id === id);
+    if (!row || row.status !== "active") { message.warning("此租户已暂停"); return; }
+    setCurrentTenantId(id); setTenantId(id);
+    navigate(row.kind === "india_legacy" ? "/india-content" : "/dramas", { replace: true });
+  };
+  if (!isPartner && tenantState !== "ready") return <div style={{ padding: 32 }}><Card>
+    {tenantState === "loading" ? <Space><Spin /><span>正在加载获授权租户…</span></Space> : <Space direction="vertical"><Alert type="error" message="无法加载租户，请重试" /><Button onClick={() => { setTenantState("loading"); void refreshTenants().catch(() => setTenantState("failed")); }}>重试</Button></Space>}
+  </Card></div>;
+  if (!isPartner && !currentTenant) return <div style={{ padding: 32 }}><Alert showIcon type="info" message="当前账号未获授权访问任何租户" description="请联系平台管理员分配租户权限。" /><Button style={{ marginTop: 16 }} onClick={() => void onLogout()}>退出登录</Button></div>;
+  const onTenantManagement = location.pathname === "/tenants";
+  if (!isPartner && !onTenantManagement && currentTenant?.status === "active") {
+    if (isIndia && location.pathname !== "/india-content") return <Navigate to="/india-content" replace />;
+    if (!isIndia && location.pathname === "/india-content") return <Navigate to="/dramas" replace />;
+    if (!isIndia && tenantId !== DEFAULT_TENANT_ID && effectiveRole === "finance" && !location.pathname.startsWith("/dramas")) return <Navigate to="/dramas" replace />;
+    if (!isIndia && tenantId !== DEFAULT_TENANT_ID && !contentKeys.some(key => location.pathname === key || location.pathname.startsWith(key + "/"))) return <Navigate to="/dramas" replace />;
+  }
+  const tenantItems = [...ITEMS, { key: "/tenants", label: "租户管理", roles: ["admin"] }, { key: "/india-content", label: "India 内容运营" }];
+  const selectedItem = [...tenantItems]
     .sort((a, b) => b.key.length - a.key.length)
     .find((item) => location.pathname === item.key || location.pathname.startsWith(`${item.key}/`));
   const selected = selectedItem?.key ?? "/dramas";
@@ -281,9 +329,15 @@ export default function App() {
 
   // Role-gated entries stay hidden until `/auth/me` resolves, so a non-admin
   // never sees a menu item that would only 403. Unrestricted items pass through.
-  const visibleItems = ITEMS.filter(
-    (item) => !item.roles || (me !== null && item.roles.includes(me.role))
-  );
+  const visibleItems = tenantItems.filter(item => {
+    if (item.key === "/tenants") return platformAdmin;
+    if (isPartner) return !!item.roles?.includes("partner");
+    if (isIndia) return item.key === "/india-content";
+    if (item.key === "/india-content") return false;
+    if (tenantId !== DEFAULT_TENANT_ID && !contentKeys.includes(item.key)) return false;
+    if (tenantId !== DEFAULT_TENANT_ID && effectiveRole === "finance") return item.key === "/dramas";
+    return !item.roles || item.roles.includes(effectiveRole);
+  });
 
   const nav = (
     <>
@@ -308,7 +362,8 @@ export default function App() {
   );
 
   return (
-    <MeContext.Provider value={me}>
+    <TenantContext.Provider value={{ items: tenants, current: currentTenant, refresh: refreshTenants, select: selectTenant }}>
+    <MeContext.Provider value={effectiveMe}>
       <Layout style={{ minHeight: "100vh", background: "#f5f6f8" }}>
         {isDesktop ? (
           <Sider
@@ -333,7 +388,7 @@ export default function App() {
             {nav}
           </Drawer>
         )}
-        <Layout>
+        <Layout style={{ minWidth: 0 }}>
           <Header
             style={{
               background: "#fff",
@@ -361,11 +416,12 @@ export default function App() {
                   onClick={() => setNavOpen(true)}
                 />
               )}
-              <Typography.Text strong style={{ fontSize: 15 }}>
-                {pageTitle}
-              </Typography.Text>
+              {!isNarrow && <Typography.Text strong style={{ fontSize: 15 }}>{pageTitle}</Typography.Text>}
             </Space>
             <Space size={8}>
+              {!isPartner && <Select aria-label="当前租户" value={tenantId} onChange={selectTenant}
+                style={{ width: isNarrow ? 132 : 220 }} popupMatchSelectWidth={260}
+                options={tenants.map(t => ({ value: t.id, label: t.name + (t.status === "paused" ? " · 已暂停" : ""), disabled: t.status !== "active" }))} />}
               {me && (
                 // 账号区即退出入口：头像 + 名字 + 角色，点开是「退出登录」菜单。
                 <Dropdown menu={accountMenu(me)} placement="bottomRight" trigger={["click"]}>
@@ -379,9 +435,7 @@ export default function App() {
                       <Avatar size={26} style={{ background: "#E53B3E", fontSize: 13 }}>
                         {(me.display_name || me.username).slice(0, 1)}
                       </Avatar>
-                      <Typography.Text ellipsis style={{ maxWidth: isNarrow ? 88 : 160 }}>
-                        {me.display_name || me.username}
-                      </Typography.Text>
+                      {!isNarrow && <Typography.Text ellipsis style={{ maxWidth: 160 }}>{me.display_name || me.username}</Typography.Text>}
                       {!isNarrow && (
                         <Tag color="red" style={{ marginInlineEnd: 0 }}>
                           {ROLE_LABELS[me.role] ?? me.role}
@@ -396,8 +450,11 @@ export default function App() {
           </Header>
           {/* Fluid container: the table fills the viewport instead of leaving a
               dead column of whitespace on wide monitors. */}
-          <Content style={{ padding: isNarrow ? 12 : 24, width: "100%" }}>
-            <Routes>
+          <Content key={tenantId} style={{ padding: isNarrow ? 12 : 24, width: "100%", minWidth: 0 }}>
+            {!isPartner && <div className="tenant-context-bar"><Typography.Text strong>{currentTenant?.name}</Typography.Text><Typography.Text type="secondary">当前运营租户</Typography.Text><Tag style={{ margin: 0 }}>{ROLE_LABELS[effectiveRole] || effectiveRole}</Tag></div>}
+            {currentTenant?.status === "paused" && !onTenantManagement ? <Alert type="warning" showIcon message="此租户已暂停" description="请切换其他租户，或由平台管理员在租户管理中重新启用。" action={platformAdmin ? <Button onClick={() => navigate("/tenants")}>管理租户</Button> : undefined} /> : <Routes>
+              <Route path="/tenants" element={<Tenants />} />
+              <Route path="/india-content" element={<IndiaContent />} />
               <Route path="/" element={<Navigate to="/dashboard" replace />} />
               <Route path="/dashboard" element={<DashboardPage />} />
               <Route path="/dramas" element={<Dramas />} />
@@ -425,11 +482,12 @@ export default function App() {
               <Route path="/settlements" element={<Settlements />} />
               <Route path="/api-keys" element={<ApiKeys />} />
               <Route path="*" element={<Navigate to="/dashboard" replace />} />
-            </Routes>
+            </Routes>}
           </Content>
         </Layout>
       </Layout>
       <ChangePasswordModal open={passwordOpen} onClose={() => setPasswordOpen(false)} />
     </MeContext.Provider>
+    </TenantContext.Provider>
   );
 }

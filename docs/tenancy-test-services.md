@@ -21,9 +21,40 @@ python3 scripts/release.py run --target video-test-services --note "Disposable t
 python3 scripts/release.py status
 ```
 
-Use the local Windows Python virtual environment for test execution. The `run`
-command opens an SSH tunnel, authenticates to the isolated database and Redis,
-sets test-only environment variables, and closes the tunnel afterward:
+For database-heavy regressions, execute the selected tests beside the isolated
+services to avoid the latency of a database SSH tunnel. Commit the backend source
+and selected tests first, then run under the same release lock:
+
+```bash
+python3 scripts/release.py run --target video-test-services --note "Remote tenancy regression tests" -- \
+  python3 scripts/test_tenancy_services.py --credentials /mnt/c/Users/Administrator/.codex/private/jjtv-tenancy-test-services.json \
+  remote-run -- tests/test_tenancy.py -q
+```
+
+`remote-run` archives only committed `backend/` source and rejects private
+environment files, virtual environments, caches, links, and special files. It
+validates the owned test network and containers, extracts into the exact
+`/tmp/jjtv-tenancy-tests-<instance-id>` directory, and mounts the backend read-only
+at `/work/backend`. The existing credential-free
+`jjtv-api:f6428e9dfaa18148e012eb7bcf5da5c4ab7e50f5` image supplies Python and
+dependencies; `--image jjtv-api:<40-character-source-sha>` can select another
+already-present JJTV API image. The runner never loads a production environment
+or attaches production volumes/networks. Test-only PostgreSQL, Redis DB 15,
+Fernet, fake-media, and disabled-mail settings are supplied explicitly. Pytest
+paths must name files under `tests/` (`backend/tests/` is also accepted).
+
+Runner output redacts test passwords and the test connection key. Normal exit,
+test failure, and handled termination clean up only the owned runner and source
+directory. Cleanup verifies the resolved directory is the exact owned `/tmp`
+path and checks its instance marker before removal. If an uncatchable process
+kill leaves artifacts, `cleanup` removes only resources with the matching
+ownership labels/marker; it refuses unrelated containers or paths.
+
+The local Windows `run` mode remains available for short tests. It opens an SSH
+tunnel, authenticates to the isolated database and Redis, sets test-only
+environment variables, and closes only the tunnel process it created. Handled
+interrupt/termination signals trigger the same cleanup; it never sweeps other
+SSH processes by name:
 
 ```powershell
 .venv/Scripts/python.exe scripts/test_tenancy_services.py --credentials C:/Users/Administrator/.codex/private/jjtv-tenancy-test-services.json run -- backend/tests/test_tenancy.py -q

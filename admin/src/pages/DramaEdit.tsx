@@ -4,6 +4,7 @@ import {
   Button,
   Card,
   Col,
+  Descriptions,
   Divider,
   Form,
   Input,
@@ -31,6 +32,7 @@ import {
 } from "@ant-design/icons";
 import type { UploadProps } from "antd";
 import { api, errorText } from "../api";
+import { useCanWriteContent } from "../me";
 import EpisodesPanel from "./EpisodesPanel";
 import { PublishPanel } from "./StagePages";
 import { DramaGroupsPanel } from "./Groups";
@@ -64,6 +66,7 @@ const COVER_H = 266;
 export default function DramaEdit() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const canWrite = useCanWriteContent();
   const [form] = Form.useForm();
   const [drama, setDrama] = useState<Drama | null>(null);
   const [tagOptions, setTagOptions] = useState<TagOption[]>([]);
@@ -85,7 +88,7 @@ export default function DramaEdit() {
     setDrama(d);
     setCoverUrl(d.cover_url ?? "");
     setTagOptions(t.items);
-    form.setFieldsValue({
+    if (canWrite) form.setFieldsValue({
       title: d.title,
       synopsis: d.synopsis,
       cover_url: d.cover_url,
@@ -94,7 +97,7 @@ export default function DramaEdit() {
       tag_ids: d.tags.map((x) => x.id),
     });
     setDirty(false);
-  }, [id, form]);
+  }, [id, form, canWrite]);
 
   useEffect(() => {
     load().catch((e) => message.error(`加载失败：${errorText(e)}`));
@@ -256,7 +259,7 @@ export default function DramaEdit() {
     disabled: coverBusy !== null,
   };
 
-  const infoTab = (
+  const infoTab = canWrite ? (
     <Card styles={{ body: { padding: 24 } }}>
       <Form
         form={form}
@@ -458,7 +461,14 @@ export default function DramaEdit() {
         </Row>
       </Form>
     </Card>
-  );
+  ) : <Card><Descriptions layout="vertical" column={{ xs: 1, md: 2 }} items={[
+    { key: "title", label: "剧集名称", children: drama.title },
+    { key: "status", label: "状态", children: statusMeta.text },
+    { key: "synopsis", label: "简介", children: drama.synopsis || "—", span: 2 },
+    { key: "free", label: "免费集数", children: drama.free_episode_count },
+    { key: "coins", label: "单集金币", children: drama.coin_price_per_episode },
+    { key: "tags", label: "标签", children: drama.tags.map(tag => tag.name_zh || tag.name_en).join("、") || "—" },
+  ]} /><Typography.Text type="secondary">当前租户角色仅可查看内容。</Typography.Text></Card>;
 
   return (
     <Space direction="vertical" size="middle" style={{ width: "100%" }}>
@@ -478,7 +488,7 @@ export default function DramaEdit() {
         </Space>
       </Card>
 
-      {drama.status !== "published" && (
+      {canWrite && drama.status !== "published" && (
         <Card
           size="small"
           title="上架流程"
@@ -526,7 +536,7 @@ export default function DramaEdit() {
               />
             ),
           },
-        ]}
+        ].filter(item => canWrite || ["info", "episodes"].includes(item.key))}
       />
     </Space>
   );

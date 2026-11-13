@@ -18,3 +18,6 @@ from app.modules.analytics import models as _analytics_models  # noqa: F401
 from app.modules.ops import config_models as _config_models  # noqa: F401
 from app.modules.playback import models as _playback_models  # noqa: F401
 from app.modules.social import models as _social_models  # noqa: F401
+
+from app.modules.tenancy import models as _tenant_models  # noqa: F401
+from app.modules.tenancy import scope as _tenant_scope  # noqa: F401

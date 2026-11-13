@@ -833,7 +833,7 @@ export default function EpisodesPanel({ dramaId }: { dramaId: string }) {
           刷新
         </Button>
         <Typography.Text type="secondary">共 {rows.length} 集</Typography.Text>
-        {selectedKeys.length > 0 && (
+        {canWrite && selectedKeys.length > 0 && (
           <>
             <Typography.Text>已选 {selectedKeys.length} 集</Typography.Text>
             <Button
@@ -865,14 +865,14 @@ export default function EpisodesPanel({ dramaId }: { dramaId: string }) {
         dataSource={rows}
         pagination={{ pageSize: 20 }}
         scroll={{ x: 720 }}
-        rowSelection={{
+        rowSelection={canWrite ? {
           selectedRowKeys: selectedKeys,
           onChange: (keys) => setSelectedKeys(keys as number[]),
           getCheckboxProps: (row) => ({
             // Nothing to take down/publish while a placeholder has no video.
             disabled: !row.bunny_video_id,
           }),
-        }}
+        } : undefined}
         columns={[
           { title: "集", dataIndex: "episode_number", width: 70 },
           {
@@ -902,7 +902,7 @@ export default function EpisodesPanel({ dramaId }: { dramaId: string }) {
                     预览
                   </Button>
                 )}
-                {row.status === "transcoding" && (
+                {canWrite && row.status === "transcoding" && (
                   <Button size="small" type="link" style={{ padding: 0 }} icon={<SyncOutlined />} onClick={() => syncStatus(row)}>
                     同步状态
                   </Button>

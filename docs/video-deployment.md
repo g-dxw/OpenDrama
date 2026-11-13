@@ -47,6 +47,35 @@ administrator password are generated only in `/opt/jjtv/shared/.env`
 webhook is blocked at the JJTV web proxy, with a random independent secret as an
 additional boundary. Configure actual providers separately before enabling them.
 
+The India tenant connector uses the fixed server-side
+`INDIA_API_BASE_URL=https://8jj.ai/v1`. Each installation has its own Fernet
+`TENANT_CONNECTION_KEY` for encrypted upstream staff sessions. Deployments append
+missing connector settings to the existing private environment file while
+preserving existing secrets. An invalid existing key fails deployment instead
+of being rotated and making stored sessions unreadable. Back up this key with
+the database; rotating it requires an explicit credential migration.
+The native Bunny callback verifier also receives an independent, stable
+`BUNNY_CALLBACK_SECRET` when the setting is missing. Existing callback secrets
+are retained; a development fallback is not provisioned for production.
+
+Both JJTV Nginx layers stream only the fixed India tenant binary-upload paths
+(`/admin/v1/tenants/india-short-drama/india/admin/uploads/<id>/content`,
+`covers/<id>/content`, and `rights/evidence/<id>/content`) with a `100m` ingress
+limit, HTTP/1.1 request forwarding, disabled request buffering, and 300-second
+body/send/read idle timeouts. IDs match the adapter's 1–160 ASCII safe-character
+allowlist. Upload bytes use PUT; OPTIONS remains available for browser CORS
+preflight. The application separately enforces 100 MiB video, 5 MiB cover, and
+10 MiB rights-evidence limits. Other paths retain the existing `32m` limit.
+
+The old runtime was independently checked through its public
+`https://8jj.ai/v1/health` and configuration endpoints: it reports production
+with PostgreSQL and `production-welfare` adapters, and staff administration
+requires authentication. Its separately running local/test Worker image has
+FFmpeg/FFprobe and a real 100 MiB media pipeline; that source label alone does
+not prove production upload/transcode acceptance. Verify the operator's actual
+upload, job, review, and publication results through the existing India APIs.
+The JJTV connector does not change the old service, media credentials, or worker.
+
 Certificate renewal uses the existing certbot timer and the dedicated
 `jjtv-video` deploy hook. The original certificate lineage is untouched.
 

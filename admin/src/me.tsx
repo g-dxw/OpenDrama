@@ -5,6 +5,7 @@ export type Me = {
   username: string;
   display_name: string;
   role: string;
+  platform_role?: string;
   /** Present only on the partner surface (`/partner/v1/me`). */
   supplier?: { id: number; name: string; status: string; revenue_share_bps: number };
 };

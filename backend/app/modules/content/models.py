@@ -34,6 +34,7 @@ EPISODE_STATUSES = ("not_uploaded", "transcoding", "transcode_failed", "in_revie
 
 class Drama(Base):
     __tablename__ = "dramas"
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), nullable=False, default="jjtv", server_default="jjtv", index=True)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     title: Mapped[str] = mapped_column(String(200), nullable=False)
@@ -74,17 +75,19 @@ class Drama(Base):
             "review_state",
             postgresql_where=text("review_state = 'pending'"),
         ),
-        # Titles are unique per tenant, not globally: two suppliers may both
+        # Titles are unique within each native tenant: two suppliers may both
         # carry a "替身新娘". Self-operated rows (supplier_id IS NULL) keep the
-        # old global uniqueness.
+        # self-operated title uniqueness within that tenant.
         Index(
             "uq_dramas_title_self",
+            "tenant_id",
             "title",
             unique=True,
             postgresql_where=text("supplier_id IS NULL"),
         ),
         Index(
             "uq_dramas_title_supplier",
+            "tenant_id",
             "supplier_id",
             "title",
             unique=True,
@@ -123,6 +126,7 @@ class Episode(Base):
 
 class Tag(Base):
     __tablename__ = "tags"
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), nullable=False, default="jjtv", server_default="jjtv", index=True)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     name_en: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -133,7 +137,7 @@ class Tag(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
-    __table_args__ = (UniqueConstraint("name_en", name="uq_tags_name_en"),)
+    __table_args__ = (UniqueConstraint("tenant_id", "name_en", name="uq_tags_tenant_name_en"),)
 
 
 class DramaTag(Base):
@@ -151,6 +155,7 @@ class HomeGroup(Base):
     content service from stage 6, as is position semantics."""
 
     __tablename__ = "home_groups"
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), nullable=False, default="jjtv", server_default="jjtv", index=True)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(64), nullable=False)

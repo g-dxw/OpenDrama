@@ -94,6 +94,9 @@ values = {
     "SEED_ADMIN_PASSWORD": secrets.token_urlsafe(24),
     "PAY_WEBHOOK_SECRET": secrets.token_urlsafe(48),
     "MODERATION_KEY_SECRET": base64.urlsafe_b64encode(secrets.token_bytes(32)).decode(),
+    "BUNNY_CALLBACK_SECRET": secrets.token_urlsafe(48),
+    "TENANT_CONNECTION_KEY": base64.urlsafe_b64encode(secrets.token_bytes(32)).decode(),
+    "INDIA_API_BASE_URL": "https://8jj.ai/v1",
 }
 fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
 with os.fdopen(fd, "w") as handle:
@@ -102,6 +105,56 @@ print("Generated isolated JJTV runtime secrets on the server; no third-party cre
 PY
 fi
 chmod 600 "$ROOT/shared/.env"
+# Upgrade existing installations without changing any existing secret.
+python3 - "$ROOT/shared/.env" <<'PY'
+import base64
+import os
+from pathlib import Path
+import secrets
+import sys
+import tempfile
+
+target = Path(sys.argv[1])
+original = target.read_text()
+values = {}
+for line in original.splitlines():
+    if line.strip() and not line.lstrip().startswith("#") and "=" in line:
+        name, value = line.split("=", 1)
+        values[name.strip()] = value.strip().strip("\"'")
+additions = {}
+if not values.get("BUNNY_CALLBACK_SECRET"):
+    additions["BUNNY_CALLBACK_SECRET"] = secrets.token_urlsafe(48)
+key = values.get("TENANT_CONNECTION_KEY", "")
+if key:
+    try:
+        valid_key = len(base64.b64decode(key, altchars=b"-_", validate=True)) == 32
+    except (ValueError, TypeError):
+        valid_key = False
+    if not valid_key:
+        raise SystemExit("Existing TENANT_CONNECTION_KEY is invalid; refusing automatic key rotation.")
+else:
+    additions["TENANT_CONNECTION_KEY"] = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode()
+base = values.get("INDIA_API_BASE_URL", "")
+if base and base.rstrip("/") not in {"https://8jj.ai", "https://8jj.ai/v1"}:
+    raise SystemExit("Existing INDIA_API_BASE_URL does not match the fixed India origin.")
+if not base:
+    additions["INDIA_API_BASE_URL"] = "https://8jj.ai/v1"
+if additions:
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile("w", dir=target.parent, prefix=".env-tenancy-", delete=False) as handle:
+            temporary = Path(handle.name)
+            os.chmod(temporary, 0o600)
+            handle.write(original.rstrip("\n") + "\n")
+            handle.write("\n".join(f"{name}={value}" for name, value in additions.items()) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+    finally:
+        if temporary is not None and temporary.exists():
+            temporary.unlink()
+print("JJTV tenancy connection configuration ready; existing secrets preserved.")
+PY
 export JJTV_ENV_FILE="$ROOT/shared/.env"
 export JJTV_SOURCE_SHA="$SOURCE_SHA"
 export JJTV_EDGE_NETWORK=dastaan-staging_default
@@ -151,6 +204,25 @@ NGINX
   cat >>"$ROOT/shared/edge-candidate.conf" <<'NGINX'
     client_max_body_size 32m;
     resolver 127.0.0.11 valid=10s ipv6=off;
+    location ~ "^/admin/v1/tenants/india-short-drama/india/admin/(uploads|covers|rights/evidence)/[A-Za-z0-9_-]{1,160}/content$" {
+        if ($host != jjtv-api.8jj.net) { return 404; }
+        # PUT carries bytes; OPTIONS reaches the application's CORS middleware.
+        limit_except PUT OPTIONS { deny all; }
+        client_max_body_size 100m;
+        client_body_timeout 300s;
+        proxy_request_buffering off;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        set $jjtv_upload_upstream http://jjtv-web:8080;
+        proxy_pass $jjtv_upload_upstream;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 15s;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+        proxy_next_upstream off;
+    }
     location / {
         set $jjtv_upstream http://jjtv-web:8080;
         proxy_pass $jjtv_upstream;

@@ -7,6 +7,7 @@
  * means the two upload paths cannot drift apart.
  */
 import { api, getToken } from "../api";
+import { getCurrentTenantId } from "../tenant-scope";
 
 export type VideoMeta = { width: number; height: number; durationSeconds: number };
 
@@ -57,7 +58,10 @@ export function directUpload(
   const base = new URL(session.upload_url, window.location.href);
   const headers: Record<string, string> = { ...session.headers };
   const token = getToken();
-  if (base.origin === window.location.origin && token) headers.Authorization = `Bearer ${token}`;
+  if (base.origin === window.location.origin && token) {
+    headers.Authorization = `Bearer ${token}`;
+    headers["X-JJTV-Tenant"] = getCurrentTenantId();
+  }
   // Bunny answers the POST with a root-relative Location ("/tusupload/<id>");
   // it must be resolved against Bunny's origin, not the admin page.
   const resolveLocation = (location: string) => new URL(location, base).href;
@@ -154,8 +158,10 @@ export function orientationLabel(meta: VideoMeta): string {
 
 /** Poll the backend until Bunny finishes transcoding (callback is unset in dev). */
 export async function waitForTranscode(episodeId: number, attempts = 24, intervalMs = 5000): Promise<string> {
+  const tenantId = getCurrentTenantId();
   let lastStatus = "transcoding";
   for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (getCurrentTenantId() !== tenantId) return lastStatus;
     try {
       const res = await api<{ status: string }>(`/admin/v1/episodes/${episodeId}/sync-status`, { method: "POST" });
       lastStatus = res.status;
