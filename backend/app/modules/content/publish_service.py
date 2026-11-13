@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
+from app.modules.tenancy.models import Tenant,TenantModule
 from app.modules.common import bunny
 from app.modules.common.models import AuditLog
 from app.modules.content.models import (
@@ -124,6 +125,7 @@ def apply_due_schedules(session: Session, now: datetime | None = None) -> int:
             Drama.scheduled_publish_at.is_not(None),
             Drama.scheduled_publish_at <= now,
             Drama.status.in_(["in_review", "unpublished"]),
+            Drama.tenant_id.in_(select(Tenant.id).join(TenantModule,TenantModule.tenant_id==Tenant.id).where(Tenant.status=="active",TenantModule.module_key=="dramas",TenantModule.enabled.is_(True))),
         )
     ).all()
     count = 0

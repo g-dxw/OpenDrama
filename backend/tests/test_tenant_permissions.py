@@ -1,542 +1,234 @@
-"""Custom tenant roles must authorize HTTP actions, not only hide UI menus.
-
-Uses the dedicated database/Redis fixtures. India is mocked and is never mutated.
-"""
+"""Tenant-local role/menu/action authorization; no platform superuser shortcuts."""
 from __future__ import annotations
-
-from datetime import datetime, timedelta, timezone
+from datetime import datetime,timedelta,timezone
 from uuid import uuid4
-
+import pytest
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
-import pytest
-
 from app.main import app
-from app.modules.content.models import Drama, Episode, MediaUpload
-from app.modules.tenancy.india import IndiaError, IndiaReply
-from app.modules.tenancy.models import DEFAULT_TENANT, INDIA_TENANT
+from app.modules.content.models import Drama,Episode
+from app.modules.tenancy.india import IndiaError,IndiaReply
+from app.modules.tenancy.models import DEFAULT_TENANT,INDIA_TENANT,Tenant,TenantRole,TenantMember
+from app.modules.tenancy.permissions import preset_role_id,seed_tenant_defaults
 
-ROOT = "/admin/v1/tenants"
-INDIA = ROOT + "/india-short-drama/india"
-CONTENT_KEYS = {"dramas.view", "dramas.edit", "dramas.upload", "dramas.publish", "dramas.delete", "dramas.pricing",
-                "episodes.delete", "reviews.view", "reviews.decide", "tags.view", "tags.manage", "groups.view", "groups.manage"}
-ACCESS, REFRESH = "a" * 43, "r" * 43
-OLD_ACTOR = {"id": "user_old_editor", "name": "Named old editor", "role": "editor", "age_verified": False}
+ROLES='/tenant/v1/roles'
+CONTENT_KEYS={'dramas.view','dramas.edit','dramas.upload','dramas.publish','dramas.delete','dramas.pricing','episodes.delete','reviews.view','reviews.decide','tags.view','tags.manage','groups.view','groups.manage'}
 
-
-def logged_in(client, staff):
-    response = client.post("/admin/v1/auth/login", json={"username": staff.username, "password": "pass-1234"})
-    assert response.status_code == 200, response.text
-    return {"Authorization": "Bearer " + response.json()["token"]}
-
-
-def in_tenant(headers, tenant):
-    return {**headers, "X-JJTV-Tenant": tenant}
-
+def login(client,person,code=None):
+    path='/platform/v1/auth/login' if person.account_scope=='platform' else '/tenant/v1/auth/login'
+    payload={'username':person.username,'password':'pass-1234'}
+    if person.account_scope=='tenant':payload['tenant_code']=code or getattr(person,'_test_tenant_code',person.tenant_id)
+    r=client.post(path,json=payload)
+    assert r.status_code==200,r.text
+    return {'Authorization':'Bearer '+r.json()['token']}
 
 @pytest.fixture()
-def ctx(session, make, monkeypatch):
-    client = TestClient(app)
-    owner, operator, finance = make.admin(role="admin"), make.admin(role="ops"), make.admin(role="finance")
-    monkeypatch.setenv("INDIA_API_BASE_URL", "https://india.example/v1")
-    monkeypatch.setenv("TENANT_CONNECTION_KEY", Fernet.generate_key().decode())
-    return {"db": session, "make": make, "client": client, "owner": owner, "operator": operator, "finance": finance,
-            "owner_headers": logged_in(client, owner), "operator_headers": logged_in(client, operator), "finance_headers": logged_in(client, finance)}
+def ctx(session,make):
+    client=TestClient(app)
+    owner,operator,finance=make.admin(role='admin'),make.admin(role='ops'),make.admin(role='finance')
+    platform=make.platform_admin()
+    return dict(db=session,make=make,client=client,tenant=DEFAULT_TENANT,owner=owner,operator=operator,finance=finance,platform=platform,
+                owner_headers=login(client,owner),operator_headers=login(client,operator),finance_headers=login(client,finance),platform_headers=login(client,platform))
 
+def catalog(ctx):
+    r=ctx['client'].get(ROLES,headers=ctx['owner_headers'])
+    assert r.status_code==200,r.text
+    return r.json()
 
-def new_tenant(ctx, name="Permission test studio"):
-    response = ctx["client"].post(ROOT, json={"name": name}, headers=ctx["owner_headers"])
-    assert response.status_code == 201, response.text
-    return response.json()["id"]
+def role(ctx,permissions,name='Custom business role'):
+    r=ctx['client'].post(ROLES,json={'name':name,'permissions':permissions},headers=ctx['owner_headers'])
+    assert r.status_code==201,r.text
+    value=r.json()
+    assert value['builtin_key'] is None and set(value['permissions'])==set(permissions)
+    return value
 
+def assign(ctx,person,value):
+    r=ctx['client'].patch('/tenant/v1/staff/'+str(person.id),json={'role_id':value['id']},headers=ctx['owner_headers'])
+    assert r.status_code==200,r.text
+    # Assignment may deliberately invalidate the old account authorization version.
+    updated=login(ctx['client'],person)
+    for key in ('operator','finance'):
+        if ctx[key].id==person.id:ctx[key+'_headers']=updated
+    return updated
 
-def role_catalog(ctx, tenant):
-    response = ctx["client"].get(ROOT + f"/{tenant}/roles", headers=ctx["owner_headers"])
-    assert response.status_code == 200, response.text
-    assert set(response.json()) >= {"roles", "catalog"}
-    return response.json()
+def seed(ctx,tenant=None,title='Scoped draft',ready=False):
+    d=Drama(tenant_id=tenant or ctx['tenant'],title=title,status='draft',coin_price_per_episode=20)
+    ctx['db'].add(d);ctx['db'].flush()
+    e=Episode(drama_id=d.id,episode_number=1,title='First',status='in_review' if ready else 'not_uploaded',bunny_video_id='fake-video' if ready else None)
+    ctx['db'].add(e);ctx['db'].commit()
+    return d,e
 
+def test_tenant_admin_governs_business_roles_but_system_role_is_protected(ctx):
+    data=catalog(ctx)
+    protected=next(x for x in data['roles'] if x['builtin_key']=='tenant_admin')
+    r=ctx['client'].patch(ROLES+'/'+protected['id'],json={'version':protected['version'],'permissions':[]},headers=ctx['owner_headers'])
+    assert r.status_code in (403,409)
+    assert ctx['client'].delete(ROLES+'/'+protected['id']+'?version='+str(protected['version']),headers=ctx['owner_headers']).status_code in (403,409)
+    value=role(ctx,['dramas.view','dramas.edit'])
+    for headers in (ctx['operator_headers'],ctx['platform_headers']):
+        assert ctx['client'].get(ROLES,headers=headers).status_code==403
+        assert ctx['client'].post(ROLES,json={'name':'Unauthorized','permissions':[]},headers=headers).status_code==403
+    updated=ctx['client'].patch(ROLES+'/'+value['id'],json={'version':value['version'],'name':'Renamed'},headers=ctx['owner_headers'])
+    assert updated.status_code==200 and updated.json()['version']==value['version']+1
+    stale=ctx['client'].patch(ROLES+'/'+value['id'],json={'version':value['version'],'permissions':[]},headers=ctx['owner_headers'])
+    assert stale.status_code==409
+    assert ctx['client'].delete(ROLES+'/'+value['id']+'?version='+str(updated.json()['version']),headers=ctx['owner_headers']).status_code in (200,204)
 
-def create_role(ctx, tenant, permissions, name="Custom role"):
-    response = ctx["client"].post(ROOT + f"/{tenant}/roles", json={"name": name, "permissions": permissions}, headers=ctx["owner_headers"])
-    assert response.status_code == 201, response.text
-    role = response.json()
-    assert role["name"] == name and role["builtin_key"] is None
-    assert set(role["permissions"]) == set(permissions)
-    assert isinstance(role["version"], int) and role["version"] > 0
-    return role
+@pytest.mark.parametrize('permissions',[['unknown.menu'],['dramas.edit'],['dramas.view','staff.manage'],['dramas.view','api_keys.manage']])
+def test_roles_cannot_grant_unknown_system_or_dependency_free_permissions(ctx,permissions):
+    r=ctx['client'].post(ROLES,json={'name':'Rejected','permissions':permissions},headers=ctx['owner_headers'])
+    assert r.status_code==422,r.text
 
+def test_assigned_custom_role_cannot_be_deleted(ctx):
+    value=role(ctx,['dramas.view'])
+    assign(ctx,ctx['operator'],value)
+    r=ctx['client'].delete(ROLES+'/'+value['id']+'?version='+str(value['version']),headers=ctx['owner_headers'])
+    assert r.status_code==409
 
-def assign(ctx, tenant, staff, role):
-    response = ctx["client"].put(ROOT + f"/{tenant}/members", json={"members": [{"user_id": staff.id, "role_id": role["id"]}]}, headers=ctx["owner_headers"])
-    assert response.status_code == 200, response.text
-    body = response.json()
-    assert set(body) >= {"members", "staff", "roles"}
-    member = next(item for item in body["members"] if item["user_id"] == staff.id)
-    assert member["role_id"] == role["id"] and member["role_name"] == role["name"]
-    return member
+def test_role_revocation_changes_current_context_and_HTTP_without_relogin(ctx):
+    value=role(ctx,['dramas.view','dramas.edit'])
+    headers=assign(ctx,ctx['operator'],value)
+    assert ctx['client'].post('/admin/v1/dramas',json={'title':'Before revocation'},headers=headers).status_code==200
+    changed=ctx['client'].patch(ROLES+'/'+value['id'],json={'version':value['version'],'permissions':['dramas.view']},headers=ctx['owner_headers'])
+    assert changed.status_code==200
+    assert ctx['client'].post('/admin/v1/dramas',json={'title':'Must not write'},headers=headers).status_code==403
+    current=ctx['client'].get('/tenant/v1/context',headers=headers)
+    assert current.status_code==200 and 'dramas.edit' not in current.json()['permissions']
+    assert '/dramas' in current.json()['menu_keys']
 
+@pytest.mark.parametrize('field,value',[('free_episode_count',5),('coin_price_per_episode',99),('cover_url','https://invalid.example/cover.jpg')])
+def test_mixed_native_metadata_patch_rejects_ungranted_fields_atomically(ctx,field,value):
+    d,_=seed(ctx)
+    headers=assign(ctx,ctx['operator'],role(ctx,['dramas.view','dramas.edit']))
+    r=ctx['client'].patch(f'/admin/v1/dramas/{d.id}',json={'title':'Must roll back',field:value},headers=headers)
+    assert r.status_code==403,r.text
+    ctx['db'].expire_all()
+    assert ctx['db'].get(Drama,d.id).title=='Scoped draft'
+    assert ctx['db'].get(Drama,d.id).coin_price_per_episode==20
 
-def seed_content(ctx, tenant, title="Scoped draft", *, review_state="none", ready=False):
-    row = Drama(tenant_id=tenant, title=title, status="draft", review_state=review_state, coin_price_per_episode=20)
-    ctx["db"].add(row); ctx["db"].flush()
-    episode = Episode(drama_id=row.id, episode_number=1, title="First episode", status="in_review" if ready else "not_uploaded",
-                      bunny_video_id="fake-existing-video" if ready else "")
-    ctx["db"].add(episode); ctx["db"].commit()
-    return row, episode
+def test_pricing_only_and_upload_only_do_not_grant_metadata_edit(ctx):
+    d,_=seed(ctx)
+    headers=assign(ctx,ctx['finance'],role(ctx,['dramas.view','dramas.pricing']))
+    assert ctx['client'].patch(f'/admin/v1/dramas/{d.id}',json={'coin_price_per_episode':35},headers=headers).status_code==200
+    assert ctx['client'].patch(f'/admin/v1/dramas/{d.id}',json={'title':'Forbidden'},headers=headers).status_code==403
+    headers=assign(ctx,ctx['operator'],role(ctx,['dramas.view','dramas.upload'],'Uploader'))
+    assert ctx['client'].patch(f'/admin/v1/dramas/{d.id}',json={'cover_url':'https://invalid.example/cover.jpg'},headers=headers).status_code==200
+    assert ctx['client'].patch(f'/admin/v1/dramas/{d.id}',json={'title':'Forbidden'},headers=headers).status_code==403
 
+@pytest.mark.parametrize('path,body',[('/episodes/{e}/publish',{}),('/episodes/{e}/unpublish',{}),('/episodes/bulk-status',{'episode_ids':[1],'action':'publish'}),('/dramas/{d}/status',{'to_status':'published'}),('/dramas/{d}/schedule',{'at':'2099-01-01T00:00:00Z'}),('/schedules/apply',{}),('/reviews/{d}/publish',{})])
+def test_every_publication_path_needs_publication_permission(ctx,path,body):
+    d,e=seed(ctx,ready=True)
+    headers=assign(ctx,ctx['operator'],role(ctx,['dramas.view','dramas.edit','reviews.view','reviews.decide']))
+    r=ctx['client'].post('/admin/v1'+path.format(d=d.id,e=e.id),json=body,headers=headers)
+    assert r.status_code==403,(path,r.text)
+    ctx['db'].expire_all();assert ctx['db'].get(Drama,d.id).status=='draft'
 
-def test_role_catalog_and_CRUD_require_platform_admin_and_version_match(ctx):
-    tenant = new_tenant(ctx)
-    catalog = role_catalog(ctx, tenant)
-    assert CONTENT_KEYS <= {entry["key"] for entry in catalog["catalog"]}
-    for entry in catalog["catalog"]:
-        assert set(entry) >= {"key", "label", "group", "requires"}
-    role = create_role(ctx, tenant, ["dramas.view", "dramas.edit"], "Metadata editor")
-    assigned = assign(ctx, tenant, ctx["operator"], role)
-    assert assigned["role_id"] == role["id"]
-    for method in ("GET", "POST"):
-        kwargs = {"headers": ctx["operator_headers"]}
-        if method == "POST": kwargs["json"] = {"name": "Cannot self-grant", "permissions": sorted(CONTENT_KEYS)}
-        assert ctx["client"].request(method, ROOT + f"/{tenant}/roles", **kwargs).status_code == 403
-    stale = ctx["client"].patch(ROOT + f"/{tenant}/roles/{role['id']}", json={"version": role["version"] + 1, "permissions": ["dramas.view"]}, headers=ctx["owner_headers"])
-    assert stale.status_code == 409
-    unchanged = next(item for item in role_catalog(ctx, tenant)["roles"] if item["id"] == role["id"])
-    assert unchanged["version"] == role["version"] and set(unchanged["permissions"]) == {"dramas.view", "dramas.edit"}
-    assert ctx["client"].delete(ROOT + f"/{tenant}/roles/{role['id']}?version={role['version']}", headers=ctx["owner_headers"]).status_code == 409
-    builtin = next(item for item in catalog["roles"] if item["builtin_key"] == "finance")
-    assert ctx["client"].delete(ROOT + f"/{tenant}/roles/{builtin['id']}?version={builtin['version']}", headers=ctx["owner_headers"]).status_code == 409
-    # An unassigned custom role may be removed using its admitted version.
-    unused = create_role(ctx, tenant, ["tags.view"], "Unused reader")
-    assert ctx["client"].delete(ROOT + f"/{tenant}/roles/{unused['id']}?version={unused['version']}", headers=ctx["owner_headers"]).status_code in (200, 204)
-    assert unused["id"] not in {item["id"] for item in role_catalog(ctx, tenant)["roles"]}
+def test_upload_TUS_HEAD_and_mutations_are_not_read_only_shortcuts(ctx):
+    _,e=seed(ctx)
+    headers=assign(ctx,ctx['operator'],role(ctx,['dramas.view']))
+    for method,path,payload in [('HEAD','/admin/v1/dev-tus/not-authorized',None),('POST',f'/admin/v1/episodes/{e.id}/upload-session',{'filename':'x.mp4','mime':'video/mp4','size_bytes':8,'width':720,'height':1280,'duration_seconds':12}),('POST',f'/admin/v1/episodes/{e.id}/sync-status',{}),('POST',f'/admin/v1/episodes/{e.id}/upload-headers',{})]:
+        kwargs={'headers':headers}
+        if payload is not None:kwargs['json']=payload
+        assert ctx['client'].request(method,path,**kwargs).status_code==403
 
+def test_episode_deletion_does_not_grant_whole_drama_or_account_management(ctx):
+    d,e=seed(ctx)
+    headers=assign(ctx,ctx['operator'],role(ctx,['dramas.view','episodes.delete']))
+    assert ctx['client'].delete(f'/admin/v1/episodes/{e.id}',headers=headers).status_code==204
+    assert ctx['client'].post(f'/admin/v1/dramas/{d.id}/delete',json={'confirm':True},headers=headers).status_code==403
+    assert ctx['client'].get('/tenant/v1/staff',headers=headers).status_code==403
+    assert ctx['client'].post('/tenant/v1/staff',json={'username':'escalation','role_id':preset_role_id(DEFAULT_TENANT,'tenant_admin')},headers=headers).status_code==403
 
-def test_admin_api_key_requires_staff_scope_for_tenant_authorization_changes(ctx):
-    client, owner_headers = ctx["client"], ctx["owner_headers"]
-    tenant = new_tenant(ctx)
-    role = create_role(ctx, tenant, ["dramas.view"], "Protected role")
+def test_tags_and_groups_need_their_own_mutation_grants(ctx):
+    headers=assign(ctx,ctx['operator'],role(ctx,['dramas.view']))
+    for path,body in [('/admin/v1/tags',{'name_en':'Forbidden'}),('/admin/v1/groups',{'name':'Forbidden'})]:
+        assert ctx['client'].post(path,json=body,headers=headers).status_code==403
+    assert ctx['client'].get('/admin/v1/groups',headers=headers).status_code==403
+    # Tags remain an intentional read dependency of the drama editor.
+    assert ctx['client'].get('/admin/v1/tags',headers=headers).status_code==200
 
-    def issue(name, scopes):
-        result = client.post("/admin/v1/api-keys", json={"user_id": ctx["owner"].id, "name": name,
-                             "scopes": scopes, "expires_in_days": 90}, headers=owner_headers)
-        assert result.status_code == 201, result.text
-        return {"Authorization": "Bearer " + result.json()["key"]}
+def test_business_grants_cannot_reach_another_tenants_data_or_roles(ctx):
+    other=Tenant(id='other-permission-test',code='other-permission-test',name='Other',kind='native',status='active')
+    ctx['db'].add(other);ctx['db'].flush();seed_tenant_defaults(ctx['db'],other);ctx['db'].commit()
+    d,e=seed(ctx,other.id,'Other content')
+    headers=assign(ctx,ctx['operator'],role(ctx,sorted(CONTENT_KEYS)))
+    assert ctx['client'].get(f'/admin/v1/dramas/{d.id}',headers=headers).status_code==404
+    assert ctx['client'].get('/admin/v1/dramas',headers={**headers,'X-JJTV-Tenant':other.id}).status_code==403
+    assert ctx['client'].patch('/tenant/v1/staff/'+str(ctx['operator'].id),json={'role_id':preset_role_id(other.id,'tenant_admin')},headers=ctx['owner_headers']).status_code in (404,422)
 
-    narrowed = issue("Tenant content bot", ["read", "write"])
-    privileged = issue("Tenant permission manager", ["read", "write", "staff"])
-    directory = client.get(ROOT, headers=narrowed)
-    assert directory.status_code == 200 and tenant in {item["id"] for item in directory.json()}
-    member_body = {"members": [{"user_id": ctx["operator"].id, "role_id": role["id"]}]}
-    denied = [
-        ("GET", ROOT + f"/{tenant}/roles", None),
-        ("GET", ROOT + f"/{tenant}/members", None),
-        ("POST", ROOT, {"name": "Forbidden key-created tenant"}),
-        ("PATCH", ROOT + f"/{tenant}", {"name": "Unauthorized rename", "status": "paused"}),
-        ("POST", ROOT + f"/{tenant}/roles", {"name": "Unauthorized grant", "permissions": sorted(CONTENT_KEYS)}),
-        ("PATCH", ROOT + f"/{tenant}/roles/{role['id']}", {"version": role["version"], "permissions": sorted(CONTENT_KEYS)}),
-        ("DELETE", ROOT + f"/{tenant}/roles/{role['id']}?version={role['version']}", None),
-        ("PUT", ROOT + f"/{tenant}/members", member_body),
-    ]
-    for method, path, payload in denied:
-        kwargs = {"headers": narrowed}
-        if payload is not None: kwargs["json"] = payload
-        result = client.request(method, path, **kwargs)
-        assert result.status_code == 403, (method, path, result.text)
-        assert result.json()["detail"]["code"] == "scope_denied"
-    catalog = role_catalog(ctx, tenant)
-    assert next(item for item in catalog["roles"] if item["id"] == role["id"])["permissions"] == ["dramas.view"]
-    assert client.get(ROOT + f"/{tenant}/members", headers=owner_headers).json()["members"] == []
-    directory = client.get(ROOT, headers=owner_headers).json()
-    assert next(item for item in directory if item["id"] == tenant)["status"] == "active"
-    assert not any(item["name"] == "Forbidden key-created tenant" for item in directory)
-
-    assert client.get(ROOT + f"/{tenant}/roles", headers=privileged).status_code == 200
-    assert client.get(ROOT + f"/{tenant}/members", headers=privileged).status_code == 200
-    assert client.post(ROOT, json={"name": "Staff-scoped key tenant"}, headers=privileged).status_code == 201
-    assert client.patch(ROOT + f"/{tenant}", json={"name": "Authorized rename"}, headers=privileged).status_code == 200
-    created = client.post(ROOT + f"/{tenant}/roles", json={"name": "Staff-scoped role", "permissions": ["tags.view"]}, headers=privileged)
-    assert created.status_code == 201, created.text
-    editable = created.json()
-    edited = client.patch(ROOT + f"/{tenant}/roles/{editable['id']}", json={"version": editable["version"], "name": "Staff-scoped edited"}, headers=privileged)
-    assert edited.status_code == 200, edited.text
-    assert client.put(ROOT + f"/{tenant}/members", json=member_body, headers=privileged).status_code == 200
-    assert client.delete(ROOT + f"/{tenant}/roles/{editable['id']}?version={edited.json()['version']}", headers=privileged).status_code == 200
-    # Even a staff-scoped key cannot open the interactive old-site authorization surface.
-    assert client.get(INDIA + "/session", headers=privileged).status_code == 403
-
-
-@pytest.mark.parametrize("permissions", [["dramas.*"], ["platform.superadmin"], ["dramas.edit"], ["reviews.decide"], ["tags.manage"], ["groups.manage"]])
-def test_unknown_permissions_and_missing_view_dependencies_are_rejected(ctx, permissions):
-    tenant = new_tenant(ctx)
-    response = ctx["client"].post(ROOT + f"/{tenant}/roles", json={"name": "Invalid grant", "permissions": permissions}, headers=ctx["owner_headers"])
-    assert response.status_code == 422, response.text
-    assert not any(role["name"] == "Invalid grant" for role in role_catalog(ctx, tenant)["roles"])
-
-
-def test_role_ids_cannot_be_used_or_mutated_across_tenants(ctx):
-    first, second = new_tenant(ctx, "First tenant"), new_tenant(ctx, "Second tenant")
-    role = create_role(ctx, first, ["dramas.view"], "First tenant reader")
-    headers = ctx["owner_headers"]
-    assert ctx["client"].patch(ROOT + f"/{second}/roles/{role['id']}", json={"version": role["version"], "name": "Takeover"}, headers=headers).status_code == 404
-    assert ctx["client"].delete(ROOT + f"/{second}/roles/{role['id']}?version={role['version']}", headers=headers).status_code == 404
-    rejected = ctx["client"].put(ROOT + f"/{second}/members", json={"members": [{"user_id": ctx["operator"].id, "role_id": role["id"]}]}, headers=headers)
-    assert rejected.status_code in (404, 422)
-    assert ctx["client"].get(ROOT + f"/{second}/members", headers=headers).json()["members"] == []
-    builtin_ops = next(item for item in role_catalog(ctx, second)["roles"] if item["builtin_key"] == "ops")
-    conflict = ctx["client"].put(ROOT + f"/{second}/members", json={"members": [{"user_id": ctx["operator"].id, "role_id": builtin_ops["id"], "role": "finance"}]}, headers=headers)
-    assert conflict.status_code == 422
-
-
-def test_role_changes_revoke_actions_and_menu_entries_without_relogin(ctx):
-    tenant = new_tenant(ctx)
-    role = create_role(ctx, tenant, ["dramas.view", "dramas.edit"], "Initially an editor")
-    assign(ctx, tenant, ctx["operator"], role)
-    headers = in_tenant(ctx["operator_headers"], tenant)
-    catalog = {entry["key"]: entry for entry in role_catalog(ctx, tenant)["catalog"]}
-    row = next(item for item in ctx["client"].get(ROOT, headers=ctx["operator_headers"]).json() if item["id"] == tenant)
-    assert set(row["permissions"]) == {"dramas.view", "dramas.edit"}
-    assert row["role_id"] == role["id"] and row["role_name"] == role["name"]
-    assert catalog["dramas.view"]["menu_key"] in row["menu_keys"]
-    assert ctx["client"].post("/admin/v1/dramas", json={"title": "Created before revoke"}, headers=headers).status_code == 200
-    updated = ctx["client"].patch(ROOT + f"/{tenant}/roles/{role['id']}", json={"version": role["version"], "name": "Now tags only", "permissions": ["tags.view"]}, headers=ctx["owner_headers"])
-    assert updated.status_code == 200, updated.text
-    assert ctx["client"].get("/admin/v1/dramas", headers=headers).status_code == 403
-    assert ctx["client"].post("/admin/v1/dramas", json={"title": "Must not be created"}, headers=headers).status_code == 403
-    assert ctx["client"].get("/admin/v1/tags", headers=headers).status_code == 200
-    row = next(item for item in ctx["client"].get(ROOT, headers=ctx["operator_headers"]).json() if item["id"] == tenant)
-    assert set(row["permissions"]) == {"tags.view"} and row["role_name"] == "Now tags only"
-    assert catalog["tags.view"]["menu_key"] in row["menu_keys"]
-    assert catalog["dramas.view"]["menu_key"] not in row["menu_keys"]
-
-
-def test_explicit_users_view_grant_allows_ops_membership_read_without_writes(ctx):
-    client = ctx["client"]
-    account = ctx["make"].user(email="custom-users-view@example.com")
-    path = f"/admin/v1/users/{account.id}/membership"
-    headers = ctx["operator_headers"]
-    assert client.get(path, headers=headers).status_code == 403
-    role = create_role(ctx, DEFAULT_TENANT, ["users.view"], "Membership support reader")
-    assign(ctx, DEFAULT_TENANT, ctx["operator"], role)
-    current = next(item for item in client.get(ROOT, headers=headers).json() if item["id"] == DEFAULT_TENANT)
-    assert current["permissions"] == ["users.view"] and current["menu_keys"] == ["/users"]
-    detail = client.get(path, headers=headers)
-    assert detail.status_code == 200, detail.text
-    assert detail.json()["user"]["id"] == account.id and detail.json()["active"] is False
-    listed = client.get("/admin/v1/users", headers=headers)
-    assert listed.status_code == 200 and account.id in {item["id"] for item in listed.json()["items"]}
-    writes = [
-        ("POST", path, {"plan_code": "monthly", "days": 30, "reason": "Forbidden grant"}),
-        ("DELETE", path, {"mode": "now", "reason": "Forbidden revoke"}),
-        ("PATCH", f"/admin/v1/users/{account.id}", {"display_name": "Unauthorized change"}),
-    ]
-    for method, target, payload in writes:
-        denied = client.request(method, target, json=payload, headers=headers)
-        assert denied.status_code == 403, denied.text
-        assert denied.json()["detail"]["code"] == "tenant_permission_denied"
-        assert denied.json()["detail"]["required"] == ["users.manage"]
-    unchanged = client.get(path, headers=headers).json()
-    assert unchanged["active"] is False and unchanged["user"]["display_name"] == account.display_name
-
-
-def test_explicit_rewards_view_grant_allows_finance_read_without_writes(ctx):
-    client, headers = ctx["client"], ctx["finance_headers"]
-    assert client.get("/admin/v1/rewards/config", headers=headers).status_code == 403
-    role = create_role(ctx, DEFAULT_TENANT, ["rewards.view"], "Rewards finance reader")
-    assign(ctx, DEFAULT_TENANT, ctx["finance"], role)
-    current = next(item for item in client.get(ROOT, headers=headers).json() if item["id"] == DEFAULT_TENANT)
-    assert current["permissions"] == ["rewards.view"] and current["menu_keys"] == ["/rewards"]
-    overview = client.get("/admin/v1/rewards/config", headers=headers)
-    assert overview.status_code == 200, overview.text
-    assert "ad" in {item["code"] for item in overview.json()["items"]}
-    denied = client.post("/admin/v1/rewards/config", json={"code": "ad", "amounts": [99]}, headers=headers)
-    assert denied.status_code == 403, denied.text
-    assert denied.json()["detail"]["code"] == "tenant_permission_denied"
-    assert denied.json()["detail"]["required"] == ["rewards.manage"]
-    assert client.get("/admin/v1/rewards/config", headers=headers).json() == overview.json()
-
-
-def test_edit_permission_does_not_allow_pricing_or_partial_mixed_patch(ctx):
-    tenant = new_tenant(ctx)
-    role = create_role(ctx, tenant, ["dramas.view", "dramas.edit"])
-    assign(ctx, tenant, ctx["operator"], role)
-    drama, episode = seed_content(ctx, tenant)
-    headers = in_tenant(ctx["operator_headers"], tenant)
-    accepted = ctx["client"].patch(f"/admin/v1/dramas/{drama.id}", json={"title": "Allowed metadata edit"}, headers=headers)
-    assert accepted.status_code == 200
-    for restricted in ({"coin_price_per_episode": 99}, {"free_episode_count": 8}, {"cover_url": "https://images.example/unauthorized.png"}):
-        response = ctx["client"].patch(f"/admin/v1/dramas/{drama.id}", json={"title": "Must not partially apply", **restricted}, headers=headers)
-        assert response.status_code == 403, response.text
-    ctx["db"].expire_all()
-    stored = ctx["db"].get(Drama, drama.id)
-    assert stored.title == "Allowed metadata edit" and stored.coin_price_per_episode == 20 and stored.free_episode_count == 0 and stored.cover_url == ""
-
-
-def test_edit_permission_cannot_bypass_publish_and_review_action_routes(ctx):
-    tenant = new_tenant(ctx)
-    role = create_role(ctx, tenant, ["dramas.view", "dramas.edit"])
-    assign(ctx, tenant, ctx["operator"], role)
-    drama, episode = seed_content(ctx, tenant, ready=True)
-    headers = in_tenant(ctx["operator_headers"], tenant)
-    requests = [
-        (f"/admin/v1/episodes/{episode.id}/publish", {}),
-        (f"/admin/v1/episodes/{episode.id}/unpublish", {}),
-        ("/admin/v1/episodes/bulk-status", {"episode_ids": [episode.id], "action": "publish"}),
-        (f"/admin/v1/dramas/{drama.id}/status", {"to_status": "published"}),
-        (f"/admin/v1/dramas/{drama.id}/schedule", {"at": (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()}),
-        ("/admin/v1/schedules/apply", {}),
-        (f"/admin/v1/reviews/{drama.id}/decision", {"decision": "approve"}),
-        ("/admin/v1/reviews/batch", {"drama_ids": [drama.id], "decision": "approve"}),
-        (f"/admin/v1/reviews/{drama.id}/publish", {}),
-        (f"/admin/v1/dramas/{drama.id}/delete", {"confirm": True}),
-    ]
-    for path, body in requests:
-        response = ctx["client"].post(path, json=body, headers=headers)
-        assert response.status_code == 403, (path, response.status_code, response.text)
-    assert ctx["client"].delete(f"/admin/v1/episodes/{episode.id}", headers=headers).status_code == 403
-    ctx["db"].expire_all()
-    assert ctx["db"].get(Drama, drama.id).status == "draft"
-    assert ctx["db"].get(Episode, episode.id).status == "in_review"
-
-
-def test_upload_and_metadata_are_separate_actions_including_TUS_HEAD(ctx):
-    tenant = new_tenant(ctx)
-    role = create_role(ctx, tenant, ["dramas.view", "dramas.edit"])
-    assign(ctx, tenant, ctx["operator"], role)
-    drama, episode = seed_content(ctx, tenant, ready=True)
-    upload = MediaUpload(episode_id=episode.id, video_id="permission-owned-video", filename="clip.mp4", mime="video/mp4", size_bytes=16, status="created")
-    ctx["db"].add(upload); ctx["db"].commit()
-    headers = in_tenant(ctx["operator_headers"], tenant)
-    for path, body in [
-        (f"/admin/v1/episodes/{episode.id}/upload-session", {"filename": "clip.mp4", "mime": "video/mp4", "size_bytes": 16, "width": 720, "height": 1280}),
-        (f"/admin/v1/episodes/{episode.id}/upload-headers", {}),
-        (f"/admin/v1/episodes/{episode.id}/sync-status", {}),
-        (f"/admin/v1/episodes/{episode.id}/upload-failed", {"reason": "no upload permission"}),
-        ("/admin/v1/dev-tus/permission-owned-video", {}),
-    ]:
-        response = ctx["client"].post(path, json=body, headers=headers)
-        assert response.status_code == 403, (path, response.status_code, response.text)
-    assert ctx["client"].head("/admin/v1/dev-tus/permission-owned-video", headers=headers).status_code == 403
-    assert ctx["client"].patch("/admin/v1/dev-tus/permission-owned-video", content=b"forbidden", headers=headers).status_code == 403
-    assert ctx["client"].post(f"/admin/v1/dramas/{drama.id}/cover", files={"file": ("cover.png", b"\x89PNG\r\n\x1a\nfixture", "image/png")}, headers=headers).status_code == 403
-    assert ctx["client"].delete(f"/admin/v1/dramas/{drama.id}/cover", headers=headers).status_code == 403
-    assert ctx["client"].post(f"/admin/v1/episodes/{episode.id}/subtitle", files={"file": ("captions.vtt", b"WEBVTT\n", "text/vtt")}, headers=headers).status_code == 403
-    ctx["db"].expire_all()
-    assert ctx["db"].get(MediaUpload, upload.id).status == "created"
-
-
-def test_custom_content_role_can_grant_finance_upload_without_global_admin(ctx):
-    tenant = new_tenant(ctx)
-    role = create_role(ctx, tenant, ["dramas.view", "dramas.upload"])
-    assign(ctx, tenant, ctx["finance"], role)
-    drama, episode = seed_content(ctx, tenant)
-    headers = in_tenant(ctx["finance_headers"], tenant)
-    uploaded = ctx["client"].post(f"/admin/v1/episodes/{episode.id}/upload-session", json={"filename": "clip.mp4", "mime": "video/mp4", "size_bytes": 16, "width": 720, "height": 1280}, headers=headers)
-    assert uploaded.status_code == 200, uploaded.text
-    assert ctx["client"].head("/admin/v1/dev-tus/" + uploaded.json()["video_id"], headers=headers).status_code == 200
-    assert ctx["client"].patch(f"/admin/v1/episodes/{episode.id}", json={"title": "Missing edit permission"}, headers=headers).status_code == 403
-    assert ctx["client"].get("/admin/v1/staff", headers=headers).status_code == 403
-    assert ctx["client"].get("/admin/v1/staff", headers=ctx["finance_headers"]).status_code == 403
-    ctx["db"].expire_all()
-    assert ctx["db"].get(type(ctx["finance"]), ctx["finance"].id).role == "finance"
-
-
-def test_episode_delete_and_entire_drama_delete_require_different_permissions(ctx):
-    tenant = new_tenant(ctx)
-    role = create_role(ctx, tenant, ["dramas.view", "episodes.delete"])
-    assign(ctx, tenant, ctx["operator"], role)
-    drama, episode = seed_content(ctx, tenant)
-    headers = in_tenant(ctx["operator_headers"], tenant)
-    drama_id, episode_id = drama.id, episode.id
-    assert ctx["client"].delete(f"/admin/v1/episodes/{episode_id}", headers=headers).status_code == 204
-    assert ctx["client"].post(f"/admin/v1/dramas/{drama_id}/delete", json={"confirm": True}, headers=headers).status_code == 403
-    ctx["db"].expire_all()
-    assert ctx["db"].get(Drama, drama_id) is not None
-    assert ctx["db"].get(Episode, episode_id) is None
-
-
-def test_custom_delete_and_pricing_permissions_do_not_change_platform_role(ctx):
-    tenant = new_tenant(ctx)
-    role = create_role(ctx, tenant, ["dramas.view", "dramas.edit", "dramas.pricing", "dramas.delete"])
-    assign(ctx, tenant, ctx["finance"], role)
-    headers = in_tenant(ctx["finance_headers"], tenant)
-    created = ctx["client"].post("/admin/v1/dramas", json={"title": "Finance explicitly granted content"}, headers=headers)
-    assert created.status_code == 200, created.text
-    identifier = created.json()["id"]
-    priced = ctx["client"].patch(f"/admin/v1/dramas/{identifier}", json={"coin_price_per_episode": 45, "free_episode_count": 3}, headers=headers)
-    assert priced.status_code == 200, priced.text
-    deleted = ctx["client"].post(f"/admin/v1/dramas/{identifier}/delete", json={"confirm": True}, headers=headers)
-    assert deleted.status_code == 200 and deleted.json()["deleted"] is True
-    assert ctx["client"].post("/admin/v1/staff", json={"username": "cannot-create-staff", "password": "pass-1234", "role": "admin"}, headers=ctx["finance_headers"]).status_code == 403
-    assert ctx["client"].post("/admin/v1/billing/settings", json={"mode": "subscription"}, headers=ctx["finance_headers"]).status_code == 403
-    ctx["db"].expire_all()
-    assert ctx["db"].get(type(ctx["finance"]), ctx["finance"].id).role == "finance"
-
-
-def test_review_decision_does_not_imply_publish_permission(ctx):
-    tenant = new_tenant(ctx)
-    role = create_role(ctx, tenant, ["dramas.view", "reviews.view", "reviews.decide"])
-    assign(ctx, tenant, ctx["finance"], role)
-    drama, episode = seed_content(ctx, tenant, review_state="pending", ready=True)
-    headers = in_tenant(ctx["finance_headers"], tenant)
-    assert ctx["client"].get("/admin/v1/reviews", headers=headers).status_code == 200
-    approved = ctx["client"].post(f"/admin/v1/reviews/{drama.id}/decision", json={"decision": "approve"}, headers=headers)
-    assert approved.status_code == 200, approved.text
-    assert approved.json()["review_state"] == "approved"
-    assert ctx["client"].post(f"/admin/v1/reviews/{drama.id}/publish", json={}, headers=headers).status_code == 403
-    ctx["db"].expire_all()
-    assert ctx["db"].get(Drama, drama.id).status == "draft"
-
-
-def test_tags_and_groups_manage_permissions_do_not_unlock_other_menus(ctx):
-    tenant = new_tenant(ctx)
-    role = create_role(ctx, tenant, ["tags.view", "tags.manage"])
-    assign(ctx, tenant, ctx["operator"], role)
-    headers = in_tenant(ctx["operator_headers"], tenant)
-    assert ctx["client"].post("/admin/v1/tags", json={"name_en": "Allowed tag"}, headers=headers).status_code in (200, 201)
-    assert ctx["client"].get("/admin/v1/tags", headers=headers).status_code == 200
-    for method, path, payload in [("GET", "/admin/v1/groups", None), ("POST", "/admin/v1/groups", {"name": "Cannot create group"}), ("GET", "/admin/v1/dramas", None), ("GET", "/admin/v1/reviews", None)]:
-        options = {"headers": headers}
-        if payload is not None: options["json"] = payload
-        assert ctx["client"].request(method, path, **options).status_code == 403
-
-
-@pytest.fixture()
-def india(ctx, monkeypatch):
-    from app.modules.tenancy import router as tenant_router
-    observed = []
-    denied = {"upstream": False}
-
-    class FakeIndia:
-        async def call(self, action, *, access_token=None, payload=None, resource_id=None, params=None, idempotency_key=None):
-            observed.append(action)
-            if action == "login": return IndiaReply({"access_token": ACCESS, "refresh_token": REFRESH, "user": OLD_ACTOR, "environment": "production"}, "old-login")
-            if action == "me": return IndiaReply(OLD_ACTOR, "old-me")
-            if action == "series_list": return IndiaReply({"items": [], "next_cursor": None}, "old-list")
-            if action == "series_detail": return IndiaReply({"id": resource_id, "version": 3, "free_episode_count": 0}, "old-detail")
-            if denied["upstream"]: raise IndiaError("india_forbidden", 403, upstream_code="FORBIDDEN", request_id="old-denied")
-            return IndiaReply({"id": resource_id or "series_new", "version": 4}, "old-content")
-
-    monkeypatch.setattr(tenant_router, "IndiaClient", FakeIndia)
-    return observed, denied
-
-
-def test_India_roles_are_limited_and_effective_permissions_intersect_upstream(ctx, india):
-    keys = {row["key"] for row in role_catalog(ctx, INDIA_TENANT)["catalog"]}
-    assert keys == {"dramas.view", "dramas.edit", "dramas.upload", "dramas.publish", "dramas.pricing", "reviews.view", "reviews.decide"}
-    invalid = ctx["client"].post(ROOT + f"/{INDIA_TENANT}/roles", json={"name": "No local delete", "permissions": ["dramas.view", "dramas.delete"]}, headers=ctx["owner_headers"])
-    assert invalid.status_code == 422
-    role = create_role(ctx, INDIA_TENANT, ["dramas.view", "dramas.edit"], "India metadata only")
-    assign(ctx, INDIA_TENANT, ctx["operator"], role)
-    headers = ctx["operator_headers"]
-    connected = ctx["client"].post(INDIA + "/session", json={"username": "old-editor", "password": "used-once"}, headers=headers)
-    assert connected.status_code == 200 and connected.json()["connected"] is True
-    assert ctx["client"].get(INDIA + "/admin/series", headers=headers).status_code == 200
-    for path, payload in [
-        ("/admin/series/series_1/publish", {"version": 3, "reason": "Not locally permitted"}),
-        ("/admin/series/series_1/review", {"version": 3, "approved": True, "reason": "Not locally permitted"}),
-        ("/admin/episodes/episode_1/uploads", {"filename": "clip.mp4", "size_bytes": 16, "content_type": "video/mp4"}),
-    ]:
-        before = len(india[0])
-        result = ctx["client"].post(INDIA + path, json=payload, headers={**headers, "Idempotency-Key": str(uuid4())})
-        assert result.status_code == 403, result.text
-        assert india[0][before:] == []
-    before = len(india[0])
-    price = ctx["client"].patch(INDIA + "/admin/series/series_1", json={"version": 3, "title": "Mixed update", "free_episode_count": 2}, headers={**headers, "Idempotency-Key": str(uuid4())})
-    assert price.status_code == 403
-    assert india[0][before:] == []
-    # Field authority is strict even when a full-form client resubmits the old value.
-    for restricted in ({"free_episode_count": 0}, {"member_window": {"mode": "exclusive"}}, {"member_window": {"mode": "standard"}}):
-        before = len(india[0])
-        forbidden = ctx["client"].patch(INDIA + "/admin/series/series_1", json={"version": 3, **restricted}, headers={**headers, "Idempotency-Key": str(uuid4())})
-        assert forbidden.status_code == 403, forbidden.text
-        assert india[0][before:] == []  # No snapshot GET or mutation leaves the BFF.
-    india[1]["upstream"] = True
-    result = ctx["client"].patch(INDIA + "/admin/series/series_1", json={"version": 3, "title": "Locally permitted metadata"}, headers={**headers, "Idempotency-Key": str(uuid4())})
-    assert result.status_code == 403
-    assert result.json()["detail"]["upstream_code"] == "FORBIDDEN"
-    assert india[0][-1] == "series_edit"
-
-
-def test_publish_permission_works_without_metadata_edit_permission(ctx):
-    tenant = new_tenant(ctx)
-    role = create_role(ctx, tenant, ["dramas.view", "dramas.publish"])
-    assign(ctx, tenant, ctx["operator"], role)
-    drama, episode = seed_content(ctx, tenant, ready=True)
-    drama.status = "in_review"
-    ctx["db"].commit()
-    headers = in_tenant(ctx["operator_headers"], tenant)
-    assert ctx["client"].post(f"/admin/v1/episodes/{episode.id}/publish", json={}, headers=headers).status_code == 200
-    published = ctx["client"].post(f"/admin/v1/dramas/{drama.id}/status", json={"to_status": "published"}, headers=headers)
-    assert published.status_code == 200, published.text
-    assert ctx["client"].patch(f"/admin/v1/dramas/{drama.id}", json={"title": "No metadata authority"}, headers=headers).status_code == 403
-    ctx["db"].expire_all()
-    assert ctx["db"].get(Drama, drama.id).status == "published"
-
-
-@pytest.mark.parametrize("review_state", ["pending", "rejected"])
-def test_scheduled_publish_cannot_bypass_supplier_review(ctx, review_state):
+@pytest.mark.parametrize('state',['pending','rejected'])
+def test_due_schedules_cannot_bypass_supplier_approval(ctx,state):
     from app.modules.ops.models import Supplier
+    supplier=Supplier(name='Unapproved supplier '+state)
+    ctx['db'].add(supplier);ctx['db'].flush()
+    d,e=seed(ctx,ready=True)
+    d.supplier_id=supplier.id;d.review_state=state;d.status='in_review';d.scheduled_publish_at=datetime.now(timezone.utc)-timedelta(minutes=1)
+    ctx['db'].commit()
+    headers=assign(ctx,ctx['operator'],role(ctx,['dramas.view','dramas.publish']))
+    r=ctx['client'].post('/admin/v1/schedules/apply',headers=headers)
+    assert r.status_code==200,r.text
+    ctx['db'].expire_all();assert ctx['db'].get(Drama,d.id).status=='in_review' and ctx['db'].get(Drama,d.id).scheduled_publish_at is not None
+    d=ctx['db'].get(Drama,d.id);d.review_state='approved';ctx['db'].commit()
+    assert ctx['client'].post('/admin/v1/schedules/apply',headers=headers).status_code==200
+    ctx['db'].expire_all();assert ctx['db'].get(Drama,d.id).status=='published'
 
-    role = create_role(ctx, DEFAULT_TENANT, ["dramas.view", "dramas.publish"], "Publisher without review authority")
-    assign(ctx, DEFAULT_TENANT, ctx["operator"], role)
-    supplier = Supplier(name="Scheduled supplier")
-    ctx["db"].add(supplier); ctx["db"].flush()
-    due_at = datetime.now(timezone.utc) - timedelta(minutes=5)
-    blocked = Drama(tenant_id=DEFAULT_TENANT, supplier_id=supplier.id, title="Unapproved scheduled content",
-                    status="in_review", review_state=review_state, free_episode_count=1, scheduled_publish_at=due_at)
-    approved = Drama(tenant_id=DEFAULT_TENANT, supplier_id=supplier.id, title="Approved scheduled content",
-                     status="in_review", review_state="approved", free_episode_count=1, scheduled_publish_at=due_at)
-    ctx["db"].add_all([blocked, approved]); ctx["db"].flush()
-    ctx["db"].add_all([Episode(drama_id=drama.id, episode_number=1, status="published", bunny_video_id="fake-scheduled-video")
-                       for drama in (blocked, approved)])
-    ctx["db"].commit()
-    headers = ctx["operator_headers"]
-    direct = ctx["client"].post(f"/admin/v1/dramas/{blocked.id}/status", json={"to_status": "published"}, headers=headers)
-    assert direct.status_code == 409 and direct.json()["detail"]["code"] == "not_approved"
-    applied = ctx["client"].post("/admin/v1/schedules/apply", json={}, headers=headers)
-    assert applied.status_code == 200, applied.text
-    assert applied.json()["published"] == 1
-    ctx["db"].expire_all()
-    stored = ctx["db"].get(Drama, blocked.id)
-    assert stored.status == "in_review" and stored.review_state == review_state
-    assert stored.scheduled_publish_at == due_at and stored.published_at is None
-    published = ctx["db"].get(Drama, approved.id)
-    assert published.status == "published" and published.scheduled_publish_at is None
-    assert ctx["client"].get(f"/v1/preview/dramas/{blocked.id}").status_code == 404
-    assert ctx["client"].get(f"/v1/preview/dramas/{approved.id}").status_code == 200
-    public_ids = {drama["id"] for group in ctx["client"].get("/v1/preview").json()["categories"] for drama in group["dramas"]}
-    assert blocked.id not in public_ids and approved.id in public_ids
+def test_tenant_api_key_staff_scope_is_bounded_and_cannot_enter_platform(ctx):
+    def issue(scopes):
+        r=ctx['client'].post('/admin/v1/api-keys',json={'user_id':ctx['owner'].id,'name':'Scoped key','scopes':scopes,'expires_in_days':90},headers=ctx['owner_headers'])
+        assert r.status_code==201,r.text
+        return {'Authorization':'Bearer '+r.json()['key']}
+    read_write=issue(['read','write'])
+    privileged=issue(['read','write','staff'])
+    for method in ('GET','POST'):
+        kwargs={'headers':read_write}
+        if method=='POST':kwargs['json']={'name':'Forbidden','permissions':['dramas.view']}
+        r=ctx['client'].request(method,ROLES,**kwargs)
+        assert r.status_code==403 and r.json()['detail']['code']=='scope_denied'
+    r=ctx['client'].post(ROLES,json={'name':'Staff-scoped role','permissions':['dramas.view']},headers=privileged)
+    assert r.status_code==201,r.text
+    assert ctx['client'].get('/platform/v1/tenants',headers=privileged).status_code==403
+    assert ctx['client'].post('/platform/v1/tenants/jjtv/enter',json={},headers=privileged).status_code==403
+    assert ctx['client'].post('/tenant/v1/auth/password',json={'old_password':'pass-1234','new_password':'changed-password'},headers=privileged).status_code==403
 
+@pytest.fixture()
+def india_ctx(ctx,monkeypatch):
+    owner=ctx['make'].admin(role='admin',tenant_id=INDIA_TENANT)
+    user=ctx['make'].admin(role='ops',tenant_id=INDIA_TENANT)
+    current={**ctx,'tenant':INDIA_TENANT,'owner':owner,'operator':user,'owner_headers':login(ctx['client'],owner),'operator_headers':login(ctx['client'],user)}
+    monkeypatch.setenv('TENANT_CONNECTION_KEY',Fernet.generate_key().decode());monkeypatch.setenv('INDIA_API_BASE_URL','https://india.example/v1')
+    calls=[];behavior={'deny':False}
+    class FakeIndia:
+        def __init__(self,**kwargs):pass
+        async def call(self,action,**kwargs):
+            calls.append((action,kwargs))
+            if action=='login':return IndiaReply({'access_token':'a'*43,'refresh_token':'r'*43,'user':{'id':'old-editor','name':'Editor','role':'editor'}},'old-login')
+            if behavior['deny']:raise IndiaError('india_forbidden',403,upstream_code='FORBIDDEN',request_id='old-denied')
+            return IndiaReply({'id':'series-existing','version':3},'old-success')
+    from app.modules.tenancy import router
+    monkeypatch.setattr(router,'IndiaClient',FakeIndia)
+    current.update(calls=calls,behavior=behavior,base='/admin/v1/tenants/india-short-drama/india')
+    return current
 
-def test_custom_role_does_not_bypass_native_tenant_object_ownership(ctx):
-    first, second = new_tenant(ctx, "Authorized studio"), new_tenant(ctx, "Another studio")
-    role = create_role(ctx, first, ["dramas.view", "dramas.edit"])
-    assign(ctx, first, ctx["finance"], role)
-    own, own_episode = seed_content(ctx, first, "Own draft")
-    foreign, foreign_episode = seed_content(ctx, second, "Foreign draft")
-    headers = in_tenant(ctx["finance_headers"], first)
-    listed = ctx["client"].get("/admin/v1/dramas", headers=headers)
-    assert listed.status_code == 200 and {row["id"] for row in listed.json()["items"]} == {own.id}
-    assert ctx["client"].get(f"/admin/v1/dramas/{foreign.id}", headers=headers).status_code == 404
-    assert ctx["client"].patch(f"/admin/v1/dramas/{foreign.id}", json={"title": "Forbidden"}, headers=headers).status_code == 404
-    assert ctx["client"].patch(f"/admin/v1/episodes/{foreign_episode.id}", json={"title": "Forbidden"}, headers=headers).status_code == 404
-    assert ctx["client"].get("/admin/v1/dramas", headers=in_tenant(ctx["finance_headers"], second)).status_code == 403
-    ctx["db"].expire_all()
-    assert ctx["db"].get(Drama, foreign.id).title == "Foreign draft"
+def connect_india(ctx,headers):
+    r=ctx['client'].post(ctx['base']+'/session',json={'username':'old-editor','password':'old-password'},headers=headers)
+    assert r.status_code==200,r.text
 
+@pytest.mark.parametrize('field,value',[('free_episode_count',0),('member_window',{'hours':0})])
+def test_india_pricing_fields_require_grant_even_when_the_value_looks_unchanged(india_ctx,field,value):
+    ctx=india_ctx;headers=assign(ctx,ctx['operator'],role(ctx,['dramas.view','dramas.edit']))
+    connect_india(ctx,headers);before=len(ctx['calls'])
+    r=ctx['client'].patch(ctx['base']+'/admin/series/series-existing',json={'version':3,field:value},headers={**headers,'Idempotency-Key':str(uuid4())})
+    assert r.status_code==403 and len(ctx['calls'])==before
 
-def test_India_pricing_only_role_can_change_pricing_but_not_metadata(ctx, india):
-    role = create_role(ctx, INDIA_TENANT, ["dramas.view", "dramas.pricing"], "India price operator")
-    assign(ctx, INDIA_TENANT, ctx["operator"], role)
-    headers = ctx["operator_headers"]
-    connected = ctx["client"].post(INDIA + "/session", json={"username": "old-editor", "password": "used-once"}, headers=headers)
-    assert connected.status_code == 200 and connected.json()["connected"] is True
-    before = len(india[0])
-    priced = ctx["client"].patch(INDIA + "/admin/series/series_1", json={"version": 3, "free_episode_count": 2, "member_window": {"mode": "standard"}}, headers={**headers, "Idempotency-Key": str(uuid4())})
-    assert priced.status_code == 200, priced.text
-    assert india[0][before:] == ["series_edit"]
-    before = len(india[0])
-    mixed = ctx["client"].patch(INDIA + "/admin/series/series_1", json={"version": 3, "free_episode_count": 2, "title": "No metadata grant"}, headers={**headers, "Idempotency-Key": str(uuid4())})
-    assert mixed.status_code == 403, mixed.text
-    assert india[0][before:] == []
+def test_india_pricing_only_and_upstream_authority_remain_independent(india_ctx):
+    ctx=india_ctx;headers=assign(ctx,ctx['operator'],role(ctx,['dramas.view','dramas.pricing']))
+    connect_india(ctx,headers)
+    target=ctx['base']+'/admin/series/series-existing'
+    key={**headers,'Idempotency-Key':str(uuid4())}
+    r=ctx['client'].patch(target,json={'version':3,'free_episode_count':1},headers=key)
+    assert r.status_code==200,r.text
+    before=len(ctx['calls']);assert ctx['client'].patch(target,json={'version':3,'title':'Forbidden'},headers={**headers,'Idempotency-Key':str(uuid4())}).status_code==403
+    assert len(ctx['calls'])==before
+    ctx['behavior']['deny']=True
+    r=ctx['client'].patch(target,json={'version':3,'free_episode_count':1},headers={**headers,'Idempotency-Key':str(uuid4())})
+    assert r.status_code==403 and r.json()['detail']['code']=='india_forbidden'

@@ -18,7 +18,7 @@ def client(session):
 def _admin_headers(make, client) -> dict:
     admin = make.admin(role="admin")
     r = client.post(
-        "/admin/v1/auth/login", json={"username": admin.username, "password": "pass-1234"}
+        "/admin/v1/auth/login", json={"tenant_code": "jjtv", "username": admin.username, "password": "pass-1234"}
     )
     assert r.status_code == 200, r.text
     return {"Authorization": f"Bearer {r.json()['token']}"}
@@ -45,7 +45,7 @@ def _supplier_with_partner(client, headers, name="星野传媒", username="sp-a"
     )
     assert acc.status_code == 201, acc.text
     login = client.post(
-        "/admin/v1/auth/login", json={"username": username, "password": "partner-pass-1234"}
+        "/admin/v1/auth/login", json={"tenant_code": "jjtv", "username": username, "password": "partner-pass-1234"}
     )
     assert login.status_code == 200, login.text
     return body, {"Authorization": f"Bearer {login.json()['token']}"}

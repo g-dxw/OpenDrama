@@ -41,7 +41,7 @@ def sign(body: bytes) -> str:
 def _admin_headers(make, client) -> dict:
     admin = make.admin(role="admin")
     r = client.post(
-        "/admin/v1/auth/login", json={"username": admin.username, "password": "pass-1234"}
+        "/admin/v1/auth/login", json={"tenant_code": "jjtv", "username": admin.username, "password": "pass-1234"}
     )
     assert r.status_code == 200, r.text
     return {"Authorization": f"Bearer {r.json()['token']}"}
@@ -70,7 +70,7 @@ def _partner(client, headers, supplier_id, username="sp-xingye") -> dict:
     )
     assert r.status_code == 201, r.text
     login = client.post(
-        "/admin/v1/auth/login", json={"username": username, "password": "partner-pass-1234"}
+        "/admin/v1/auth/login", json={"tenant_code": "jjtv", "username": username, "password": "partner-pass-1234"}
     )
     assert login.status_code == 200, login.text
     return {"Authorization": f"Bearer {login.json()['token']}"}
@@ -266,7 +266,7 @@ def test_disabling_supplier_kills_its_login(make, session, client):
 
     assert client.get("/partner/v1/me", headers=partner).status_code == 401
     login = client.post(
-        "/admin/v1/auth/login", json={"username": "sp-xingye", "password": "partner-pass-1234"}
+        "/admin/v1/auth/login", json={"tenant_code": "jjtv", "username": "sp-xingye", "password": "partner-pass-1234"}
     )
     assert login.status_code == 401
 

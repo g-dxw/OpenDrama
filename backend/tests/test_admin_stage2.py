@@ -14,7 +14,7 @@ def client(session):
 
 
 def _login(client: TestClient, username: str, password: str = "pass-1234") -> dict:
-    r = client.post("/admin/v1/auth/login", json={"username": username, "password": password})
+    r = client.post("/admin/v1/auth/login", json={"tenant_code": "jjtv", "username": username, "password": password})
     assert r.status_code == 200, r.text
     return {"Authorization": f"Bearer {r.json()['token']}"}
 
@@ -59,7 +59,7 @@ def test_finance_role_cannot_write_content(make, session, client):
 
 def test_login_rejects_wrong_password(make, session, client):
     make.admin(role="ops", username="ops-alice")
-    r = client.post("/admin/v1/auth/login", json={"username": "ops-alice", "password": "wrong"})
+    r = client.post("/admin/v1/auth/login", json={"tenant_code": "jjtv", "username": "ops-alice", "password": "wrong"})
     assert r.status_code == 401
 
 

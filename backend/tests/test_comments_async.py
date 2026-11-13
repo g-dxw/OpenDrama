@@ -136,7 +136,7 @@ def test_human_decision_is_not_overwritten(client, session, make, monkeypatch):
 
     staff = make.admin(role="admin")
     token = client.post(
-        "/admin/v1/auth/login", json={"username": staff.username, "password": "pass-1234"}
+        "/admin/v1/auth/login", json={"tenant_code": "jjtv", "username": staff.username, "password": "pass-1234"}
     ).json()["token"]
     approved = client.post(
         f"/admin/v1/comments/{row.id}",

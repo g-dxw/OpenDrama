@@ -22,7 +22,7 @@ def client(session):
 
 
 def _login(client: TestClient, username: str, password: str = "pass-1234") -> dict:
-    r = client.post("/admin/v1/auth/login", json={"username": username, "password": password})
+    r = client.post("/admin/v1/auth/login", json={"tenant_code": "jjtv", "username": username, "password": password})
     assert r.status_code == 200, r.text
     return {"Authorization": f"Bearer {r.json()['token']}"}
 
@@ -223,7 +223,7 @@ def test_disable_kills_the_live_session(make, session, client):
     assert client.get("/admin/v1/dramas", headers=target).status_code == 401
     # And the account cannot sign in again.
     r = client.post(
-        "/admin/v1/auth/login", json={"username": "ops-lily", "password": "lily-pass-1234"}
+        "/admin/v1/auth/login", json={"tenant_code": "jjtv", "username": "ops-lily", "password": "lily-pass-1234"}
     )
     assert r.status_code == 401
 
@@ -293,7 +293,7 @@ def test_reset_password_revokes_sessions_and_swaps_credentials(make, session, cl
     assert client.get("/admin/v1/dramas", headers=victim).status_code == 401
     assert (
         client.post(
-            "/admin/v1/auth/login", json={"username": "ops-lily", "password": "lily-pass-1234"}
+            "/admin/v1/auth/login", json={"tenant_code": "jjtv", "username": "ops-lily", "password": "lily-pass-1234"}
         ).status_code
         == 401
     )
@@ -327,13 +327,13 @@ def test_self_change_revokes_every_session(make, session, client):
     assert (
         client.post(
             "/admin/v1/auth/login",
-            json={"username": account.username, "password": "pass-1234"},
+            json={"tenant_code": "jjtv", "username": account.username, "password": "pass-1234"},
         ).status_code
         == 401
     )
     fresh = client.post(
         "/admin/v1/auth/login",
-        json={"username": account.username, "password": "my-new-pass-9"},
+        json={"tenant_code": "jjtv", "username": account.username, "password": "my-new-pass-9"},
     )
     assert fresh.status_code == 200
 

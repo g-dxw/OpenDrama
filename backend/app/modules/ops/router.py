@@ -58,56 +58,56 @@ def _session_store_503() -> HTTPException:
     return HTTPException(status_code=503, detail=SESSION_STORE_503_DETAIL)
 
 
-def require_admin(request: Request, db: Session = Depends(get_db)) -> AdminUser:
-    """Accept either a staff session token or an API key.
-
-    API keys are bound to an ``admin_users`` row and resolved into that account,
-    so every downstream dependency (role checks, audit ``actor_id``) keeps
-    working unchanged. The session path is deliberately untouched.
-    """
-    credential = _bearer_token(request)
+def require_identity(request: Request, db: Session = Depends(get_db)) -> AdminUser:
+    from app.modules.tenancy.identity import SessionPrincipal
+    credential=_bearer_token(request)
     if api_key_service.looks_like_key(credential):
-        user, key = api_key_service.resolve_credential(db, credential)
-        # Stamp the key before the scope check: a denied write must still be
-        # recorded in api_key_events (the middleware reads these after response).
-        request.state.api_key_id = key.id
-        request.state.api_key_staff_id = user.id
-        api_key_service.authorize(key, request.method, request.url.path, user.role)
+        user,key=api_key_service.resolve_credential(db,credential)
+        request.state.api_key_id=key.id; request.state.api_key_staff_id=user.id
+        api_key_service.authorize(key,request.method,request.url.path,user.role)
+        principal=SessionPrincipal(user,key.account_scope,key.tenant_id,'api_key',user.auth_version)
     else:
-        try:
-            user = ops_service.resolve_session_token(db, credential)
-        except ops_service.SessionStoreUnavailable as exc:
-            raise _session_store_503() from exc
-        if user is None:
-            raise HTTPException(
-                status_code=401,
-                detail={"code": "invalid_session", "message": "会话无效或已过期"},
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-    # Suppliers live in the same table but are external tenants: they must never
-    # reach this surface, even if a future dependency forgets a role check.
-    if user.role not in STAFF_ROLES:
-        raise HTTPException(
-            status_code=403,
-            detail={"code": "staff_only", "message": "该接口仅对平台员工开放"},
-        )
-    from app.modules.tenancy.service import configure_request_scope
-    configure_request_scope(request, db, user)
+        try: principal=ops_service.resolve_principal(db,credential)
+        except ops_service.SessionStoreUnavailable as exc: raise _session_store_503() from exc
+        if principal is None:
+            raise HTTPException(401,detail=dict(code='invalid_session',message='会话无效或已过期，请从正确的平台或租户入口重新登录'),headers={'WWW-Authenticate':'Bearer'})
+        user=principal.user
+    request.state.principal=principal
+    if principal.kind=='support' and request.url.path.endswith('/auth/password'):
+        raise HTTPException(403,detail='支持会话不能修改平台账号密码')
+    if user.must_change_password and not request.url.path.endswith(('/context','/auth/password','/auth/logout','/auth/me')):
+        raise HTTPException(403,detail=dict(code='password_change_required',message='请先修改初始密码'))
     return user
 
+def require_admin(request: Request, db: Session = Depends(get_db), user: AdminUser = Depends(require_identity)) -> AdminUser:
+    if user.role not in STAFF_ROLES:
+        raise HTTPException(403,detail=dict(code='staff_only',message='该接口仅对租户员工开放'))
+    from app.modules.tenancy.service import configure_request_scope
+    configure_request_scope(request,db,user)
+    return user
+
+def require_platform_admin(request: Request, db: Session = Depends(get_db), user: AdminUser = Depends(require_identity)) -> AdminUser:
+    principal=request.state.principal
+    if principal.account_scope!='platform' or principal.kind=='support':
+        raise HTTPException(403,detail=dict(code='platform_only',message='仅平台管理员可以操作总平台'))
+    from app.modules.tenancy.domains import validate_entry_origin
+    validate_entry_origin(request,db,platform=True)
+    return user
+
+def require_tenant_admin(request: Request, user: AdminUser = Depends(require_admin)) -> AdminUser:
+    if not getattr(request.state,'tenant_grants',{}).get('is_tenant_admin'):
+        raise HTTPException(403,detail=dict(code='tenant_admin_only',message='仅当前租户管理员可操作'))
+    return user
 
 def require_content_writer(request: Request, user: AdminUser = Depends(require_admin)) -> AdminUser:
-    if getattr(request.state, 'tenant_content_authorized', False): return user
-    if user.role not in CONTENT_WRITER_ROLES:
-        raise HTTPException(status_code=403, detail=f"role '{user.role}' cannot write content")
+    if not getattr(request.state,'tenant_business_authorized',False):
+        raise HTTPException(403,detail='tenant business permission required')
     return user
 
-
 def require_admin_role(request: Request, user: AdminUser = Depends(require_admin)) -> AdminUser:
-    """Super-admin only: delete drama, price/billing changes, coin adjust, staff."""
-    if getattr(request.state, 'tenant_content_authorized', False): return user
-    if user.role != ROLE_ADMIN:
-        raise HTTPException(status_code=403, detail="admin only")
+    # Legacy business handlers now use already-verified tenant action grants.
+    if not getattr(request.state,'tenant_business_authorized',False):
+        raise HTTPException(403,detail='tenant administration permission required')
     return user
 
 
@@ -126,6 +126,7 @@ class AdminUserOut(BaseModel):
 class LoginIn(BaseModel):
     username: str
     password: str
+    tenant_code: str | None = None
 
 
 class StaffCreateIn(BaseModel):
@@ -259,9 +260,15 @@ def _get_drama_or_404(db: Session, drama_id: int) -> Drama:
 
 
 @router.post("/auth/login")
-def login(body: LoginIn, db: Session = Depends(get_db)):
+def login(body: LoginIn, request: Request, db: Session = Depends(get_db)):
+    if not body.tenant_code:
+        raise HTTPException(400, detail={"code":"tenant_required","message":"请使用平台入口或提供租户编码"})
+    from app.modules.tenancy.models import Tenant
+    from app.modules.tenancy.domains import validate_entry_origin
+    tenant=db.scalar(select(Tenant).where(Tenant.code==body.tenant_code))
+    if tenant is not None: validate_entry_origin(request,db,tenant)
     try:
-        result = ops_service.login(db, username=body.username, password=body.password)
+        result = ops_service.login(db, username=body.username, password=body.password, tenant_code=body.tenant_code)
     except ops_service.SessionStoreUnavailable as exc:
         raise _session_store_503() from exc
     if result is None:

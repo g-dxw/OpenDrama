@@ -16,7 +16,7 @@ def client(session):
 
 
 def _headers(client, username, password) -> dict:
-    r = client.post("/admin/v1/auth/login", json={"username": username, "password": password})
+    r = client.post("/admin/v1/auth/login", json={"tenant_code": "jjtv", "username": username, "password": password})
     assert r.status_code == 200, r.text
     return {"Authorization": f"Bearer {r.json()['token']}"}
 

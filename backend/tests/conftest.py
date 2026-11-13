@@ -92,12 +92,13 @@ def session(engine):
     factory = sessionmaker(bind=engine, expire_on_commit=False)
     s = factory()
     from app.modules.tenancy.models import Tenant
-    from app.modules.tenancy.permissions import seed_roles
-    tenants = [Tenant(id="jjtv", name="JJTV 自营", kind="native", status="active"), Tenant(id="india-short-drama", name="India Short Drama", kind="india_legacy", status="active")]
+    from app.modules.tenancy.permissions import seed_legacy_bindings, seed_tenant_defaults
+    tenants = [Tenant(id="jjtv", code="jjtv", name="JJTV 自营", kind="native", status="active"), Tenant(id="india-short-drama", code="india-short-drama", name="India Short Drama", kind="india_legacy", status="active")]
     s.add_all(tenants)
     s.flush()
+    seed_legacy_bindings(s, "jjtv")
     for tenant in tenants:
-        seed_roles(s, tenant)
+        seed_tenant_defaults(s, tenant)
     s.commit()
     try:
         yield s
@@ -174,6 +175,7 @@ def make(session):
             role: str = "ops",
             username: str | None = None,
             password: str = "pass-1234",
+            tenant_id: str = "jjtv",
         ):
             from app.modules.ops.models import AdminUser
             from app.modules.ops.service import hash_password
@@ -183,6 +185,7 @@ def make(session):
                 username=username or f"admin-{role}-{n}",
                 password_hash=hash_password(password),
                 role=role,
+                account_scope="tenant", tenant_id=tenant_id, auth_version=1, must_change_password=False,
                 display_name=f"staff-{role}-{n}",
             )
             session.add(user)
@@ -190,8 +193,21 @@ def make(session):
             from app.modules.tenancy.models import TenantMember
             from app.modules.tenancy.permissions import preset_role_id
             if role != "partner":
-                session.add(TenantMember(tenant_id="jjtv", user_id=user.id, role=role, role_id=preset_role_id("jjtv", role)))
+                key = "tenant_admin" if role == "admin" else role
+                session.add(TenantMember(tenant_id=tenant_id, user_id=user.id, role=role, role_id=preset_role_id(tenant_id, key)))
             session.commit()
+            from app.modules.tenancy.models import Tenant
+            user._test_tenant_code = session.get(Tenant, tenant_id).code
+            return user
+
+        def platform_admin(self, username: str | None = None, password: str = "pass-1234"):
+            from app.modules.ops.models import AdminUser
+            from app.modules.ops.service import hash_password
+            n = next(seq)
+            user = AdminUser(username=username or f"platform-admin-{n}", password_hash=hash_password(password),
+                             role="admin", account_scope="platform", tenant_id=None,
+                             auth_version=1, must_change_password=False, display_name=f"platform-{n}")
+            session.add(user); session.commit()
             return user
 
     return Factory()
