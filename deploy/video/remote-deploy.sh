@@ -14,6 +14,34 @@ ACME_DIR=/opt/dastaan/shared/acme
 CERT_NAME=jjtv-8jj-net
 HOSTS=(jjtv.8jj.net jjtv-h5.8jj.net jjtv-admin.8jj.net jjtv-api.8jj.net)
 
+# Nginx reload and container starts are asynchronous; wait for actual responses.
+wait_for_routes() {
+  local scheme=$1 port=$2 mode=${3:-content} attempt host ready code
+  for attempt in {1..20}; do
+    ready=yes
+    if [[ $mode == redirect ]]; then
+      for host in "${HOSTS[@]}"; do
+        code=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' --resolve "$host:$port:127.0.0.1" "$scheme://$host:$port/" || true)
+        if [[ $code != 308 ]]; then ready=no; break; fi
+      done
+    else
+      for host in "${HOSTS[@]:0:3}"; do
+        if ! curl -fsS --max-time 5 --resolve "$host:$port:127.0.0.1" "$scheme://$host:$port/" | grep -q JJTV; then ready=no; break; fi
+      done
+      if [[ $ready == yes ]]; then
+        curl -fsS --max-time 5 --resolve "jjtv-api.8jj.net:$port:127.0.0.1" "$scheme://jjtv-api.8jj.net:$port/health" >/dev/null || ready=no
+      fi
+    fi
+    if [[ $ready == yes ]]; then
+      echo "JJTV routes ready: $scheme port=$port mode=$mode attempt=$attempt"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "JJTV routes did not become ready: $scheme port=$port mode=$mode" >&2
+  return 1
+}
+
 [[ $RELEASE_DIR =~ ^/opt/jjtv/releases/[0-9a-f]{12}-[0-9a-f]{12}$ ]] || exit 2
 [[ $SOURCE_SHA =~ ^[0-9a-f]{40}$ ]] || exit 2
 [[ $PHASE == prepare || $PHASE == http || $PHASE == tls ]] || exit 2
@@ -85,10 +113,7 @@ COMPOSE=(docker compose --env-file "$JJTV_ENV_FILE" -p jjtv -f "$RELEASE_DIR/dep
 "${COMPOSE[@]}" up -d --wait api web
 curl -fsS http://127.0.0.1:18110/health
 printf '\n'
-for host in "${HOSTS[@]:0:3}"; do
-  curl -fsS -H "Host: $host" http://127.0.0.1:18111/ | grep -q JJTV
-done
-curl -fsS -H 'Host: jjtv-api.8jj.net' http://127.0.0.1:18111/health >/dev/null
+wait_for_routes http 18111
 [[ $(curl -s -o /dev/null -w '%{http_code}' -H 'Host: jjtv-api.8jj.net' -X POST http://127.0.0.1:18111/v1/billing/webhook) == 404 ]]
 ln -sfn "$RELEASE_DIR" "$ROOT/current"
 echo "JJTV isolated stack healthy: source=$SOURCE_SHA (empty installation; media/payment providers unconfigured)."
@@ -161,14 +186,9 @@ if [[ -s "$TLS_DIR/fullchain.pem" && -s "$TLS_DIR/privkey.pem" ]]; then initial_
 write_edge "$initial_tls"
 install_edge
 if [[ $initial_tls == yes ]]; then
-  for host in "${HOSTS[@]}"; do
-    [[ $(curl -s -o /dev/null -w '%{http_code}' -H "Host: $host" http://127.0.0.1/) == 308 ]]
-  done
+  wait_for_routes http 80 redirect
 else
-  for host in "${HOSTS[@]:0:3}"; do
-    curl -fsS -H "Host: $host" http://127.0.0.1/ | grep -q JJTV
-  done
-  curl -fsS -H 'Host: jjtv-api.8jj.net' http://127.0.0.1/health >/dev/null
+  wait_for_routes http 80
 fi
 if [[ $PHASE == http ]]; then
   echo "JJTV HTTP routes installed; existing TLS preserved=$initial_tls."
@@ -197,8 +217,5 @@ docker exec dastaan-staging-edge-1 nginx -t
 docker exec dastaan-staging-edge-1 nginx -s reload
 HOOK
 chmod 750 /etc/letsencrypt/renewal-hooks/deploy/jjtv-video
-for host in "${HOSTS[@]:0:3}"; do
-  curl -fsS --resolve "$host:443:127.0.0.1" "https://$host/" | grep -q JJTV
-done
-curl -fsS --resolve jjtv-api.8jj.net:443:127.0.0.1 https://jjtv-api.8jj.net/health
+wait_for_routes https 443
 printf '\nJJTV HTTPS routes and independent certificate verified.\n'
