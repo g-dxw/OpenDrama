@@ -1,0 +1,4 @@
+# Files executed or consumed directly on Linux must stay LF in git archive.
+/deploy/video/** text eol=lf
+/cli/minitv text eol=lf
+/cli/install.sh text eol=lf
