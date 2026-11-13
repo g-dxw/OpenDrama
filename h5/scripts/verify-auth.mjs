@@ -253,7 +253,11 @@ async function newPage(options = {}) {
   await page.waitForSelector("#auth-email", { timeout: 5000 });
   await page.getByRole("button", { name: "Send code" }).click();
   await page.waitForSelector(".auth-code", { timeout: 8000 });
-  await page.locator(".auth-box").first().pressSequentially("123456");
+  await page.locator(".auth-box").first().pressSequentially("123456", {delay:20});
+  // Cross the former 60 ms focus callback while typing; digits must not be lost.
+  const enteredCode = await page.locator(".auth-box").evaluateAll(inputs => inputs.map(input => input.value).join(""));
+  check(enteredCode === "123456", "OTP focus does not steal digits during retry typing");
+  if (enteredCode !== "123456") throw new Error("OTP input lost digits: " + enteredCode);
   await page.getByRole("button", { name: "Verify and sign in" }).click();
   await page.waitForSelector('[data-testid="login-sheet"]', { state: "detached", timeout: 8000 });
 
