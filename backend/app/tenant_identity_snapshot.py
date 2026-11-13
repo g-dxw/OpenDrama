@@ -25,7 +25,7 @@ def export_snapshot(connection):
         return [dict(r) for r in connection.execute(select(*fields).order_by(*order)).mappings()]
     users = rows('admin_users', {'password_hash'})
     tenants = rows('tenants')
-    roles = rows('tenant_roles')
+    roles = rows('tenant_roles') if 'tenant_roles' in tables else []
     memberships = rows('tenant_members')
     independent = 'account_scope' in tables['admin_users'].c
     grants = []
@@ -59,7 +59,18 @@ def export_snapshot(connection):
             user = by_user[member['user_id']]
             if user['role']=='admin':
                 continue
-            permissions = migration.snapshot(by_tenant[member['tenant_id']],user,by_role[member['role_id']])
+            role = by_role.get(member.get('role_id'))
+            if role is None:
+                # f9 deployments predate configurable roles. Reconstruct only
+                # the static b2 migration preset, without changing the DB.
+                preset_path = path.parent / 'b2e6c9148a70_tenant_role_permissions.py'
+                preset_spec = importlib.util.spec_from_file_location('tenant_builtin_snapshot',preset_path)
+                preset = importlib.util.module_from_spec(preset_spec)
+                preset_spec.loader.exec_module(preset)
+                tenant = by_tenant[member['tenant_id']]
+                key = preset._effective_builtin(user['role'],member['role'])
+                role = {'permissions':preset._preset_permissions(tenant['id'],tenant['kind'],key)}
+            permissions = migration.snapshot(by_tenant[member['tenant_id']],user,role)
             grants.append(dict(user_id=user['id'],tenant_id=member['tenant_id'],permissions=sorted(permissions) if user['status']=='active' and by_tenant[member['tenant_id']]['status']=='active' else []))
         for user in users:
             if user['role']=='admin':
