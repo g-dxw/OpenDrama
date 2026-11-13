@@ -328,7 +328,7 @@ export default function Moderation() {
           showIcon
           icon={<KeyOutlined />}
           message="未配置自动审核密钥"
-          description="自动审核无法调用模型，评论会按降级策略处理。点右侧填写密钥（加密存库），或写入服务器 /opt/minitv/.env 的 OPENAI_API_KEY。"
+          description="自动审核无法调用模型，评论会按降级策略处理。点右侧填写密钥（加密存库），或写入服务器 /opt/jjtv/shared/.env 的 OPENAI_API_KEY。"
           action={
             <Button size="small" type="primary" icon={<KeyOutlined />} onClick={() => setKeyOpen(true)}>
               配置密钥

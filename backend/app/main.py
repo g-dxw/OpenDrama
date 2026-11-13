@@ -1,4 +1,4 @@
-"""Local health app for the MiniTV test environment."""
+"""Local health app for the JJTV test environment."""
 
 from __future__ import annotations
 
@@ -29,17 +29,16 @@ def load_env() -> None:
 
 
 load_env()
-app = FastAPI(title="MiniTV Local", version="0.0.0")
+app = FastAPI(title="JJTV API", version="0.0.0")
 
 _DEFAULT_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "http://localhost:5174",
     "http://127.0.0.1:5174",
-    "https://minitv.us",
-    "https://www.minitv.us",
-    "https://admin.minitv.us",
-    "https://h5.minitv.us",
+    "https://jjtv.8jj.net",
+    "https://jjtv-admin.8jj.net",
+    "https://jjtv-h5.8jj.net",
 ]
 
 

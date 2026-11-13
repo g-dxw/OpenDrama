@@ -55,6 +55,7 @@ class _MiniTvAppState extends State<MiniTvApp> {
     return SessionScope(
       session: session,
       child: MaterialApp(
+        title: 'JJTV',
         debugShowCheckedModeBanner: false,
         theme: ThemeData(scaffoldBackgroundColor: bg, brightness: Brightness.dark),
         home: HomeShell(language: language, onLanguage: setLanguage),
@@ -150,7 +151,7 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
           : AppBar(
               backgroundColor: bg,
               foregroundColor: Colors.white,
-              title: Text(tab == 0 ? 'MiniTV' : copy.t(['nav.home', 'nav.foryou', 'nav.rewards', 'nav.me'][tab])),
+              title: Text(tab == 0 ? 'JJTV' : copy.t(['nav.home', 'nav.foryou', 'nav.rewards', 'nav.me'][tab])),
               actions: [
                 TextButton(
                   onPressed: () => widget.onLanguage(widget.language == 'zh' ? 'en' : 'zh'),

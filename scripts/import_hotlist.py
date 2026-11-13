@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Import one downloaded short-drama folder into MiniTV (drama -> cover -> episodes -> Bunny -> publish).
+"""Import one downloaded short-drama folder into JJTV (drama -> cover -> episodes -> Bunny -> publish).
 
 The folder layout is the one produced by the hot-list downloader::
 
@@ -38,7 +38,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-API_DEFAULT = "https://api.minitv.us"
+API_DEFAULT = "https://jjtv-api.8jj.net"
 UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
@@ -178,7 +178,7 @@ def ensure_drama(client: Client, title: str) -> dict:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Import a downloaded drama folder into MiniTV.")
+    parser = argparse.ArgumentParser(description="Import a downloaded drama folder into JJTV.")
     parser.add_argument("--dir", required=True, help="folder holding metadata.json and NNN.mp4")
     parser.add_argument("--title-en", required=True)
     parser.add_argument("--synopsis-en", default="")

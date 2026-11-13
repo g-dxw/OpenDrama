@@ -1,4 +1,4 @@
-/** Typed fetchers for the public MiniTV API. */
+/** Typed fetchers for the public JJTV API. */
 
 export type Drama = { id: number; title: string; cover_url: string; play_count: number };
 
@@ -79,13 +79,13 @@ export type PlaybackAuth = {
  * Production builds set VITE_API_BASE (see web/.env.production); local Vite dev
  * leaves it empty and uses the proxy.
  *
- * The marketing site is served straight from R2, so there is no reverse proxy:
+ * The marketing frontend and API use separate public hosts:
  * a production build that somehow lacks the env var would request /v1/... on
- * minitv.us itself, get a 404 from the CDN and render "Could not load MiniTV".
+ * jjtv.8jj.net itself, receive an HTML page instead of API data and render "Could not load JJTV".
  * Fall back to the public API host instead of shipping a dead page.
  */
 export const API_BASE = (
-  import.meta.env.VITE_API_BASE ?? (import.meta.env.PROD ? "https://api.minitv.us" : "")
+  import.meta.env.VITE_API_BASE ?? (import.meta.env.PROD ? "https://jjtv-api.8jj.net" : "")
 ).replace(/\/$/, "");
 
 function apiUrl(path: string): string {

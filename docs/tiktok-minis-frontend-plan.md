@@ -1,4 +1,4 @@
-# MiniTV TikTok 小程序前端规划
+# JJTV TikTok 小程序前端规划
 
 状态：规划，待确认  
 日期：2026-10-13  
@@ -24,7 +24,7 @@ TikTok 端不复用 Flutter App，也不按微信小程序的页面模型开发�
 | 付费 | 金币与会员 | TikTok Beans，服务端建单 |
 | 页面 | 19 屏完整产品 | 先做短剧观看闭环 |
 
-App 的 Bunny 播放链路不能直接嵌入 TikTok。TikTok 端要有独立的视频映射：`album_id`、`episode_id`、`vid` 对应 MiniTV 的剧和分集。
+App 的 Bunny 播放链路不能直接嵌入 TikTok。TikTok 端要有独立的视频映射：`album_id`、`episode_id`、`vid` 对应 JJTV 的剧和分集。
 
 ## 3. 前端工程
 
@@ -79,7 +79,7 @@ sequenceDiagram
 
 ## 6. 登录与支付
 
-登录由前端向 TikTok 获取 code，FastAPI 用 code 换取平台 Token并建立 MiniTV 用户映射。前端不保存平台密钥。
+登录由前端向 TikTok 获取 code，FastAPI 用 code 换取平台 Token并建立 JJTV 用户映射。前端不保存平台密钥。
 
 支付流程固定为：
 
@@ -109,7 +109,7 @@ TikTok 前端需要一组独立于 App 的接口：
 ## 8. 实施顺序
 
 1. 建立 React 工程、SDK 初始化和 `minis dev` 调试链路。
-2. 完成 TikTok 登录与 MiniTV 用户映射。
+2. 完成 TikTok 登录与 JJTV 用户映射。
 3. 用一部已审核短剧跑通 VePlayer 播放。
 4. 接服务端建单、Beans 支付和 Webhook 解锁。
 5. 补剧场、详情、选集和我的页面。
@@ -121,6 +121,6 @@ TikTok 前端需要一组独立于 App 的接口：
 
 1. TikTok 开发者组织、短剧类目权限和审核环境是否已开通。
 2. 现有剧集是否已通过 TikTok 内容审核并取得 `vid`。
-3. Beans 与 MiniTV 金币、会员之间是否打通，还是 TikTok 端单独计价。
+3. Beans 与 JJTV 金币、会员之间是否打通，还是 TikTok 端单独计价。
 4. 当前包体上限、域名白名单和可用地区。
 5. VePlayer 是否允许在保留官方播放器的同时自定义上一集、下一集和选集层。

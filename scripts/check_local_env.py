@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify the local MiniTV test environment.
+"""Verify the local JJTV test environment.
 
 Stage-0 checks always count toward the result: .env values, PostgreSQL,
 Redis, and the Python dependencies the app imports (run via the project

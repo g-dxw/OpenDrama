@@ -1,4 +1,4 @@
-# minitv 0.3.1 — MiniTV 剧集管理 CLI
+# minitv 0.3.1 — JJTV 剧集管理 CLI
 
 单文件、零依赖（Python >= 3.8）。TTY 输出表格，非 TTY 输出 JSON。
 
@@ -9,7 +9,7 @@ minitv version    # 当前版本
 ```
 
 ```bash
-curl -fsSL https://minitv.us/cli/install.sh | sh
+curl -fsSL https://jjtv.8jj.net/cli/install.sh | sh
 minitv config set-key
 minitv doctor
 ```

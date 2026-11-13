@@ -73,8 +73,8 @@ function AppShell() {
         <header className="topbar">
           {searching ? null : tab === "home" ? (
             <div className="brand" role="heading" aria-level={1}>
-              <span className="brand-m">M</span>
-              <span className="brand-rest">iniTV</span>
+              <span className="brand-m">JJ</span>
+              <span className="brand-rest">TV</span>
             </div>
           ) : (
             <h1>{t(locale, TABS.find((item) => item.id === tab)!.key)}</h1>

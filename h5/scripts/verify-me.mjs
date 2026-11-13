@@ -7,7 +7,7 @@ import { createRequire } from "node:module";
 const require = createRequire("/opt/homebrew/lib/node_modules/");
 const { chromium } = require("playwright");
 
-const APP_URL = "http://localhost:5175/";
+const APP_URL = process.env.BASE_URL || "https://jjtv-h5.8jj.net/";
 const OUT = "/tmp/h5me";
 const TOKEN = "test-token-42";
 
@@ -66,7 +66,7 @@ const messages = {
   unread: 1,
   items: [
     { id: 3, kind: "system", title: "New episodes are in", body: "My Bodyguard Husband Is the Boss just added 3 episodes.", read: false },
-    { id: 2, kind: "system", title: "Welcome to MiniTV", body: "Your watch history and favorites sync across devices.", read: true },
+    { id: 2, kind: "system", title: "Welcome to JJTV", body: "Your watch history and favorites sync across devices.", read: true },
   ],
 };
 
@@ -172,7 +172,7 @@ await page.waitForTimeout(900);
 await page.screenshot({ path: `${OUT}-page.png` });
 
 check((await page.locator(".me-hero h2").innerText()).trim() === "mygodis", "profile name renders");
-check((await page.locator(".me-uid").innerText()).includes("6168731156"), "MiniTV id renders");
+check((await page.locator(".me-uid").innerText()).includes("6168731156"), "JJTV id renders");
 check((await page.locator('[data-testid="me-coins"]').innerText()).trim() === "80", "coin balance renders");
 check((await page.locator(".me-tab.on").innerText()).trim() === "History", "history tab is the default");
 check((await page.locator(".me-grid .card").count()) === 6, "history grid de-duplicates to one card per drama");

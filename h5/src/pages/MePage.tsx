@@ -986,7 +986,7 @@ function SettingsSheet({
         <div className="me-set-list">
           <div className="me-set-item">
             <span className="me-set-label">{t(locale, "me_set_version")}</span>
-            <span className="me-set-value">MiniTV · H5</span>
+            <span className="me-set-value">JJTV · H5</span>
           </div>
         </div>
       </section>

@@ -1,4 +1,5 @@
-/** Android build served straight from the marketing-site bucket.
+/** Legacy package record; not exposed by the JJTV download page.
+ * Replace it with a verified JJTV build before enabling Android downloads.
  *
  * Uploaded with `python3 scripts/release.py r2 --dist <dir> --prefix download
  * --allow-no-index`, which lands the file at `https://minitv.us/download/...`.

@@ -33,7 +33,7 @@
 | 文件 | 内容 |
 |---|---|
 | `cli/minitv` | 单文件、纯标准库（argparse + urllib + json + getpass）的 CLI 本体，带 shebang，可直接执行 |
-| `cli/install.sh` | 下载安装 + 可选写 key + 自检的引导脚本（发布到 `https://minitv.us/cli/install.sh`） |
+| `cli/install.sh` | 下载安装 + 可选写 key + 自检的引导脚本（发布到 `https://jjtv.8jj.net/cli/install.sh`） |
 | `docs/cli-reference.md` | **由 `minitv guide` 生成**后提交入库：命令表、参数、示例、错误码、典型流程（给 Agent 读） |
 | `admin/src/pages/ApiKeys.tsx` | 密钥页新增「接入 Agent」入口 + 签发弹窗里的一键命令（见 §3.7） |
 
@@ -100,7 +100,7 @@ Client  →  request() / paginate() / upload()
 `minitv --help` 的能力地图大致长这样：
 
 ```
-minitv — MiniTV 剧集管理 CLI
+minitv — JJTV 剧集管理 CLI
 
 开始
   minitv config set-key       配置 API Key（首次）
@@ -136,7 +136,7 @@ minitv — MiniTV 剧集管理 CLI
 {
   "default_profile": "prod",
   "profiles": {
-    "prod": { "base_url": "https://api.minitv.us", "sandbox_drama_id": 0 },
+    "prod": { "base_url": "https://jjtv-api.8jj.net", "sandbox_drama_id": 0 },
     "local": { "base_url": "http://127.0.0.1:18110", "sandbox_drama_id": 0 }
   }
 }
@@ -164,7 +164,7 @@ minitv — MiniTV 剧集管理 CLI
 
 ```
 $ minitv config set-key
-环境     prod  https://api.minitv.us
+环境     prod  https://jjtv-api.8jj.net
 凭证     粘贴 API Key（输入不回显）：********
 校验     GET /auth/me → admin（管理员）· 读 · 写 · 删除 · 2027-10-21 到期
 已保存   ~/.config/minitv/credentials（0600）
@@ -223,21 +223,21 @@ python3 scripts/release.py r2 --dist cli --source cli --prefix cli --allow-no-in
 
 | URL | 内容 |
 |---|---|
-| `https://minitv.us/cli/install.sh` | 安装引导 |
-| `https://minitv.us/cli/minitv` | 单文件本体（由 install.sh 下载） |
+| `https://jjtv.8jj.net/cli/install.sh` | 安装引导 |
+| `https://jjtv.8jj.net/cli/minitv` | 单文件本体（由 install.sh 下载） |
 
 **两条一行命令**：
 
 A. 给 Agent 的完整初始化（含 key，只在「密钥已生成」弹窗出现一次）
 
 ```
-curl -fsSL https://minitv.us/cli/install.sh | MINITV_API_KEY='mk_live_...' sh
+curl -fsSL https://jjtv.8jj.net/cli/install.sh | MINITV_API_KEY='mk_live_...' sh
 ```
 
 B. 不含 key 的安装（页面顶部「接入 Agent」用）
 
 ```
-curl -fsSL https://minitv.us/cli/install.sh | sh && minitv config set-key
+curl -fsSL https://jjtv.8jj.net/cli/install.sh | sh && minitv config set-key
 ```
 
 `install.sh` 的行为（幂等）：

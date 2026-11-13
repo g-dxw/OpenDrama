@@ -1,9 +1,9 @@
 /** Full web app (the H5 build on its own domain). Anything that leaves the
  * marketing site goes through this constant so the URL is never typed twice. */
-export const WEB_APP_URL = "https://h5.minitv.us";
+export const WEB_APP_URL = "https://jjtv-h5.8jj.net";
 
 /** Operator console. Linked from the footer so the public nav stays clean. */
-export const ADMIN_URL = "https://admin.minitv.us";
+export const ADMIN_URL = "https://jjtv-admin.8jj.net";
 
 type NavItem = { label: string; href: string; external?: boolean };
 
@@ -23,7 +23,7 @@ export function SiteHeader() {
       <div className="shell header-inner">
         <a className="brand" href="#home">
           <img className="brand-mark" src="/brand/minitv-icon.png" alt="" aria-hidden="true" />
-          MiniTV
+          JJTV
         </a>
         <nav className="site-nav" aria-label="Main">
           {nav.map((item) => (
@@ -58,7 +58,7 @@ export function SiteFooter() {
           <div className="footer-brand">
             <a className="brand" href="#home">
               <img className="brand-mark" src="/brand/minitv-icon.png" alt="" aria-hidden="true" />
-              MiniTV
+              JJTV
             </a>
             <p>Vertical short dramas, built for the phone. Watch free episodes on the web, unlock everything in the app.</p>
           </div>
@@ -89,7 +89,7 @@ export function SiteFooter() {
           </div>
         </div>
         <div className="footer-bottom">
-          <span>© {new Date().getFullYear()} MiniTV. All rights reserved.</span>
+          <span>© {new Date().getFullYear()} JJTV. All rights reserved.</span>
           <div className="footer-bottom-meta">
             <span>Prices shown in USD. Subscriptions are billed in the app.</span>
             <a
@@ -97,7 +97,7 @@ export function SiteFooter() {
               href={ADMIN_URL}
               target="_blank"
               rel="noopener noreferrer"
-              title="MiniTV admin console"
+              title="JJTV admin console"
             >
               Admin
               <span aria-hidden="true">↗</span>

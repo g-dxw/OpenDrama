@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
 import { fetchMarketing, fetchPreviewCatalog, Marketing, Plan, PreviewDrama } from "./api";
-import { ANDROID_APK, ANDROID_MIN } from "./downloads";
 import { SiteFooter, SiteHeader, WEB_APP_URL } from "./layout";
 import PreviewPage from "./preview";
 import { parseRoute, Route, scrollToRoute } from "./routes";
@@ -60,7 +59,7 @@ function FeatureGlyph({ name }: { name: FeatureIcon }) {
 
 const faqs = [
   {
-    q: "Is MiniTV free?",
+    q: "Is JJTV free?",
     a: "Yes. Many episodes are free to watch. Locked episodes unlock with coins or a membership.",
   },
   {
@@ -69,7 +68,7 @@ const faqs = [
   },
   {
     q: "Where do I download the app?",
-    a: "The Android app is ready — tap Download APK in the Download section, then allow installs from your browser when Android asks. The iOS app is still coming soon; until then you can watch free episodes and the full web app right here in your browser.",
+    a: "The JJTV Android and iOS apps are being prepared. Until they are ready, watch free episodes and use the full web app right here in your browser.",
   },
   {
     q: "How do coins work?",
@@ -92,7 +91,7 @@ function HomePage() {
   const [error, setError] = useState("");
   const [teaser, setTeaser] = useState<PreviewDrama[]>([]);
   // The store listings are not live yet: the badges stay, the click explains
-  // why and points people at the APK / browser build instead.
+  // why and points people at the browser app while the native apps are prepared.
   const [storeNotice, setStoreNotice] = useState("");
   const noticeTimer = useRef<number | null>(null);
 
@@ -113,7 +112,7 @@ function HomePage() {
     setError("");
     fetchMarketing()
       .then(setData)
-      .catch(() => setError("Could not load MiniTV. Check the local API and retry."));
+      .catch(() => setError("Could not load JJTV. Check the local API and retry."));
   };
 
   useEffect(() => {
@@ -148,7 +147,7 @@ function HomePage() {
             </h1>
             <p className="lede">
               Free episodes play right here on the web. Unlock the rest — and the whole
-              library — in the MiniTV app.
+              library — in the JJTV app.
             </p>
             <div className="hero-actions">
               <a className="btn btn-primary" href="#preview">
@@ -181,7 +180,7 @@ function HomePage() {
           </div>
           <div className="hero-art">
             <div className="phone">
-              <img src="/ph_feed.png" alt="A MiniTV drama playing in the mobile app" />
+              <img src="/ph_feed.png" alt="A JJTV drama playing in the mobile app" />
             </div>
             {rating && <div className="chip chip-top">★ {rating.value} rating</div>}
             {downloads && <div className="chip chip-bottom">{downloads.value} downloads</div>}
@@ -221,7 +220,7 @@ function HomePage() {
         <div className="shell">
           <div className="section-head">
             <div>
-              <span className="eyebrow">Why MiniTV</span>
+              <span className="eyebrow">Why JJTV</span>
               <h2>Built for the way you watch</h2>
               <p className="section-sub">
                 Short, vertical, and always one swipe from the next episode.
@@ -290,7 +289,7 @@ function HomePage() {
                 <h2>Watch free episodes online</h2>
                 <p className="section-sub">
                   The first episodes of our shows stream free in your browser — no app
-                  needed. Paid episodes unlock in the MiniTV app.
+                  needed. Paid episodes unlock in the JJTV app.
                 </p>
               </div>
               <a className="text-link" href="#preview">
@@ -383,7 +382,7 @@ function HomePage() {
                           ? "btn btn-primary btn-block plan-cta"
                           : "btn btn-ghost btn-block plan-cta"
                       }
-                      href="https://h5.minitv.us"
+                      href="https://jjtv-h5.8jj.net"
                     >
                       Subscribe on the web
                     </a>
@@ -417,18 +416,18 @@ function HomePage() {
           <div className="download-card">
             <div className="download-copy">
               <span className="eyebrow">Download</span>
-              <h2>Get MiniTV on your phone</h2>
+              <h2>Get JJTV on your phone</h2>
               <p>
-                Install the app to unlock every episode, download shows, and manage your
-                subscription. The Android build is ready — install the APK below. iOS is
-                still on the way; until then, free previews and the full web app work
-                right here in your browser.
+                The JJTV Android and iOS apps are being prepared. Until they are ready,
+                watch free previews and use the full web app right here in your browser.
               </p>
               <div className="store-buttons">
-                <a
+                <button
+                  type="button"
                   className="store-btn store-btn-apk"
-                  href={ANDROID_APK.url}
-                  download={`MiniTV-${ANDROID_APK.version}.apk`}
+                  onClick={() =>
+                    showStoreNotice("The JJTV Android app is being prepared — watch online in your browser for now.")
+                  }
                 >
                   <svg className="icon-stroke" viewBox="0 0 24 24" aria-hidden="true">
                     <path d="M12 3.6v10.4" />
@@ -437,11 +436,11 @@ function HomePage() {
                   </svg>
                   <span>
                     <small>
-                      Android {ANDROID_MIN}+ · {ANDROID_APK.size}
+                      Coming soon
                     </small>
-                    <strong>Download APK</strong>
+                    <strong>JJTV Android</strong>
                   </span>
-                </a>
+                </button>
                 <a
                   className="store-btn store-btn-web"
                   href={WEB_APP_URL}
@@ -460,8 +459,7 @@ function HomePage() {
                 </a>
               </div>
               <p className="apk-hint">
-                v{ANDROID_APK.version} · The first install asks you to allow installs from
-                this browser — tap Settings, allow, then Install.
+                The JJTV Android download will be available here once the new app is ready.
               </p>
               <div className="store-buttons store-buttons-soon">
                 <button
@@ -486,7 +484,7 @@ function HomePage() {
                   className="store-btn"
                   onClick={() =>
                     showStoreNotice(
-                      "Google Play is coming soon — download the APK above to install the Android app now.",
+                      "Google Play is coming soon — watch online in your browser for now.",
                     )
                   }
                 >
@@ -507,7 +505,7 @@ function HomePage() {
             </div>
             <div className="qr-block">
               <div className="qr-tile">
-                <img src="/qr-web.png" alt="QR code to watch MiniTV in your browser" />
+                <img src="/qr-web.png" alt="QR code to watch JJTV in your browser" />
               </div>
               <p className="qr-caption">Scan to watch on the web</p>
             </div>

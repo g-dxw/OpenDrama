@@ -2,7 +2,7 @@ import { createRequire } from "node:module";
 const require = createRequire("/opt/homebrew/lib/node_modules/");
 const { chromium } = require("playwright");
 
-const URL = "http://127.0.0.1:5175/";
+const URL = process.env.BASE_URL || "https://jjtv-h5.8jj.net/";
 const OUT = "/tmp/h5v";
 
 const browser = await chromium.launch({ channel: "chrome" });

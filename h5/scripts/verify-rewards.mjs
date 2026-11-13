@@ -7,7 +7,7 @@ import { createRequire } from "node:module";
 const require = createRequire("/opt/homebrew/lib/node_modules/");
 const { chromium } = require("playwright");
 
-const APP_URL = "http://localhost:5175/";
+const APP_URL = process.env.BASE_URL || "https://jjtv-h5.8jj.net/";
 const OUT = "/tmp/h5rewards";
 const TOKEN = "test-token-42";
 

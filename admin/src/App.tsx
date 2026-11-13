@@ -291,7 +291,7 @@ export default function App() {
         <div
           style={{ color: "#E53B3E", fontSize: 18, fontWeight: 700, padding: "20px 16px 8px" }}
         >
-          {me?.role === "partner" ? "MiniTV 合作方" : "MiniTV 后台"}
+          {me?.role === "partner" ? "JJTV 合作方" : "JJTV 后台"}
         </div>
       )}
       <Menu
