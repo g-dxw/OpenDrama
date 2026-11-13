@@ -92,6 +92,26 @@ jobs:
         run: npm ci
       - name: Type check and build committed source
         run: python scripts/build_frontends.py --frontend ${{ matrix.frontend }}
+      - name: Check desktop consumer flows and responsive layouts
+        if: matrix.frontend == 'web'
+        working-directory: web
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+          SHOTS_DIR: ${{ runner.temp }}/jjtv-pc-acceptance
+        run: npm run accept:consumer && npm run accept:subtitles
+      - name: Check preserved H5 account and player flows
+        if: matrix.frontend == 'h5'
+        working-directory: h5
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+        run: npm run verify:consumer
+      - name: Check management pages and role guards
+        if: matrix.frontend == 'admin'
+        working-directory: admin
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+          SHOTS_DIR: ${{ runner.temp }}/jjtv-admin-acceptance
+        run: npm run accept:parity
       - name: Keep the checked frontend build
         uses: actions/upload-artifact@v4
         with:
