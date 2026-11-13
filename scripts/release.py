@@ -251,6 +251,18 @@ def next_version() -> str:
             m = VERSION_RE.match(f.stem)
             if m:
                 max_n = max(max_n, int(m.group(4)))
+    # Failed releases delete their tag, and another worktree may not contain
+    # their ledger yet. Shared committed history still reserves those numbers,
+    # including commits retained only by a reflog after a branch reset/deletion.
+    history = git("log", "--all", "--reflog", "--format=", "--name-only", "--",
+                  f"deployments/releases/{prefix}*.json")
+    record_prefix = "deployments/releases/"
+    for line in history.splitlines():
+        if not line.startswith(record_prefix) or not line.endswith(".json"):
+            continue
+        m = VERSION_RE.match(line[len(record_prefix):-5])
+        if m and f"{m.group(1)}.{m.group(2)}.{m.group(3)}" == today:
+            max_n = max(max_n, int(m.group(4)))
     return f"{prefix}{max_n + 1}"
 
 
