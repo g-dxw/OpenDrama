@@ -1,0 +1,25 @@
+{
+  "version": "v2026.11.13.2",
+  "target": "video",
+  "status": "failed",
+  "sha": "93a78bfa67961df4d9dcb71c8a0e9b7f74a281c5",
+  "short_sha": "93a78bfa",
+  "command": [
+    "python3",
+    "scripts/deploy_video.py",
+    "--phase",
+    "http"
+  ],
+  "exit_code": 1,
+  "started_at": "2026-11-13T15:09:30+08:00",
+  "finished_at": "2026-11-13T15:09:35+08:00",
+  "operator": {
+    "user": "root",
+    "host": "MM-202608191734",
+    "pid": 13033,
+    "agent_session": null,
+    "cwd": "/mnt/d/workspace/new/minitv"
+  },
+  "note": "JJTV isolated HTTP deployment; DNS pending; retry after stdin fix",
+  "dirty": false
+}
