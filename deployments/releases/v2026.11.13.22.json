@@ -1,0 +1,39 @@
+{
+  "version": "v2026.11.13.22",
+  "target": "video-test-services",
+  "status": "published",
+  "sha": "031db2401d5395b69fbf90993b60b73ea0a9f70e",
+  "short_sha": "031db240",
+  "command": [
+    "python3",
+    "scripts/test_tenancy_services.py",
+    "--credentials",
+    "/mnt/c/Users/Administrator/.codex/private/jjtv-tenancy-test-services.json",
+    "remote-run",
+    "tests/test_content_defaults.py",
+    "tests/test_tenant_home_ops.py",
+    "tests/test_native_tenant_defaults_provision.py",
+    "tests/test_home_ops.py",
+    "tests/test_tenant_permissions.py",
+    "tests/test_independent_tenants.py",
+    "tests/test_tenancy.py",
+    "tests/test_content.py",
+    "tests/test_public_preview.py",
+    "tests/test_independent_tenant_migration.py",
+    "tests/test_seed_catalog_episodes.py",
+    "-q",
+    "--maxfail=0"
+  ],
+  "exit_code": 0,
+  "started_at": "2026-11-13T21:15:24+08:00",
+  "finished_at": "2026-11-13T21:18:52+08:00",
+  "operator": {
+    "user": "root",
+    "host": "MM-202608191734",
+    "pid": 14232,
+    "agent_session": null,
+    "cwd": "/mnt/d/workspace/new/minitv"
+  },
+  "note": "Committed tenant homepage isolation and default provisioning regressions; owned test services only, no product deployment",
+  "dirty": false
+}
