@@ -2,6 +2,7 @@
 from __future__ import annotations
 from datetime import datetime,timezone,timedelta
 from uuid import uuid4
+from urllib.parse import urlsplit
 import ipaddress
 import re
 from fastapi import APIRouter,Depends,HTTPException,Request
@@ -20,7 +21,7 @@ from app.modules.tenancy import service
 from app.modules.tenancy.permissions import seed_tenant_defaults,preset_role_id,permission_catalog,validate_permissions,preset_permissions
 from app.modules.tenancy.modules import BY_KEY,module_catalog,supported_keys
 from app.modules.tenancy.context import build_context,user_info,tenant_info
-from app.modules.tenancy.domains import validate_entry_origin,shared_hosts
+from app.modules.tenancy.domains import validate_entry_origin,shared_hosts,active_admin_domain
 
 platform_router=APIRouter(prefix='/platform/v1',tags=['platform'])
 tenant_router=APIRouter(prefix='/tenant/v1',tags=['tenant'])
@@ -109,6 +110,24 @@ def login_response(db,result):
     principal=ops_service.resolve_principal(db,token)
     if principal is None: raise HTTPException(503,detail='会话服务暂时不可用')
     return dict(token=token,context=build_context(db,principal))
+
+@tenant_router.get('/login-options')
+def tenant_login_options(request:Request,db:Session=Depends(get_db)):
+    """Public entry labels only; a dedicated admin origin sees its own tenant."""
+    origin=request.headers.get('Origin')
+    try:
+        parsed=urlsplit(origin) if origin else None
+        hostname=parsed.hostname if parsed else request.url.hostname
+        if parsed and parsed.scheme not in {'http','https'}: hostname=None
+    except ValueError:
+        hostname=None
+    query=select(Tenant.code,Tenant.name).where(Tenant.status=='active')
+    if hostname not in shared_hosts():
+        binding=active_admin_domain(db,hostname)
+        if binding is None:
+            raise HTTPException(403,detail=dict(code='tenant_domain_mismatch',message='登录入口域名尚未启用'))
+        query=query.where(Tenant.id==binding.tenant_id)
+    return dict(items=[dict(code=row.code,name=row.name) for row in db.execute(query.order_by(Tenant.name,Tenant.code))])
 
 @platform_router.post('/auth/login')
 def platform_login(body:Login,request:Request,db:Session=Depends(get_db)):
