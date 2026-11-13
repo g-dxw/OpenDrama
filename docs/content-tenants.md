@@ -1,59 +1,85 @@
-# JJTV content tenants
+# JJTV 独立业务租户
 
-This release adds content operations tenancy. JJTV owns the directory, staff memberships and routing; India owns its existing content, media jobs, review/publication and playback authorization. Consumer accounts, billing and wallets are outside this integration.
+本次以 d7ffa39 为基础，将内容工作区调整为独立业务租户。总平台与业务入口分开，JJTV 自营、India 和后续项目为平级租户。当前交付范围是本地预览；未执行生产迁移、DNS 或网关切换。
 
-## Operators
+## 身份与入口
 
-Platform administrators manage tenants and members. Native tenants use the existing content pages; the fixed India tenant uses the dedicated workspace. A paused tenant stops JJTV operations only. Public JJTV consumers continue to use the default jjtv content scope; other native tenants currently have content administration, not automatically provisioned consumer sites.
+| 身份 | 入口 | 权限范围 |
+|---|---|---|
+| 平台管理员 | /admin/platform/login | 租户、功能开通、域名、初始管理员、平台审计 |
+| 租户管理员 | /admin/t/{code}/login | 本租户员工、角色、密钥和已开通业务 |
+| 租户员工 | /admin/t/{code}/login | 本租户角色允许的业务操作 |
+| 平台进入租户 | /admin/s/{code}/… | 单独的 30 分钟支持会话，记录真实平台操作人 |
 
-Each membership selects a role defined inside that tenant. Roles carry explicit view/menu and action permissions; a staff member may upload in one tenant and review in another. Native content grants are independent of the employee's platform ops/finance label when explicitly assigned by role_id. The default templates preserve the previous operator and read-only workflows; legacy role input retains its old narrowing semantics. Platform administration still requires the existing platform identity in addition to configured permissions. Native content queries and writes remain scoped on the server, including episodes, uploads and associations. Existing rows retain default jjtv ownership. Suppliers remain a separate concept.
+/admin/ 和旧 /admin/login 是入口选择页。平台用户名在平台内唯一；租户用户名在租户内唯一，允许不同租户同名。用户名沿用原有小写字母、数字、点、下划线、短横线规范，3–32 位，首位为字母或数字。
 
-India authorization is per JJTV staff member and per JJTV login session. Password/TOTP inputs are transient; business tokens and pending challenges are encrypted using an independent TENANT_CONNECTION_KEY. Refresh and other authorization mutations are serialized. Local disconnect clears only this connection: upstream logout would revoke every upstream session and is deliberately not called. No automatic upstream MFA enrollment or business publication occurs during deployment.
+普通员工不能切换所属租户；修改 X-JJTV-Tenant、资源 ID、角色 ID 或密钥参数不会改变账号归属。平台普通会话没有业务权限，必须显式点击“进入租户”。支持会话退出、过期不会清除平台或普通租户登录。
 
-## Integration
+平台和各租户会话分别保存；支持会话使用当前标签页的 sessionStorage。临时密码仅在创建或重置结果中展示一次，首次登录必须实际修改密码才能操作业务。修改密码、停用员工和重置密码会使旧会话失效。
 
-INDIA_API_BASE_URL is server-only and fixed to https://8jj.ai/v1 in the deployment template. The connector forwards only an explicit allowlist of content commands, keeps upstream version/reason/idempotency semantics, and never retries mutations automatically. JSON commands carry UUID Idempotency-Key headers. Video/cover/rights uploads stream through the BFF without an entire-file buffer; limits are 100/5/10 MiB respectively. Only these exact upload routes receive the larger proxy limit.
+## 功能与角色
 
-The narrow source contract is stored in backend/app/modules/tenancy/india-contract.json, bound to provider source 2d5d88a5b6b956f95b92b4bc18dab62e93d202ce and canonical JSON/YAML hashes. Actual deployed authority still comes from upstream responses and enabled capabilities. Contract presence does not certify live media configuration or a particular runtime SHA.
+实际权限 = 租户已开通且后端支持的功能 ∩ 租户角色权限。
 
-## Verification and recovery
+平台按二级菜单开通功能，一级菜单分组由现有导航派生。关闭功能后，旧会话和密钥的接口权限立即收回；角色配置保留，重新开通可恢复原授权。普通业务角色不会自动得到新功能权限。
 
-Use the disposable PostgreSQL16/Redis7 services described in tenancy-test-services.md; never point destructive fixtures at business credentials. Integration tests cover native isolation, authorization ownership, MFA, refresh, streaming/error mapping and audit correlation. Browser tests distinguish mocked upstream flows from actual operator acceptance. A real India upload/publication acceptance needs an authorized old operator and approved test content.
+受保护的“租户管理员”系统角色拥有本租户已开通业务和员工、角色、密钥管理能力。“内容管理员”仍是普通业务角色，名字包含“管理员”不会获得团队管理权。租户管理员可以指定同级管理员，但不能停用或降级最后一名有效管理员。员工首期绑定一个业务角色。
 
-The migration is additive and backfills existing content to jjtv. Downgrade refuses to discard another native tenant's content ownership. Do not roll back to pre-tenancy application code after creating other native tenant content: older readers do not enforce that ownership.
+本期普通 native 租户支持 dramas、reviews、tags、groups；India 支持其已实现的内容、审核能力。用户、财务、订单、会员、钱包、合作方等旧业务通过 legacy_business_bindings 明确绑定 JJTV 自营。其他租户显示“待适配”，不能勾选开通或直接调用接口。这里没有“默认租户自动拥有全部功能”的授权分支。
 
-## Operating India from JJTV
+二级导航继续使用现有内容、社区、用户与金币、商业化、合作方、系统分组。菜单、按钮和接口都使用同一份有效权限；共享只读接口可为已授权业务提供选择器数据，写操作仍要求对应操作权限。
 
-Open 租户管理, enter India Short Drama, then connect an existing India operator with that operator's password and authenticator code. First-time authenticator enrollment is displayed only when requested by India. Platform administrators assign JJTV staff membership; the upstream operator role still controls editing, review and publication. No India password or TOTP code is saved.
+## API 与会话
 
-Create or select a series, maintain its rights and evidence, add episodes, upload the original video, and wait for the upstream job result. Complete subtitles and cover as needed, then submit, review and publish using the upstream version and permission checks. A rejected or timed-out operation never displays a fabricated successful publication.
+- /platform/v1：平台登录、上下文、租户、模块、域名、管理员、审计。
+- /tenant/v1：带 tenant_code 的登录、上下文、改密、员工、角色、审计、密钥。
+- /admin/v1：保留原业务接口，先验证绑定的租户业务上下文，再验证模块、角色与资源归属。
+- 旧登录缺少租户编码时返回 tenant_required，不再全局搜索同名账号。
+- Redis 会话使用 v2 命名空间，包含账号类型、租户、会话类型和 auth_version；每次请求重查有效账号、租户状态、角色及功能开通。
+- API key 与账号类型和租户绑定，密钥范围还会进一步限制动作。旧密钥缺少可信用途及租户绑定，迁移时停用并审计，需按新模型重发。
 
-## Implementation verification (2026-11-13)
+平台支持会话不能改变平台账号密码，不能再次进入其他租户，也不能调用总平台控制面。通过支持会话执行的操作保留平台账号 ID、actor_scope 和目标 tenant_id。
 
-The 11-file PostgreSQL/Redis run against committed backend be676417 covered 198 tests: 196 passed, with two new tenancy tests failing due to an incomplete expiration mock and an overly exact cache-header assertion. After only those fixtures/assertions were corrected in 959e724e, all 18 tenancy tests passed. The other 180 connector/native-content/upload/API-key/partner tests required no source changes. Migrations were exercised against a freshly created disposable database. Owned test containers, network and temporary source were removed after the run.
+## 域名
 
-Admin TypeScript and production build passed. Browser mock checks covered tenant switching/membership, India password/MFA/enrollment, original upload/job queries, subtitle/cover/evidence, failed and successful publication, transient secrets and finance read-only pages at desktop and mobile widths. These are implementation tests; an actual India operator upload/publication is not certified by them.
+本地先通过 /admin/t/{code}/login 验收。平台可登记后台域名 admin 和前台域名 site；新增域名为 pending，不会仅因保存配置就获得 CORS、登录或站点访问授权。
 
-## Configurable tenant roles
+独立后台域名启用还需要后续的 DNS、证书、网关及验证操作。当前没有自动启用按钮，也没有为新租户生成消费者站点。已验证的后台域名必须与登录租户一致。现有 JJTV、India 域名配置不变。
 
-In 租户管理, open 角色与权限 for the tenant, create a role and select its menu/view and operation permissions. Selecting an action also selects its required view permission; clearing the view removes dependent actions. Assign the role in 成员. Each member has one role per tenant in this version. The same employee can have different roles across tenants. Platform administrators always retain the tenant's available permissions.
+## India 兼容边界
 
-The catalog covers viewing, metadata editing, media upload, pricing, review, publication, episode deletion and whole-series deletion separately. A view grant determines navigation; registered API operations also require their action grant. Shared read endpoints are deliberately authorized for their consumers, such as plan catalogs used by membership details and content selectors used by homepage groups. Default presets no longer imply that every staff account can read every administration API: an explicit view grant is required. Existing platform-only staff/key management and privileged financial writes cannot be granted by a content role.
+India 继续使用原后端和数据库。JJTV 使用已有固定连接器，员工登录自己的 India 租户账号后，还需连接自己的旧站运营账号。创建新员工不会自动创建旧站账号。
 
-India supports only its fixed content capabilities. JJTV action grants remain intersected with the connected upstream operator's authority. Both free_episode_count and member_window require pricing permission. PATCH requests send only authorized fields plus the upstream version, with no stale-snapshot exception. A role cannot create new upstream capabilities.
+操作权限同时受 JJTV 功能/角色和旧站账号权限约束；连接绑定新账号及当前会话，不向全租户共享。连接器保留上传、转码、版权、审核、上下架的白名单、版本、幂等和流式上传规则。密码和 TOTP 输入不持久化，连接令牌由独立 TENANT_CONNECTION_KEY 加密。
 
-Role edits use a version check; a stale editor receives 409 and keeps its draft for refresh. Preset roles are editable but cannot be deleted. Assigned custom roles must be unassigned before deletion. Role/member changes and their audit record commit together. Effective permissions are read on every API request; switching tenants, focusing the window or using 刷新权限 refreshes the displayed menus. API keys require staff scope for tenant directory mutations and role/member administration; India connections remain interactive-session only.
+迁移或本地断开只清除 JJTV 侧连接，不调用旧站全局注销。本期“暂停”只表示暂停新后台接入及运营操作，不会关闭旧站或消费者服务。真实上传和发布验收还需要旧站授权账号和批准的测试素材；本地预览不冒充该生产验收。
 
-Do not roll application code back to the fixed-role version after using custom roles or narrowing presets: that code ignores role_id and can broaden access. The migration refuses downgrade if it cannot preserve the configured authorization. Export and migrate permissions before such a rollback.
+## 数据迁移与生产前检查
 
-The local review environment uses a separate jjtv_tenancy_preview database and Redis DB 14. Destructive tests use jjtv_tenancy_test and Redis DB 15. They contain only preview/test data and do not deploy the feature to production.
+新增 Alembic c4d8e0a1b295，前置版本 b2e6c9148a70。迁移会锁定账号与权限关系后取快照，按迁移前实际有效授权回填；需要时生成兼容角色，避免只按角色名称映射导致增权。
 
-Local role verification: the 31-file backend run covered 376 cases (373 passed; three legacy read-all/error-text assertions were updated to the new explicit-permission contract). The final nine-file regression run passed all 132 cases, including all 26 dedicated permission tests, API-key staff scope, scheduled supplier approval and the updated legacy cases. Admin TypeScript and Vite builds passed, as did six mocked workflow groups. Actual local Chrome verified role create/rename/delete, member role IDs/names, A uploader/B reviewer behavior and the disconnected India boundary; desktop and 390px views were inspected. This iteration was delivered as a local preview with no product deployment.
+- 旧实际全局管理员保留平台账号与 ID；为 JJTV 及其他租户分别创建独立租户管理员。
+- 旧运营、财务账号归 JJTV，保留原 ID、密码、状态和历史审计；原来无业务成员关系的账号不会自动得到业务权限。
+- 原跨租户关系拆为独立账号。新账号密码随机且不保存明文，平台需重置后交付临时密码。
+- 供应商继续为 JJTV 合作方身份，不成为租户管理员。
+- 内容、消费者、订单、钱包、角色和历史记录保留。身份映射写入 system 审计；旧审计操作人 ID 不替换。
+- 旧全局会话和 JJTV 侧 India 连接失效；用途不明的旧密钥停用。
 
-## Two-level admin navigation
+生产执行前必须停止旧后台写入并备份数据库，同时导出账号权限快照。以下命令在 backend 目录、由运维安全注入目标 DATABASE_URL 后执行，输出放在受控备份目录，禁止提交入库：
 
-The sidebar groups existing pages using the MiniTV reference navigation: 内容, 社区, 用户与金币, 商业化, 合作方 and 系统. 数据看板 remains the overview entry. Parent directories are display-only; existing route-based menu keys and action permissions remain authoritative. Unauthorized leaves and empty directories are hidden, and the current route opens its matching directory. Review-only drama details stay associated with the review menu.
+~~~bash
+python -m app.tenant_identity_snapshot --output /private/backup/tenant-identities-before.json
+pg_dump --format=custom --file=/private/backup/jjtv-before-independent-tenants.dump "$DATABASE_URL"
+alembic upgrade head
+python -m app.tenant_identity_snapshot --output /private/backup/tenant-identities-after.json
+~~~
 
-India remains a content entry, platform tenant administration remains in 系统, and supplier accounts retain their independent pages under 合作方. The role editor displays the same parent/child menu grouping while preserving the permission catalog and its dependencies. Unsupported reference features do not receive placeholder routes. No permission migration or product deployment is required for this navigation change.
+快照使用只读一致性事务，不导出密码散列、会话、密钥散列或 India 令牌；仍包含账号目录，应与数据库备份同级保管。输出文件必须不存在。对比前后账号映射、有效业务授权、审计和业务表数量，再重置初始租户管理员密码并验收。
 
-Navigation verification: TypeScript and Vite production build passed. The original 22 route leaves were preserved, including all 16 native server menu keys; native 35-item and India 7-item permission catalogs retained every key. Actual browser checks covered desktop expansion/collapse, breadcrumbs, the role editor grouping, the 390px drawer and leaf navigation, uploader/reviewer filtering, native review details and the India redirect boundary. No role permissions or business records were changed for this verification.
+身份迁移后禁止直接部署旧的全局账号版本，也禁止丢弃新账号关系的 downgrade。故障优先按新模型修复；必要恢复必须使用迁移前完整备份并处理切换后的新增数据。
+
+## 本地预览
+
+预览使用独立 jjtv_tenancy_preview 数据库与 Redis DB 14；自动化测试使用 jjtv_tenancy_test 与 Redis DB 15。两者仅包含演示/测试数据。隔离服务运行方法见 [tenancy-test-services.md](tenancy-test-services.md)。
+
+默认本地前端 http://localhost:5181/admin/，API http://127.0.0.1:18120。演示账号由本地启动器注入，不作为生产默认密码。界面创建/重置的新账号仍执行首次改密规则。

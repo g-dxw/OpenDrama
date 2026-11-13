@@ -94,6 +94,15 @@ def allowed_modules(db,tenant,keys):
         raise HTTPException(422,detail='包含重复、未知或尚未适配的功能模块')
     return values
 
+def validate_tenant_auth_context(request,db,principal):
+    if not principal.tenant_id:
+        raise HTTPException(403,detail=dict(code='tenant_context_required',message='请从租户入口登录'))
+    if request.headers.get('X-JJTV-Tenant') not in (None,principal.tenant_id):
+        raise HTTPException(403,detail=dict(code='tenant_scope_mismatch',message='当前会话不能切换租户'))
+    tenant=platform_tenant(db,principal.tenant_id)
+    validate_entry_origin(request,db,tenant)
+    return tenant
+
 def login_response(db,result):
     if result is None: raise HTTPException(401,detail='账号、密码或所属入口不正确')
     user,token=result
@@ -120,9 +129,7 @@ def platform_context(request:Request,db:Session=Depends(get_db),user:AdminUser=D
 @tenant_router.get('/context')
 def tenant_context(request:Request,db:Session=Depends(get_db),user:AdminUser=Depends(require_identity)):
     principal=request.state.principal
-    if not principal.tenant_id: raise HTTPException(403,detail=dict(code='tenant_context_required',message='请从租户入口登录'))
-    if request.headers.get('X-JJTV-Tenant') not in (None,principal.tenant_id):
-        raise HTTPException(403,detail=dict(code='tenant_scope_mismatch',message='当前会话不能切换租户'))
+    validate_tenant_auth_context(request,db,principal)
     return build_context(db,principal)
 
 @platform_router.post('/auth/logout')
@@ -133,7 +140,7 @@ def platform_logout(request:Request,db:Session=Depends(get_db),user:AdminUser=De
 @tenant_router.post('/auth/logout')
 def tenant_logout(request:Request,db:Session=Depends(get_db),user:AdminUser=Depends(require_identity)):
     principal=request.state.principal
-    if not principal.tenant_id: raise HTTPException(403,detail='需要租户会话')
+    validate_tenant_auth_context(request,db,principal)
     audit(db,request,user,principal.tenant_id,'tenant.support.exit' if principal.kind=='support' else 'tenant.logout')
     ops_service.logout(_bearer_token(request)); db.commit()
     return dict(logged_out=True)
@@ -142,7 +149,12 @@ def change_password(body,request,db,user,scope):
     principal=request.state.principal
     if principal.kind!='normal' or principal.account_scope!=scope:
         raise HTTPException(403,detail='请在对应账号的交互登录入口修改密码')
+    from app.modules.ops.router import lock_password_account
+    user=lock_password_account(db,user,principal)
     if not ops_service.verify_password(body.old_password,user.password_hash): raise HTTPException(400,detail='原密码不正确')
+    if body.new_password==body.old_password: raise HTTPException(422,detail='新密码不能与原密码相同')
+    from app.modules.ops.router import _validate_password
+    _validate_password(body.new_password,user.username)
     user.password_hash=ops_service.hash_password(body.new_password); user.auth_version+=1; user.must_change_password=False
     ops_service.revoke_user_sessions(user.id)
     db.execute(delete(IndiaConnection).where(IndiaConnection.user_id==user.id))
@@ -157,6 +169,7 @@ def platform_password(body:Password,request:Request,db:Session=Depends(get_db),u
 
 @tenant_router.post('/auth/password')
 def tenant_password(body:Password,request:Request,db:Session=Depends(get_db),user:AdminUser=Depends(require_identity)):
+    validate_tenant_auth_context(request,db,request.state.principal)
     return change_password(body,request,db,user,'tenant')
 
 @platform_router.get('/tenants')
@@ -180,7 +193,10 @@ def create_tenant(body:CreateTenant,request:Request,db:Session=Depends(get_db),u
 
 @legacy_router.post('',status_code=201)
 def legacy_create_tenant(body:dict,request:Request,db:Session=Depends(get_db),user:AdminUser=Depends(require_platform_admin)):
-    value=CreateTenant(code=body.get('code') or 'tenant-'+uuid4().hex,name=body.get('name',''),admin_username=body.get('admin_username','tenant-admin'),modules=body.get('modules'))
+    if set(body)-{'code','name','admin_username','modules'}: raise HTTPException(422,detail='包含不支持的租户字段')
+    try:
+        value=CreateTenant(code=body.get('code') or 'tenant-'+uuid4().hex,name=body.get('name',''),admin_username=body.get('admin_username','tenant-admin'),modules=body.get('modules'))
+    except ValueError: raise HTTPException(422,detail='租户字段无效') from None
     return create_tenant(value,request,db,user)['tenant']
 
 @platform_router.patch('/tenants/{tenant_id}')
@@ -199,7 +215,10 @@ def update_tenant(tenant_id:str,body:PatchTenant,request:Request,db:Session=Depe
 @legacy_router.patch('/{tenant_id}')
 def legacy_update_tenant(tenant_id:str,body:dict,request:Request,db:Session=Depends(get_db),user:AdminUser=Depends(require_platform_admin)):
     tenant=platform_tenant(db,tenant_id)
-    return update_tenant(tenant_id,PatchTenant(version=body.get('version',tenant.version),**{k:v for k,v in body.items() if k!='version'}),request,db,user)
+    try:
+        value=PatchTenant(version=body.get('version',tenant.version),**{k:v for k,v in body.items() if k!='version'})
+    except ValueError: raise HTTPException(422,detail='租户字段无效') from None
+    return update_tenant(tenant_id,value,request,db,user)
 
 @platform_router.get('/tenants/{tenant_id}/modules')
 def get_modules(tenant_id:str,request:Request,db:Session=Depends(get_db),user:AdminUser=Depends(require_platform_admin)):

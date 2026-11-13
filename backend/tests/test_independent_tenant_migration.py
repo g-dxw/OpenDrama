@@ -63,6 +63,8 @@ def test_real_migration_preserves_actors_business_data_and_effective_grants(engi
                     _,prefix,digest=generate_key()
                     key_id=db.execute(sa.text("INSERT INTO admin_api_keys(admin_user_id,name,key_prefix,key_hash,scopes,status,expires_at) VALUES (:user,'Migration key',:prefix,:digest,CAST(:scopes AS jsonb),'active',:expires) RETURNING id"),dict(user=uid,prefix=prefix,digest=digest,scopes=json.dumps(['read','write']),expires=datetime.now(timezone.utc)+timedelta(days=30))).scalar_one()
                     old_keys.append((key_id,uid))
+                _,old_prefix,old_digest=generate_key()
+                preserved_key=db.execute(sa.text("INSERT INTO admin_api_keys(admin_user_id,name,key_prefix,key_hash,scopes,status,expires_at,revoked_at,revoke_reason) VALUES (:user,'Previously revoked key',:prefix,:digest,CAST(:scopes AS jsonb),'revoked',:expires,:revoked,'Legacy manual removal') RETURNING id"),dict(user=shared_id,prefix=old_prefix,digest=old_digest,scopes=json.dumps(['read']),expires=datetime.now(timezone.utc)+timedelta(days=30),revoked=datetime.now(timezone.utc))).scalar_one()
                 db.execute(sa.text("INSERT INTO india_connections(tenant_id,user_id,session_key,secret) VALUES ('india-short-drama',:user,:key,'old-opaque-cipher')"),dict(user=shared_id,key='a'*64))
                 historical_id=db.execute(sa.text("INSERT INTO audit_logs(actor_type,actor_id,action,target_type,target_id,payload) VALUES ('admin',:actor,'old.content.operation','admin_user',:actor,CAST(:payload AS jsonb)) RETURNING id"),dict(actor=shared_id,payload=json.dumps({'tenant_id':'india-short-drama','old_marker':'preserve'}))).scalar_one()
             with Session(target) as db:
@@ -96,9 +98,15 @@ def test_real_migration_preserves_actors_business_data_and_effective_grants(engi
                 assert set(narrowed)=={'dramas.view','dramas.edit','users.view'}
                 assert db.execute(sa.text('SELECT count(*) FROM india_connections')).scalar_one()==0
                 for key_id,uid in old_keys:
-                    row=db.execute(sa.text('SELECT account_scope,tenant_id,admin_user_id FROM admin_api_keys WHERE id=:id'),dict(id=key_id)).mappings().one()
+                    row=db.execute(sa.text('SELECT account_scope,tenant_id,admin_user_id,status,revoke_reason FROM admin_api_keys WHERE id=:id'),dict(id=key_id)).mappings().one()
                     assert row['admin_user_id']==uid
+                    assert row['status']=='revoked' and row['revoke_reason']
+                    revocation=db.execute(sa.text("SELECT actor_type,actor_scope FROM audit_logs WHERE action='api_key.identity_migration_revoked' AND target_id=:id"),dict(id=key_id)).mappings().one()
+                    assert revocation['actor_type']=='system' and revocation['actor_scope']=='system'
                     assert (row['account_scope'],row['tenant_id'])==(('platform',None) if uid==platform_id else ('tenant','jjtv'))
+                retained=db.execute(sa.text('SELECT status,revoke_reason FROM admin_api_keys WHERE id=:id'),dict(id=preserved_key)).mappings().one()
+                assert dict(retained)=={'status':'revoked','revoke_reason':'Legacy manual removal'}
+                assert db.execute(sa.text("SELECT count(*) FROM audit_logs WHERE action='api_key.identity_migration_revoked' AND target_id=:id"),dict(id=preserved_key)).scalar_one()==0
                 for tenant in ('jjtv','india-short-drama','migration-other'):
                     count=db.execute(sa.text("SELECT count(*) FROM tenant_members m JOIN tenant_roles r ON r.id=m.role_id JOIN admin_users u ON u.id=m.user_id WHERE m.tenant_id=:tenant AND r.kind='tenant_admin' AND u.status='active' AND u.account_scope='tenant' AND u.tenant_id=:tenant"),dict(tenant=tenant)).scalar_one()
                     assert count>=1

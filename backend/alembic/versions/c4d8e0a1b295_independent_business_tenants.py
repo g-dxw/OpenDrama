@@ -198,6 +198,19 @@ def upgrade():
     op.add_column('admin_api_keys',sa.Column('account_scope',sa.String(16),nullable=True,server_default='tenant'))
     op.add_column('admin_api_keys',sa.Column('tenant_id',sa.String(64),nullable=True))
     bind.execute(sa.text('UPDATE admin_api_keys AS k SET account_scope=u.account_scope,tenant_id=u.tenant_id FROM admin_users AS u WHERE u.id=k.admin_user_id'))
+    # Legacy owner/scopes/name do not establish an approved purpose or tenant
+    # binding. Reissue every old active credential in its explicit namespace.
+    # Keep already-revoked history and never copy credentials into audit data.
+    bind.execute(sa.text("""WITH revoked AS (
+        UPDATE admin_api_keys SET status='revoked',revoked_at=now(),revoked_by=NULL,
+            revoke_reason='独立租户迁移：旧密钥用途与租户归属未经确认，请重新签发'
+        WHERE status='active'
+        RETURNING id,admin_user_id,account_scope,tenant_id
+    ) INSERT INTO audit_logs(actor_type,actor_id,actor_scope,tenant_id,action,target_type,target_id,payload)
+        SELECT 'system',NULL,'system',tenant_id,'api_key.identity_migration_revoked','api_key',id,
+            jsonb_build_object('reason','legacy_api_key_purpose_unverified',
+                'admin_user_id',admin_user_id,'account_scope',account_scope)
+        FROM revoked"""))
     op.alter_column('admin_api_keys','account_scope',existing_type=sa.String(16),nullable=False)
     op.create_foreign_key('fk_admin_api_keys_tenant','admin_api_keys','tenants',['tenant_id'],['id'],ondelete='RESTRICT')
     op.create_check_constraint('ck_admin_api_keys_account_scope','admin_api_keys',"account_scope IN ('platform','tenant')")

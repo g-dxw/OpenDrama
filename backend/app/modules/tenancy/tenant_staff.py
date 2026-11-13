@@ -1,5 +1,6 @@
 """Tenant-owned employee lifecycle, with compatibility routes for existing UI."""
 from __future__ import annotations
+import re
 import secrets
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
@@ -16,17 +17,18 @@ from app.modules.tenancy.permissions import preset_role_id
 
 tenant_router = APIRouter(prefix='/tenant/v1', tags=['tenant-staff'])
 legacy_staff_router = APIRouter(prefix='/admin/v1', tags=['tenant-staff-compatibility'])
+USERNAME_RE = re.compile(r'^[a-z0-9][a-z0-9._-]{2,31}$')
 
 class StaffCreate(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    username: str = Field(min_length=3,max_length=64)
+    username: str = Field(min_length=3,max_length=32)
     display_name: str = Field(default='',max_length=64)
     role_id: str = Field(min_length=1,max_length=64)
     password: str | None = Field(default=None,min_length=8,max_length=128)
 
 class LegacyCreate(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    username: str = Field(min_length=3,max_length=64)
+    username: str = Field(min_length=3,max_length=32)
     display_name: str = Field(default='',max_length=64)
     role: str = 'ops'
     role_id: str | None = Field(default=None,max_length=64)
@@ -52,6 +54,13 @@ class LegacyPassword(BaseModel):
     new_password: str = Field(min_length=8,max_length=128)
 
 
+def _clean_username(raw: str) -> str:
+    username = raw.strip().lower()
+    if not USERNAME_RE.fullmatch(username):
+        raise HTTPException(422,detail='账号需为 3–32 位小写字母、数字或 . _ -，并以字母或数字开头')
+    return username
+
+
 def _password(value: str, username: str) -> str:
     if len(value) < 8 or len(value) > 128: raise HTTPException(422,detail='密码长度必须为8至128位')
     if value != value.strip(): raise HTTPException(422,detail='密码首尾不能是空格')
@@ -70,8 +79,7 @@ def _member(db, user):
 
 
 def create_tenant_account(db, tenant, username, display_name, role_id, password=None, must_change=True):
-    username = username.strip()
-    if len(username) < 3 or len(username) > 64: raise HTTPException(422,detail='账号长度必须为3至64位')
+    username = _clean_username(username)
     role = _role(db,tenant.id,role_id)
     temporary = _password(password or secrets.token_urlsafe(18),username)
     user = AdminUser(username=username,password_hash=ops_service.hash_password(temporary),display_name=display_name.strip(),
@@ -91,7 +99,7 @@ def staff_out(db, user):
     member = _member(db,user) if user.account_scope == 'tenant' and user.role != 'partner' else None
     role = db.get(TenantRole,member.role_id) if member else None
     return dict(id=user.id,username=user.username,display_name=user.display_name,role=user.role,status=user.status,
-        account_scope=user.account_scope,tenant_id=user.tenant_id,role_id=role.id if role else None,role_name=role.name if role else '上剧方',
+        account_scope=user.account_scope,tenant_id=user.tenant_id,role_id=role.id if role else None,role_name=role.name if role else '上剧方' if user.role == 'partner' else '未分配角色',
         is_tenant_admin=bool(role and role.kind == 'tenant_admin'),is_partner=user.role == 'partner',
         must_change_password=user.must_change_password,disable_reason=user.disable_reason,
         created_at=user.created_at.isoformat() if user.created_at else None,last_login_at=user.last_login_at.isoformat() if user.last_login_at else None,
@@ -100,6 +108,9 @@ def staff_out(db, user):
 
 def reset_tenant_password(db, user):
     if user.account_scope != 'tenant': raise HTTPException(403,detail='只能重置租户账号')
+    # All credential/status mutations serialize on the account, including a
+    # self-service password change that does not take the tenant row lock.
+    user = _owned_user(db,user.tenant_id,user.id)
     temporary = secrets.token_urlsafe(18)
     try: ops_service.revoke_user_sessions(user.id)
     except ops_service.SessionStoreUnavailable as exc: raise HTTPException(503,detail='会话服务暂时不可用，密码未重置') from exc
@@ -120,7 +131,7 @@ def _context(db, request, *, lock=False):
 
 
 def _owned_user(db,tenant_id,user_id):
-    user = db.scalar(select(AdminUser).where(AdminUser.id == user_id,AdminUser.account_scope == 'tenant',AdminUser.tenant_id == tenant_id).execution_options(populate_existing=True))
+    user = db.scalar(select(AdminUser).where(AdminUser.id == user_id,AdminUser.account_scope == 'tenant',AdminUser.tenant_id == tenant_id).with_for_update().execution_options(populate_existing=True))
     if user is None: raise HTTPException(404,detail='当前租户不存在此员工')
     return user
 
@@ -184,8 +195,7 @@ def legacy_create_staff(body: LegacyCreate,request: Request,db: Session = Depend
         module = db.get(TenantModule,(tenant.id,'suppliers'))
         if body.role_id or binding is None or binding.tenant_id != tenant.id or module is None or not module.enabled or supplier is None or supplier.status != 'active':
             raise HTTPException(422,detail='上剧方账号必须绑定本租户的有效供应商')
-        username = body.username.strip()
-        if len(username) < 3: raise HTTPException(422,detail='账号长度必须为3至64位')
+        username = _clean_username(body.username)
         password = _password(body.password or secrets.token_urlsafe(18),username)
         user = AdminUser(username=username,password_hash=ops_service.hash_password(password),display_name=body.display_name.strip(),
             role='partner',supplier_id=supplier.id,status='active',account_scope='tenant',tenant_id=tenant.id,auth_version=1,must_change_password=True)

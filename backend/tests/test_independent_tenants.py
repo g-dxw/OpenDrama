@@ -235,3 +235,15 @@ def test_unadapted_legacy_modules_cannot_be_enabled_for_another_tenant(env):
     assert env['client'].put(PLATFORM+'/tenants/'+tenant['id']+'/modules',json={'version':state['version'],'module_keys':enabled},headers=owner).status_code==403
     assert env['client'].get('/admin/v1/users',headers=owner).status_code==403
     assert env['client'].post(TENANT+'/roles',json={'name':'Unsupported finance','permissions':['finance.view']},headers=owner).status_code==422
+
+
+def test_new_owner_cannot_satisfy_rotation_by_reusing_temporary_password(env):
+    value=provision(env);tenant=value["tenant"];owner=value["administrator"]
+    initial=tenant_login(env["client"],tenant["code"],owner["username"],owner["temporary_password"])
+    assert initial.status_code==200,initial.text
+    headers=bearer(initial.json()["token"])
+    result=env["client"].post(TENANT+"/auth/password",json={"old_password":owner["temporary_password"],"new_password":owner["temporary_password"]},headers=headers)
+    assert result.status_code==422,result.text
+    context=env["client"].get(TENANT+"/context",headers=headers)
+    assert context.status_code==200 and context.json()["user"]["must_change_password"] is True
+    assert env["client"].post("/admin/v1/dramas",json={"title":"Still requires rotation"},headers=headers).status_code==403

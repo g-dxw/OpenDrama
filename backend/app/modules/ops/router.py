@@ -291,9 +291,23 @@ def logout(request: Request, user: AdminUser = Depends(require_admin)):
     return {"ok": True}
 
 
+def lock_password_account(db, user, principal):
+    # Match tenant administration's Tenant -> User lock order, including audit FKs.
+    if principal.tenant_id:
+        from app.modules.tenancy.models import Tenant
+        tenant=db.scalar(select(Tenant).where(Tenant.id==principal.tenant_id).execution_options(populate_existing=True).with_for_update())
+        if tenant is None or tenant.status!='active':
+            raise HTTPException(403,detail=dict(code='tenant_paused',message='当前租户已暂停'))
+    current=db.scalar(select(AdminUser).where(AdminUser.id==user.id).execution_options(populate_existing=True).with_for_update())
+    if current is None or current.status!=STATUS_ACTIVE or current.auth_version!=principal.auth_version:
+        raise HTTPException(401,detail=dict(code='invalid_session',message='账号凭据已变化，请重新登录'))
+    return current
+
+
 @router.post("/auth/password")
 def change_own_password(
     body: PasswordChangeIn,
+    request: Request,
     db: Session = Depends(get_db),
     user: AdminUser = Depends(require_admin),
 ):
@@ -303,6 +317,15 @@ def change_own_password(
     making this call — so the client must send the user back to the login page
     and sign in again with the new password.
     """
+    principal=request.state.principal
+    if principal.kind!='normal':
+        raise HTTPException(403,detail='请在对应账号的交互登录入口修改密码')
+    user=lock_password_account(db,user,principal)
+    from app.modules.tenancy.domains import validate_entry_origin
+    if principal.account_scope=='platform': validate_entry_origin(request,db,platform=True)
+    else:
+        from app.modules.tenancy.management import validate_tenant_auth_context
+        validate_tenant_auth_context(request,db,principal)
     if not ops_service.verify_password(body.old_password, user.password_hash):
         raise HTTPException(status_code=400, detail="原密码不正确")
     if body.new_password == body.old_password:
@@ -310,10 +333,17 @@ def change_own_password(
     _validate_password(body.new_password, user.username)
     killed = _revoke_or_503(user.id)
     user.password_hash = ops_service.hash_password(body.new_password)
+    user.auth_version += 1
+    user.must_change_password = False
+    from app.modules.tenancy.models import IndiaConnection
+    from sqlalchemy import delete
+    db.execute(delete(IndiaConnection).where(IndiaConnection.user_id==user.id))
     db.add(
         AuditLog(
             actor_type="admin",
             actor_id=user.id,
+            actor_scope=principal.account_scope,
+            tenant_id=principal.tenant_id,
             action="staff_password_change",
             target_type="admin_user",
             target_id=user.id,
