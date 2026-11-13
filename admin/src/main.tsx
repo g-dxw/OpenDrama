@@ -11,7 +11,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <ConfigProvider
       locale={zhCN}
-      theme={{ token: { colorPrimary: "#E53B3E", borderRadius: 8 } }}
+      theme={{ token: { colorPrimary: "#c92f37", colorPrimaryHover: "#b7242c", colorPrimaryActive: "#a11d25", borderRadius: 8 } }}
     >
       <BrowserRouter basename={CURRENT_ENTRY.base || undefined}>
         <App />

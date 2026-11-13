@@ -159,6 +159,9 @@ export function HomeOpsPage() {
   const [picking, setPicking] = useState(false);
   const [bannerSearch, setBannerSearch] = useState("");
   const [addingTab, setAddingTab] = useState(false);
+  const [renamingTab,setRenamingTab]=useState<TabRow|null>(null);
+  const [renameEn,setRenameEn]=useState('');
+  const [renameZh,setRenameZh]=useState('');
   const [addingFloor, setAddingFloor] = useState(false);
   const [loading, setLoading] = useState(true);
 
@@ -338,6 +341,7 @@ export function HomeOpsPage() {
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "minmax(460px, 1fr) 300px", gap: 20, alignItems: "start" }}>
+      <Modal title="修改频道名称" open={!!renamingTab} onCancel={()=>setRenamingTab(null)} onOk={async()=>{if(!renamingTab)return;try{await api('/admin/v1/tabs/'+renamingTab.id,{method:'PATCH',body:JSON.stringify({title_en:renameEn.trim(),title_zh:renameZh.trim()})});await load();setRenamingTab(null);}catch(error){message.error(errorText(error));}}} okButtonProps={{disabled:!renameEn.trim()||!canManage}}><Space direction="vertical" style={{width:'100%'}}><Input aria-label="频道英文名称" value={renameEn} onChange={e=>setRenameEn(e.target.value)} maxLength={64}/><Input aria-label="频道中文名称" value={renameZh} onChange={e=>setRenameZh(e.target.value)} maxLength={64}/></Space></Modal>
       <Space direction="vertical" size={14} style={{ width: "100%" }}>
         <div>
           <Typography.Title level={4} style={{ marginBottom: 2 }}>
@@ -388,7 +392,7 @@ export function HomeOpsPage() {
                     <>
                       <Handle locked={!canManage || tab.locked} onArm={onArm} />
                       <div style={{ minWidth: 0 }}>
-                        <Typography.Text style={{ fontSize: 13 }}>{tab.title_zh || tab.title_en}</Typography.Text>
+                        <Button size="small" type="text" disabled={!canManage} onClick={event=>{event.stopPropagation();setRenamingTab(tab);setRenameEn(tab.title_en);setRenameZh(tab.title_zh);}}>{tab.title_zh || tab.title_en}</Button>
                         <Typography.Text type="secondary" style={{ marginLeft: 6, fontSize: 11 }}>
                           {tab.code}
                         </Typography.Text>

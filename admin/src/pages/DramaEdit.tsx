@@ -14,6 +14,7 @@ import {
   Select,
   Space,
   Spin,
+  Switch,
   Steps,
   Tabs,
   Tag,
@@ -45,6 +46,10 @@ type Drama = {
   status: string;
   free_episode_count: number;
   coin_price_per_episode: number;
+  access_mode: string;
+  member_pays_coins: boolean;
+  non_member_free_episodes: number | null;
+  language: string;
   tags: { id: number; name_en: string; name_zh: string }[];
   episode_count: number;
 };
@@ -102,6 +107,10 @@ export default function DramaEdit() {
       cover_url: d.cover_url,
       free_episode_count: d.free_episode_count,
       coin_price_per_episode: d.coin_price_per_episode,
+      access_mode:d.access_mode,
+      member_pays_coins:d.member_pays_coins,
+      non_member_free_episodes:d.non_member_free_episodes,
+      language:d.language,
       tag_ids: d.tags.map((x) => x.id),
     });
     setDirty(false);
@@ -143,9 +152,9 @@ export default function DramaEdit() {
   const onSave = async (values: any) => {
     if (!(canWrite || canPricing || canUpload)) return;
     const payload: Record<string, unknown> = {};
-    if (canWrite) for (const key of ["title", "synopsis"]) payload[key] = values[key];
+    if (canWrite) for (const key of ["title", "synopsis", "language"]) payload[key] = values[key];
     if (canWrite && canViewTags) payload.tag_ids = values.tag_ids;
-    if (canPricing) for (const key of ["free_episode_count", "coin_price_per_episode"]) payload[key] = values[key];
+    if (canPricing) for (const key of ["free_episode_count", "coin_price_per_episode", "access_mode", "member_pays_coins", "non_member_free_episodes"]) payload[key] = values[key];
     if (canUpload) payload.cover_url = values.cover_url;
     setSaving(true);
     try {
@@ -422,6 +431,7 @@ export default function DramaEdit() {
               <Input maxLength={200} showCount placeholder="请输入剧名" />
             </Form.Item>
 
+            <Form.Item label="内容语言" name="language" extra="用于 PC 片库语言筛选，如 en、hi、zh。"><Input disabled={!canWrite} maxLength={16}/></Form.Item>
             <Form.Item label="简介" name="synopsis">
               <Input.TextArea rows={6} maxLength={20000} showCount placeholder="请输入剧情简介" />
             </Form.Item>
@@ -439,6 +449,7 @@ export default function DramaEdit() {
               />
             </Form.Item>}
 
+            <Row gutter={24} style={{maxWidth:960}}><Col span={8}><Form.Item label="观看范围" name="access_mode"><Select disabled={!canPricing} options={[{value:'public',label:'所有用户可试看与解锁'},{value:'members',label:'会员专享，游客仅可试看'}]}/></Form.Item></Col><Col span={8}><Form.Item label="非会员试看集数" name="non_member_free_episodes" extra="留空沿用免费集数"><InputNumber disabled={!canPricing} min={0}/></Form.Item></Col><Col span={8}><Form.Item label="会员付费集仍需金币" name="member_pays_coins" valuePropName="checked"><Switch disabled={!canPricing}/></Form.Item></Col></Row>
             <Row gutter={24} style={{ maxWidth: 640 }}>
               <Col span={12}>
                 <Form.Item

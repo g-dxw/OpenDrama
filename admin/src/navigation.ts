@@ -35,14 +35,21 @@ export const NAVIGATION: NavigationNode[] = [
     key: "nav:users", label: "用户与金币", children: [
       { key: "/users", label: "用户管理" },
       { key: "/rewards", label: "任务奖励" },
+      {key:"/coin-ledger",label:"金币消耗"},
     ],
   },
   {
     key: "nav:monetization", label: "商业化", children: [
       { key: "/plans", label: "会员套餐" },
+      {key:"/coin-packs",label:"金币商城"},
+      {key:"/stripe-accounts",label:"支付通道"},
       { key: "/finance", label: "财务订单" },
     ],
   },
+  {
+    key:"nav:support",label:"客服",children:[{key:"/support/workbench",label:"工单工作台"},{key:"/support/queue",label:"工单队列"},{key:"/support/reports",label:"服务质量"},{key:"/support/settings",label:"工单设置"}],
+  },
+  {key:"nav:growth",label:"增长",children:[{key:"/attribution",label:"投放归因"}]},
   {
     key: "nav:partners", label: "合作方", children: [
       { key: "/suppliers", label: "上剧方管理" },
@@ -59,6 +66,7 @@ export const NAVIGATION: NavigationNode[] = [
       { key: "/staff", label: "员工账号" },
       { key: "/roles", label: "角色与权限" },
       { key: "/api-keys", label: "API 密钥" },
+      {key:"/login-settings",label:"登录配置"},
     ],
   },
 ];

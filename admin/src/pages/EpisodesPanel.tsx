@@ -28,6 +28,7 @@ import {
   VideoCameraOutlined,
 } from "@ant-design/icons";
 import { api, errorText } from "../api";
+import EpisodeAssets from './EpisodeAssets';
 import { usePermission } from "../me";
 import {
   MAX_UPLOAD_BYTES,
@@ -49,6 +50,7 @@ type EpisodeRow = {
   status: string;
   duration_seconds: number;
   bunny_video_id: string;
+  coin_price?: number | null;
 };
 
 const STATUS_META: Record<string, { text: string; color: string }> = {
@@ -884,6 +886,7 @@ export default function EpisodesPanel({ dramaId }: { dramaId: string }) {
           }),
         } : undefined}
         columns={[
+          {title:'字幕 / 定价',key:'assets',width:126,render:(_value:unknown,row:EpisodeRow)=><EpisodeAssets episodeId={row.id} price={row.coin_price}/>},
           { title: "集", dataIndex: "episode_number", width: 70 },
           {
             title: "标题",
