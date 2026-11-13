@@ -15,6 +15,12 @@ export const STATUS: Record<string, string> = { draft: "草稿", rights_review: 
 const ERRORS: Record<string, string> = {
   india_connection_busy: "旧站连接正在更新，请稍候重试。",
   india_auth_required: "旧站账号未连接或连接已过期，请重新连接。",
+  india_login_rejected: "旧站账号或密码不正确，请重新输入。",
+  india_mfa_invalid: "验证码不正确，或本次验证已失效。请核对当前旧站账号的验证码，也可重新开始验证。",
+  india_challenge_invalid: "本次验证已失效，请重新输入旧站账号和密码。",
+  india_challenge_expired: "本次验证已过期，请重新输入旧站账号和密码。",
+  india_mfa_replayed: "该验证码已使用，请等待验证器生成新验证码，再重新连接旧站账号。",
+  india_rate_limited: "旧站验证或请求过于频繁，请稍后重试。",
   india_not_configured: "India 内容服务暂未配置完成，请联系平台管理员。",
   india_unavailable: "India 内容服务暂时不可用，请稍后重试。",
   LOCAL_ADAPTER_DISABLED: "旧站当前未开放此媒体操作，请联系管理员核实媒体模式。",
@@ -26,6 +32,11 @@ const ERRORS: Record<string, string> = {
   MEDIA_NOT_READY: "视频尚未就绪，请查看转码任务并完成字幕设置。",
   SUBTITLES_REQUIRED: "请上传字幕，或明确记录无法提供字幕的原因。",
   INVALID_CREDENTIALS: "旧站账号或密码不正确。",
+  MFA_INVALID: "验证码不正确，或本次验证已失效。请核对当前旧站账号的验证码，也可重新开始验证。",
+  MFA_EXPIRED: "本次验证已过期，请重新输入旧站账号和密码。",
+  MFA_REPLAYED: "该验证码已使用，请等待验证器生成新验证码，再重新连接旧站账号。",
+  MFA_ALREADY_ENROLLED: "验证器已在旧站完成登记，请重新连接并使用该账号的当前验证码。",
+  RATE_LIMITED: "旧站验证或请求过于频繁，请稍后重试。",
   FRESH_AUTH_REQUIRED: "旧站要求重新验证，请重新连接并完成 MFA。",
   SELF_REVIEW_FORBIDDEN: "旧站不允许提交人审核自己的内容，请由其他审核员处理。",
 };
@@ -36,6 +47,12 @@ export function indiaErrorText(error: any): string {
   const upstream = typeof detail?.upstream_code === "string" ? detail.upstream_code : "";
   const text = ERRORS[upstream] || ERRORS[code] || detail?.message || error?.message || "请求失败，请重试";
   return text + (upstream && !ERRORS[upstream] ? "（" + upstream + "）" : "");
+}
+
+export function indiaMfaNeedsRestart(error: any): boolean {
+  const detail = error?.detail;
+  return ["india_challenge_invalid", "india_challenge_expired", "india_mfa_replayed"].includes(detail?.code)
+    || ["MFA_EXPIRED", "MFA_REPLAYED", "MFA_ALREADY_ENROLLED"].includes(detail?.upstream_code);
 }
 
 function contentPath(path: string): string {

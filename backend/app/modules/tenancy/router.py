@@ -133,10 +133,17 @@ def describe(data=None, *, configured=True):
         result.update(mfa_required=True, challenge_token=data["challenge_token"], expires_at=data["expires_at"], enrollment_required=data.get("enrollment_required", False))
     return result
 
-def fail_india(error, db, request, user, *, expected_access_token=None):
+def fail_india(error, db, request, user, *, expected_access_token=None, expected_challenge_token=None):
     if error.code == "india_auth_required":
         service.clear_connection(db, request, user, expected_access_token=expected_access_token)
+    elif error.code in {"india_challenge_expired", "india_mfa_replayed"} and expected_challenge_token is not None:
+        service.clear_connection(db, request, user, expected_challenge_token=expected_challenge_token)
     messages = {"india_auth_required": "旧站授权已失效，请重新连接运营账号", "india_not_configured": "India 接入尚未配置",
+                "india_login_rejected": "旧站账号验证未通过，请检查账号和密码",
+                "india_mfa_invalid": "验证码无效或验证已失效，请输入当前验证码；仍失败可重新连接",
+                "india_challenge_expired": "本次验证已过期，请重新连接运营账号",
+                "india_mfa_replayed": "验证码已使用，请重新连接后输入新的验证码",
+                "india_rate_limited": "旧站验证或请求过于频繁，请稍后重试",
                 "india_connection_failed": "暂时无法连接旧站，请稍后重试", "india_timeout": "旧站请求超时，请查询状态后再决定是否重试"}
     raise HTTPException(error.status_code, detail={"code": error.code, "message": messages.get(error.code, "旧站拒绝或未完成此操作"),
         "upstream_code": error.upstream_code, "request_id": error.request_id, "retryable": error.retryable})
@@ -199,7 +206,7 @@ def own_challenge(db, request, user, challenge):
     try: valid = datetime.fromisoformat(data["expires_at"].replace("Z", "+00:00")) > datetime.now(timezone.utc)
     except (ValueError, KeyError, TypeError): valid = False
     if not valid:
-        service.clear_connection(db, request, user)
+        service.clear_connection(db, request, user, expected_challenge_token=challenge)
         raise HTTPException(409, detail={"code": "india_challenge_expired", "message": "验证码已过期，请重新连接"})
     return data
 
@@ -215,7 +222,7 @@ async def india_mfa(tenant_id: str, body: MfaInput, request: Request, response: 
             service.save_connection(db, request, user, data, commit=False)
             audit(db, user, tenant_id, "india.mfa", old_actor=data["user"]["id"], request_id=reply.request_id)
             return describe(data)
-        except IndiaError as error: fail_india(error, db, request, user)
+        except IndiaError as error: fail_india(error, db, request, user, expected_challenge_token=body.challenge_token)
 
 @router.post("/{tenant_id}/india/session/enrollment")
 async def india_enrollment(tenant_id: str, body: ChallengeInput, request: Request, response: Response, db: Session = Depends(get_db), user: AdminUser = Depends(require_admin)):
@@ -227,7 +234,7 @@ async def india_enrollment(tenant_id: str, body: ChallengeInput, request: Reques
         try:
             reply = await IndiaClient().call("mfa_enrollment", payload=body.model_dump())
             return {"data": reply.data, "request_id": reply.request_id}
-        except IndiaError as error: fail_india(error, db, request, user)
+        except IndiaError as error: fail_india(error, db, request, user, expected_challenge_token=body.challenge_token)
 
 @router.post("/{tenant_id}/india/session/cancel")
 async def india_cancel(tenant_id: str, body: ChallengeInput, request: Request, response: Response, db: Session = Depends(get_db), user: AdminUser = Depends(require_admin)):
@@ -236,7 +243,7 @@ async def india_cancel(tenant_id: str, body: ChallengeInput, request: Request, r
         india_access(tenant_id, db, user, request); own_challenge(db, request, user, body.challenge_token)
         try: await IndiaClient().call("mfa_cancel", payload=body.model_dump())
         except IndiaError: pass
-        service.clear_connection(db, request, user)
+        service.clear_connection(db, request, user, expected_challenge_token=body.challenge_token)
         return describe()
 
 @router.post("/{tenant_id}/india/session/refresh")
@@ -252,7 +259,7 @@ async def india_refresh(tenant_id: str, request: Request, response: Response, db
             service.save_connection(db, request, user, updated, commit=False)
             audit(db, user, tenant_id, "india.refresh", old_actor=updated["user"]["id"], request_id=reply.request_id)
             return describe(updated)
-        except IndiaError as error: fail_india(error, db, request, user)
+        except IndiaError as error: fail_india(error, db, request, user, expected_access_token=data.get("access_token"))
 
 @router.delete("/{tenant_id}/india/session")
 def india_disconnect(tenant_id: str, request: Request, response: Response, db: Session = Depends(get_db), user: AdminUser = Depends(require_admin)):
