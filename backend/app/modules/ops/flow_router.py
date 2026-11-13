@@ -1178,7 +1178,9 @@ async def upload_subtitle(
 
 
 @router.post("/dramas/{drama_id}/status")
-def drama_status(drama_id: int, body: StatusIn, db: Session = Depends(get_db), user: AdminUser = Depends(require_content_writer)):
+def drama_status(drama_id: int, body: StatusIn, request: Request, db: Session = Depends(get_db), user: AdminUser = Depends(require_content_writer)):
+    from app.modules.tenancy.permissions import require_permission
+    require_permission(request, 'dramas.publish' if body.to_status in {'published','unpublished'} else 'dramas.edit')
     drama = _drama_or_404(db, drama_id)
     try:
         change_drama_status(db, drama, body.to_status, actor_id=user.id)

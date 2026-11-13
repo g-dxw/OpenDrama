@@ -9,13 +9,15 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select, delete
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 from app.db import get_db
 from app.modules.common.models import AuditLog
 from app.modules.ops.models import AdminUser, STAFF_ROLES
 from app.modules.ops.router import require_admin, require_admin_role
 from app.modules.ops import service as ops_service
 from app.modules.tenancy import service
-from app.modules.tenancy.models import Tenant, TenantMember, IndiaConnection, DEFAULT_TENANT, INDIA_TENANT
+from app.modules.tenancy.models import Tenant, TenantRole, TenantMember, IndiaConnection, DEFAULT_TENANT, INDIA_TENANT
+from app.modules.tenancy.permissions import seed_roles, preset_role_id, permission_catalog, validate_permissions, effective_grants, require_permission
 from app.modules.tenancy.india import IndiaClient, IndiaError, normalize_login, normalize_staff
 
 router = APIRouter(prefix="/admin/v1/tenants", tags=["tenants"])
@@ -32,11 +34,23 @@ class TenantPatch(BaseModel):
 class MemberInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     user_id: int
-    role: str = "ops"
+    role: str | None = None
+    role_id: str | None = Field(default=None, max_length=64)
 
 class MembersInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     members: list[MemberInput] = Field(max_length=100)
+
+class RoleCreate(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    name: str = Field(min_length=1, max_length=80)
+    permissions: list[str] = Field(max_length=100)
+
+class RolePatch(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    version: int = Field(ge=1)
+    name: str | None = Field(default=None, min_length=1, max_length=80)
+    permissions: list[str] | None = Field(default=None, max_length=100)
 
 class LoginInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -72,9 +86,10 @@ def list_tenants(db: Session = Depends(get_db), user: AdminUser = Depends(requir
 @router.post("", status_code=201)
 def create_tenant(body: TenantCreate, db: Session = Depends(get_db), user: AdminUser = Depends(require_admin_role)):
     tenant = Tenant(id="tenant-" + uuid4().hex, name=name_value(body.name), kind="native", status="active")
-    db.add(tenant)
+    db.add(tenant); db.flush()
+    seed_roles(db, tenant)
     audit(db, user, tenant.id, "tenant.create")
-    return {"id": tenant.id, "name": tenant.name, "kind": tenant.kind, "status": tenant.status, "own_role": "admin"}
+    return dict(id=tenant.id, name=tenant.name, kind=tenant.kind, status=tenant.status, **effective_grants(db, user, tenant))
 
 @router.patch("/{tenant_id}")
 def patch_tenant(tenant_id: str, body: TenantPatch, db: Session = Depends(get_db), user: AdminUser = Depends(require_admin_role)):
@@ -88,36 +103,108 @@ def patch_tenant(tenant_id: str, body: TenantPatch, db: Session = Depends(get_db
         if body.status == "paused":
             db.execute(delete(IndiaConnection).where(IndiaConnection.tenant_id == tenant_id))
     audit(db, user, tenant.id, "tenant.update")
-    return {"id": tenant.id, "name": tenant.name, "kind": tenant.kind, "status": tenant.status, "own_role": "admin"}
+    return dict(id=tenant.id, name=tenant.name, kind=tenant.kind, status=tenant.status, **effective_grants(db, user, tenant))
 
-@router.get("/{tenant_id}/members")
+def role_out(role):
+    return dict(id=role.id, name=role.name, permissions=sorted(role.permissions), version=role.version, builtin_key=role.builtin_key)
+
+def tenant_roles(db, tenant_id):
+    return db.scalars(select(TenantRole).where(TenantRole.tenant_id == tenant_id).order_by(TenantRole.created_at, TenantRole.id)).all()
+
+@router.get('/{tenant_id}/roles')
+def list_roles(tenant_id: str, db: Session = Depends(get_db), user: AdminUser = Depends(require_admin_role)):
+    tenant, _ = service.tenant_access(db, user, tenant_id, paused=True)
+    return dict(roles=[role_out(role) for role in tenant_roles(db, tenant_id)], catalog=permission_catalog(tenant))
+
+@router.post('/{tenant_id}/roles', status_code=201)
+def create_role(tenant_id: str, body: RoleCreate, db: Session = Depends(get_db), user: AdminUser = Depends(require_admin_role)):
+    tenant, _ = service.tenant_access(db, user, tenant_id, paused=True)
+    role = TenantRole(id='role-'+uuid4().hex, tenant_id=tenant_id, name=name_value(body.name), permissions=validate_permissions(tenant, body.permissions), version=1)
+    db.add(role)
+    try: audit(db, user, tenant_id, 'tenant.role.create', resource_id=role.id)
+    except IntegrityError:
+        db.rollback(); raise HTTPException(409, detail='角色名称已存在') from None
+    return role_out(role)
+
+def locked_role(db, tenant_id, role_id):
+    role = db.scalar(select(TenantRole).where(TenantRole.tenant_id == tenant_id, TenantRole.id == role_id).with_for_update().execution_options(populate_existing=True))
+    if role is None: raise HTTPException(404, detail='当前租户中不存在此角色')
+    return role
+
+@router.patch('/{tenant_id}/roles/{role_id}')
+def update_role(tenant_id: str, role_id: str, body: RolePatch, db: Session = Depends(get_db), user: AdminUser = Depends(require_admin_role)):
+    tenant, _ = service.tenant_access(db, user, tenant_id, paused=True)
+    role = locked_role(db, tenant_id, role_id)
+    if role.version != body.version: raise HTTPException(409, detail='角色已被其他人修改，请刷新后重试')
+    if 'name' in body.model_fields_set:
+        if body.name is None: raise HTTPException(422, detail='角色名称不能为空')
+        role.name = name_value(body.name)
+    if 'permissions' in body.model_fields_set:
+        if body.permissions is None: raise HTTPException(422, detail='权限列表不能为空值')
+        role.permissions = validate_permissions(tenant, body.permissions)
+    role.version += 1
+    try: audit(db, user, tenant_id, 'tenant.role.update', resource_id=role.id)
+    except IntegrityError:
+        db.rollback(); raise HTTPException(409, detail='角色名称已存在') from None
+    return role_out(role)
+
+@router.delete('/{tenant_id}/roles/{role_id}')
+def delete_role(tenant_id: str, role_id: str, version: int, db: Session = Depends(get_db), user: AdminUser = Depends(require_admin_role)):
+    service.tenant_access(db, user, tenant_id, paused=True)
+    role = locked_role(db, tenant_id, role_id)
+    if role.version != version: raise HTTPException(409, detail='角色已变化，请刷新后重试')
+    if role.builtin_key: raise HTTPException(409, detail='预设角色不可删除，可以编辑其权限')
+    if db.scalar(select(TenantMember.user_id).where(TenantMember.tenant_id == tenant_id, TenantMember.role_id == role_id).limit(1)) is not None:
+        raise HTTPException(409, detail='请先为使用此角色的成员分配其他角色')
+    db.delete(role)
+    try: audit(db, user, tenant_id, 'tenant.role.delete', resource_id=role_id)
+    except IntegrityError:
+        db.rollback(); raise HTTPException(409, detail='角色仍被成员使用，请刷新后重试') from None
+    return dict(deleted=True)
+
+@router.get('/{tenant_id}/members')
 def members(tenant_id: str, db: Session = Depends(get_db), user: AdminUser = Depends(require_admin_role)):
     service.tenant_access(db, user, tenant_id, paused=True)
-    rows = db.execute(select(TenantMember, AdminUser).join(AdminUser, AdminUser.id == TenantMember.user_id).where(TenantMember.tenant_id == tenant_id)).all()
-    staff = db.scalars(select(AdminUser).where(AdminUser.role.in_(STAFF_ROLES), AdminUser.status == "active").order_by(AdminUser.username)).all()
-    return {"members": [{"user_id": member.user_id, "username": person.username, "display_name": person.display_name, "role": member.role} for member, person in rows],
-            "staff": [{"id": person.id, "username": person.username, "display_name": person.display_name, "role": person.role} for person in staff]}
+    rows = db.execute(select(TenantMember, AdminUser, TenantRole).join(AdminUser, AdminUser.id == TenantMember.user_id).join(TenantRole, (TenantRole.id == TenantMember.role_id) & (TenantRole.tenant_id == tenant_id)).where(TenantMember.tenant_id == tenant_id)).all()
+    staff = db.scalars(select(AdminUser).where(AdminUser.role.in_(STAFF_ROLES), AdminUser.status == 'active').order_by(AdminUser.username)).all()
+    return dict(members=[dict(user_id=member.user_id, username=person.username, display_name=person.display_name, role=member.role, role_id=role.id, role_name=role.name) for member, person, role in rows],
+        staff=[dict(id=person.id, username=person.username, display_name=person.display_name, role=person.role) for person in staff], roles=[role_out(role) for role in tenant_roles(db, tenant_id)])
 
-@router.put("/{tenant_id}/members")
+@router.put('/{tenant_id}/members')
 def set_members(tenant_id: str, body: MembersInput, db: Session = Depends(get_db), user: AdminUser = Depends(require_admin_role)):
     service.tenant_access(db, user, tenant_id, paused=True)
     identifiers = [member.user_id for member in body.members]
-    if len(set(identifiers)) != len(identifiers): raise HTTPException(422, detail="成员不能重复")
+    if len(set(identifiers)) != len(identifiers): raise HTTPException(422, detail='成员不能重复')
+    prepared = []
     for member in body.members:
         person = db.get(AdminUser, member.user_id)
-        if person is None or person.role not in STAFF_ROLES or person.status != "active": raise HTTPException(422, detail="成员必须是有效平台员工")
-        if member.role not in STAFF_ROLES: raise HTTPException(422, detail="租户角色无效")
+        if person is None or person.role not in STAFF_ROLES or person.status != 'active': raise HTTPException(422, detail='成员必须是有效平台员工')
+        if member.role_id:
+            role = db.get(TenantRole, member.role_id)
+            if role is None or role.tenant_id != tenant_id: raise HTTPException(422, detail='角色不属于当前租户')
+            if member.role is not None and member.role != role.builtin_key: raise HTTPException(422, detail='角色ID与旧角色字段不一致')
+        else:
+            legacy = member.role or 'ops'
+            if legacy not in STAFF_ROLES: raise HTTPException(422, detail='租户角色无效')
+            # Preserve the old input's narrowing semantics; role_id is an explicit new grant.
+            key = legacy if person.role == 'admin' else 'finance' if 'finance' in (person.role, legacy) else 'ops'
+            role = db.get(TenantRole, preset_role_id(tenant_id, key))
+            if role is None: raise HTTPException(409, detail='默认角色缺失，请刷新角色配置')
+        prepared.append(TenantMember(tenant_id=tenant_id, user_id=member.user_id, role=role.builtin_key or 'ops', role_id=role.id))
     db.execute(delete(TenantMember).where(TenantMember.tenant_id == tenant_id))
     db.execute(delete(IndiaConnection).where(IndiaConnection.tenant_id == tenant_id))
-    db.add_all([TenantMember(tenant_id=tenant_id, user_id=member.user_id, role=member.role) for member in body.members])
-    audit(db, user, tenant_id, "tenant.members.update")
+    db.add_all(prepared)
+    try: audit(db, user, tenant_id, 'tenant.members.update')
+    except IntegrityError:
+        db.rollback(); raise HTTPException(409, detail='角色或成员已变化，请刷新后重试') from None
     return members(tenant_id, db, user)
 
 def india_access(tenant_id, db, user, request, *, write=False):
-    tenant, role = service.tenant_access(db, user, tenant_id)
-    if tenant.id != INDIA_TENANT or tenant.kind != "india_legacy": raise HTTPException(404, detail="该租户没有旧站内容接口")
-    if write and (role not in ("admin", "ops") or user.role not in ("admin", "ops")):
-        raise HTTPException(403, detail="当前租户为只读权限")
+    tenant, _ = service.tenant_access(db, user, tenant_id)
+    if tenant.id != INDIA_TENANT or tenant.kind != 'india_legacy': raise HTTPException(404, detail='该租户没有旧站内容接口')
+    grants = effective_grants(db, user, tenant)
+    request.state.tenant_permissions = grants['permissions']
+    require_permission(request, 'dramas.view', 'reviews.view', any_of=True)
     service.connection_key(request)
     return tenant
 
@@ -312,6 +399,13 @@ async def india_content(tenant_id: str, upstream_path: str, request: Request, re
             match = re.fullmatch(pattern, upstream_path)
             if match: action = "upload_" + kind; resource_id = match.group(1); upload_kind = kind; break
     if not action: raise HTTPException(404, detail="没有该内容运营接口")
+    if action in {'series_list','series_detail','rights_list','series_publications','jobs_list','job_detail'}:
+        require_permission(request, 'dramas.view', 'reviews.view', any_of=True)
+    elif action == 'series_edit': require_permission(request, 'dramas.edit', 'dramas.pricing', any_of=True)
+    elif action in {'series_create','episodes_create','submit'}: require_permission(request, 'dramas.edit')
+    elif action == 'review': require_permission(request, 'reviews.decide')
+    elif action in {'publish','unpublish'}: require_permission(request, 'dramas.publish')
+    else: require_permission(request, 'dramas.upload')
     key = None
     if request.method != "GET":
         try: key = str(UUID(request.headers.get("Idempotency-Key", "")))
@@ -328,6 +422,13 @@ async def india_content(tenant_id: str, upstream_path: str, request: Request, re
         else:
             if len(request.query_params.multi_items()) != len(set(request.query_params.keys())): raise HTTPException(400, detail="查询条件不能重复")
             payload = None if request.method == "GET" else await bounded_json(request)
+            if payload and action in {'series_create','series_edit'}:
+                # PATCH requires only version upstream. Never forward a protected
+                # field merely because a preflight snapshot appeared unchanged.
+                for field in payload:
+                    if field == 'version': continue
+                    permission = 'dramas.pricing' if field in {'free_episode_count','member_window'} else 'dramas.edit'
+                    require_permission(request, permission)
             reply = await client.call(action, access_token=data["access_token"], resource_id=resource_id,
                 payload=payload, params=dict(request.query_params), idempotency_key=key)
         if request.method != "GET":

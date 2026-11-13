@@ -12,47 +12,41 @@ from sqlalchemy import select, delete
 from app.modules.ops.models import AdminUser
 from app.modules.tenancy.models import DEFAULT_TENANT, INDIA_TENANT, Tenant, TenantMember, IndiaConnection
 
-NATIVE_CONTENT_PATH = re.compile(r"^/admin/v1/(?:dramas|episodes|tags|reviews|groups|dev-tus)(?:/|$)")
+from app.modules.tenancy.permissions import effective_grants, authorize_native_request, CONTENT_RULES
 
 def tenant_access(db, user, tenant_id, *, paused=False):
     tenant = db.get(Tenant, tenant_id, populate_existing=True)
     if tenant is None: raise HTTPException(404, detail="租户不存在")
-    if user.role == "admin": role = "admin"
-    else:
-        member = db.get(TenantMember, (tenant_id, user.id), populate_existing=True)
-        if member is None: raise HTTPException(403, detail={"code": "tenant_access_denied", "message": "没有该租户的操作权限"})
-        # A membership can narrow the existing staff role, never elevate it.
-        role = "finance" if "finance" in (user.role, member.role) else "ops"
+    grants = effective_grants(db, user, tenant)
     if not paused and tenant.status != "active":
         raise HTTPException(409, detail={"code": "tenant_paused", "message": "该租户已暂停接入"})
-    return tenant, role
+    return tenant, grants['own_role']
 
 def configure_request_scope(request, db, user):
     path = request.url.path
-    if path.startswith("/admin/v1/auth/") or path == "/admin/v1/tenants" or path.startswith("/admin/v1/tenants/"):
+    if path.startswith('/admin/v1/auth/') or path == '/admin/v1/tenants' or path.startswith('/admin/v1/tenants/'):
         return
-    tenant_id = request.headers.get("X-JJTV-Tenant", DEFAULT_TENANT)
+    tenant_id = request.headers.get('X-JJTV-Tenant', DEFAULT_TENANT)
     tenant, role = tenant_access(db, user, tenant_id)
-    if tenant.kind != "native":
-        raise HTTPException(409, detail={"code": "tenant_content_route_required", "message": "India 内容请使用专用运营工作台"})
-    if tenant_id != DEFAULT_TENANT and not NATIVE_CONTENT_PATH.match(path):
-        raise HTTPException(403, detail={"code": "tenant_content_only", "message": "当前租户仅开放内容运营"})
-    if role == "finance" and request.method not in ("GET", "HEAD", "OPTIONS"):
-        raise HTTPException(403, detail="当前租户为只读权限")
+    if tenant.kind != 'native':
+        raise HTTPException(409, detail=dict(code='tenant_content_route_required', message='India 内容请使用专用运营工作台'))
+    if tenant_id != DEFAULT_TENANT and not any(re.fullmatch(pattern, path.removeprefix('/admin/v1/').rstrip('/')) and request.method == method for method, pattern, _ in CONTENT_RULES):
+        raise HTTPException(403, detail=dict(code='tenant_content_only', message='当前租户仅开放内容运营'))
+    grants = effective_grants(db, user, tenant)
+    authorize_native_request(request, tenant, grants)
     request.state.tenant_id = tenant.id
     request.state.tenant_role = role
-    db.info["content_tenant_id"] = tenant.id
+    db.info['content_tenant_id'] = tenant.id
 
 def tenant_list(db, user):
     tenants = db.scalars(select(Tenant).order_by(Tenant.created_at, Tenant.id)).all()
     result = []
     for tenant in tenants:
-        try: _, role = tenant_access(db, user, tenant.id, paused=True)
+        try: grants = effective_grants(db, user, tenant)
         except HTTPException as error:
             if error.status_code == 403: continue
             raise
-        result.append({"id": tenant.id, "name": tenant.name, "kind": tenant.kind,
-                       "status": tenant.status, "own_role": role})
+        result.append(dict(id=tenant.id, name=tenant.name, kind=tenant.kind, status=tenant.status, **grants))
     return result
 
 def connection_cipher():

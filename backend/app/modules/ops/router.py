@@ -96,14 +96,16 @@ def require_admin(request: Request, db: Session = Depends(get_db)) -> AdminUser:
     return user
 
 
-def require_content_writer(user: AdminUser = Depends(require_admin)) -> AdminUser:
+def require_content_writer(request: Request, user: AdminUser = Depends(require_admin)) -> AdminUser:
+    if getattr(request.state, 'tenant_content_authorized', False): return user
     if user.role not in CONTENT_WRITER_ROLES:
         raise HTTPException(status_code=403, detail=f"role '{user.role}' cannot write content")
     return user
 
 
-def require_admin_role(user: AdminUser = Depends(require_admin)) -> AdminUser:
+def require_admin_role(request: Request, user: AdminUser = Depends(require_admin)) -> AdminUser:
     """Super-admin only: delete drama, price/billing changes, coin adjust, staff."""
+    if getattr(request.state, 'tenant_content_authorized', False): return user
     if user.role != ROLE_ADMIN:
         raise HTTPException(status_code=403, detail="admin only")
     return user
@@ -472,7 +474,8 @@ def create_staff(
         raise HTTPException(status_code=409, detail="账号已存在") from exc
     if row.role in STAFF_ROLES:
         from app.modules.tenancy.models import TenantMember
-        db.add(TenantMember(tenant_id="jjtv", user_id=row.id, role=row.role))
+        from app.modules.tenancy.permissions import preset_role_id
+        db.add(TenantMember(tenant_id="jjtv", user_id=row.id, role=row.role, role_id=preset_role_id("jjtv", row.role)))
     db.add(
         AuditLog(
             actor_type="admin",
@@ -961,11 +964,16 @@ def get_drama(
 def update_drama(
     drama_id: int,
     body: DramaUpdateIn,
+    request: Request,
     user: AdminUser = Depends(require_content_writer),
     db: Session = Depends(get_db),
 ):
     drama = _get_drama_or_404(db, drama_id)
     data = body.model_dump(exclude_unset=True)
+    from app.modules.tenancy.permissions import require_permission
+    for field in data:
+        permission = 'dramas.pricing' if field in {'free_episode_count','coin_price_per_episode'} else 'dramas.upload' if field == 'cover_url' else 'dramas.edit'
+        require_permission(request, permission)
     tag_ids = data.pop("tag_ids", None)
     for field, value in data.items():
         setattr(drama, field, value)

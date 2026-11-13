@@ -47,7 +47,7 @@ def context(session, make, monkeypatch):
     owner, operator, finance = make.admin(role="admin"), make.admin(role="ops"), make.admin(role="finance")
     for person in (operator, finance):
         if session.get(TenantMember, (DEFAULT_TENANT, person.id)) is None:
-            session.add(TenantMember(tenant_id=DEFAULT_TENANT, user_id=person.id, role=person.role))
+            session.add(TenantMember(tenant_id=DEFAULT_TENANT, user_id=person.id, role=person.role, role_id=preset_role_id(DEFAULT_TENANT, person.role)))
     session.commit()
     key = Fernet.generate_key()
     monkeypatch.setenv("TENANT_CONNECTION_KEY", key.decode())

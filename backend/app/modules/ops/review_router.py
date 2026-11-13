@@ -12,7 +12,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
@@ -32,7 +32,8 @@ REVIEW_WRITERS = (ROLE_OPS, ROLE_ADMIN)
 MAX_BATCH = 50
 
 
-def _require_reviewer(user: AdminUser = Depends(require_admin)) -> AdminUser:
+def _require_reviewer(request: Request, user: AdminUser = Depends(require_admin)) -> AdminUser:
+    if getattr(request.state, 'tenant_content_authorized', False): return user
     if user.role not in REVIEW_WRITERS:
         raise HTTPException(status_code=403, detail="role cannot review content")
     return user

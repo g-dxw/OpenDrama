@@ -92,7 +92,12 @@ def session(engine):
     factory = sessionmaker(bind=engine, expire_on_commit=False)
     s = factory()
     from app.modules.tenancy.models import Tenant
-    s.add_all([Tenant(id="jjtv", name="JJTV 自营", kind="native", status="active"), Tenant(id="india-short-drama", name="India Short Drama", kind="india_legacy", status="active")])
+    from app.modules.tenancy.permissions import seed_roles
+    tenants = [Tenant(id="jjtv", name="JJTV 自营", kind="native", status="active"), Tenant(id="india-short-drama", name="India Short Drama", kind="india_legacy", status="active")]
+    s.add_all(tenants)
+    s.flush()
+    for tenant in tenants:
+        seed_roles(s, tenant)
     s.commit()
     try:
         yield s
@@ -183,8 +188,9 @@ def make(session):
             session.add(user)
             session.flush()
             from app.modules.tenancy.models import TenantMember
+            from app.modules.tenancy.permissions import preset_role_id
             if role != "partner":
-                session.add(TenantMember(tenant_id="jjtv", user_id=user.id, role=role))
+                session.add(TenantMember(tenant_id="jjtv", user_id=user.id, role=role, role_id=preset_role_id("jjtv", role)))
             session.commit()
             return user
 
