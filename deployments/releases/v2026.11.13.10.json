@@ -1,0 +1,26 @@
+{
+  "version": "v2026.11.13.10",
+  "target": "video-test-services",
+  "status": "published",
+  "sha": "b0dd92a30a04372411050ad955a0b63c9f202f08",
+  "short_sha": "b0dd92a3",
+  "command": [
+    "python3",
+    "scripts/test_tenancy_services.py",
+    "--credentials",
+    "/mnt/c/Users/Administrator/.codex/private/jjtv-tenancy-test-services.json",
+    "cleanup"
+  ],
+  "exit_code": 0,
+  "started_at": "2026-11-13T17:30:00+08:00",
+  "finished_at": "2026-11-13T17:30:07+08:00",
+  "operator": {
+    "user": "root",
+    "host": "MM-202608191734",
+    "pid": 13451,
+    "agent_session": null,
+    "cwd": "/mnt/d/workspace/new/minitv"
+  },
+  "note": "Remove owned disposable tenancy test services after verified regressions",
+  "dirty": false
+}
