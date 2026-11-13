@@ -156,7 +156,11 @@ def normalize_login(value: Any) -> dict[str, Any]:
             raise IndiaError("india_invalid_response")
         return {"state": "mfa_required", "challenge_token": challenge, "expires_at": value["expires_at"],
                 "enrollment_required": value.get("enrollment_required") is True}
-    access, refresh = _credential(value.get("access_token")), _credential(value.get("refresh_token"))
+    try:
+        access, refresh = _credential(value.get("access_token")), _credential(value.get("refresh_token"))
+    except IndiaError:
+        # Malformed upstream success is not evidence that a saved connection expired.
+        raise IndiaError("india_invalid_response") from None
     result = {"state": "connected", "access_token": access, "refresh_token": refresh,
               "user": normalize_staff(value.get("user"))}
     for key in ("expires_at", "refresh_expires_at"):
@@ -208,7 +212,9 @@ class IndiaClient:
                     raise IndiaError("india_payload_too_large", 413)
             except (TypeError, ValueError):
                 raise IndiaError("india_invalid_payload", 400) from None
-        return await self._send(spec.method, path, access_token=access_token, payload=body, params=query, headers=idempotency_headers)
+        auth_stage = action if action in {"login", "mfa_verify", "mfa_enrollment", "mfa_cancel"} else None
+        return await self._send(spec.method, path, access_token=access_token, payload=body, params=query,
+                                headers=idempotency_headers, auth_stage=auth_stage)
 
     async def upload(self, kind: str, upload_id: str, *, access_token: str, chunks: AsyncIterable[bytes],
                      size: int, content_type: str, idempotency_key: str | None = None) -> IndiaReply:
@@ -249,7 +255,7 @@ class IndiaClient:
     async def _send(self, method: str, path: str, *, access_token: str | None = None,
                     payload: dict | None = None, params: dict | None = None,
                     content: AsyncIterable[bytes] | None = None, headers: dict | None = None,
-                    upload: bool = False) -> IndiaReply:
+                    upload: bool = False, auth_stage: str | None = None) -> IndiaReply:
         request_headers = {"Accept": "application/json", "User-Agent": "JJTV-India-Connector/1.0", **(headers or {})}
         if access_token:
             request_headers["Authorization"] = "Bearer " + _credential(access_token)
@@ -282,8 +288,22 @@ class IndiaClient:
                             upstream = envelope.get("code") if isinstance(envelope, dict) else None
                             upstream = upstream if isinstance(upstream, str) and _SAFE_CODE.fullmatch(upstream) else None
                             status = response.status_code
+                            public_status = 409 if status == 401 else status if 400 <= status < 500 else 502
                             code = "india_auth_required" if status == 401 else "india_forbidden" if status == 403 else "india_upstream_error"
-                            raise IndiaError(code, 409 if status == 401 else status if 400 <= status < 500 else 502,
+                            if status == 429:
+                                code = "india_rate_limited"
+                            elif status == 401 and auth_stage == "login":
+                                code, public_status = "india_login_rejected", 400
+                            elif status == 401 and auth_stage in {"mfa_verify", "mfa_enrollment", "mfa_cancel"}:
+                                # A wrong TOTP does not consume the upstream challenge.
+                                # Never treat authentication-in-progress as an expired business session.
+                                if upstream == "MFA_EXPIRED":
+                                    code = "india_challenge_expired"
+                                elif upstream == "MFA_REPLAYED":
+                                    code = "india_mfa_replayed"
+                                else:
+                                    code, public_status = "india_mfa_invalid", 400
+                            raise IndiaError(code, public_status,
                                              upstream_code=upstream, request_id=request_id, retryable=status in {429, 502, 503, 504})
                         if not isinstance(envelope, dict) or "data" not in envelope or request_id is None:
                             raise IndiaError("india_invalid_response")

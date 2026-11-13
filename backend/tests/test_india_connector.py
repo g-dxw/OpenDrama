@@ -116,7 +116,7 @@ def test_conflicts_and_auth_errors_preserve_only_safe_correlation():
         (401, "SESSION_EXPIRED", 409, "india_auth_required"),
         (403, "FORBIDDEN", 403, "india_forbidden"),
         (409, "VERSION_CONFLICT", 409, "india_upstream_error"),
-        (429, "RATE_LIMITED", 429, "india_upstream_error"),
+        (429, "RATE_LIMITED", 429, "india_rate_limited"),
         (503, "SECRET_PROVIDER_FAILURE", 502, "india_upstream_error"),
     ]:
         transport = httpx.MockTransport(lambda request: httpx.Response(status, json={
@@ -129,6 +129,45 @@ def test_conflicts_and_auth_errors_preserve_only_safe_correlation():
         assert (error.status_code, error.code, error.upstream_code, error.request_id) == (expected_status, expected_code, upstream, "req-safe-id")
         assert "must-not-escape" not in str(vars(error)) and "secret-password" not in str(error)
         assert error.retryable is (status in {429, 503})
+
+
+@pytest.mark.parametrize("action,upstream,expected_status,expected_code", [
+    ("login", "INVALID_CREDENTIALS", 400, "india_login_rejected"),
+    ("login", None, 400, "india_login_rejected"),
+    ("mfa_verify", "MFA_INVALID", 400, "india_mfa_invalid"),
+    ("mfa_enrollment", "MFA_INVALID", 400, "india_mfa_invalid"),
+    ("mfa_verify", None, 400, "india_mfa_invalid"),
+    ("mfa_verify", "MFA_EXPIRED", 409, "india_challenge_expired"),
+    ("mfa_enrollment", "MFA_EXPIRED", 409, "india_challenge_expired"),
+    ("mfa_verify", "MFA_REPLAYED", 409, "india_mfa_replayed"),
+])
+def test_in_progress_authentication_is_not_an_expired_business_session(action, upstream, expected_status, expected_code):
+    transport = httpx.MockTransport(lambda request: httpx.Response(401, json={
+        "code": upstream, "request_id": "auth-safe-id", "details": {"secret": "must-not-escape"},
+    }))
+    payload = {"username": "synthetic", "password": "synthetic-password"} if action == "login" else {"challenge_token": CHALLENGE}
+    if action == "mfa_verify": payload["code"] = "000000"
+    with pytest.raises(IndiaError) as caught:
+        run(IndiaClient(base_url=BASE, transport=transport).call(action, payload=payload))
+    error = caught.value
+    assert (error.status_code, error.code, error.upstream_code, error.request_id) == (expected_status, expected_code, upstream, "auth-safe-id")
+    assert error.status_code != 401 and error.code != "india_auth_required"
+    assert "must-not-escape" not in str(vars(error))
+
+
+def test_refresh_401_still_expires_the_business_connection():
+    transport = httpx.MockTransport(lambda request: httpx.Response(401, json={"code": "SESSION_EXPIRED", "request_id": "refresh-expired"}))
+    with pytest.raises(IndiaError) as caught:
+        run(IndiaClient(base_url=BASE, transport=transport).call("refresh", payload={"refresh_token": REFRESH}))
+    assert (caught.value.status_code, caught.value.code) == (409, "india_auth_required")
+
+
+@pytest.mark.parametrize("value", [{"user": USER}, {"access_token": ACCESS, "user": USER},
+                                   {"access_token": ACCESS, "refresh_token": 123, "user": USER}])
+def test_malformed_success_does_not_mean_saved_credentials_expired(value):
+    with pytest.raises(IndiaError) as caught:
+        normalize_login(value)
+    assert (caught.value.status_code, caught.value.code) == (502, "india_invalid_response")
 
 
 def test_redirect_is_not_followed_and_cannot_leak_bearer():

@@ -10,13 +10,15 @@ from uuid import uuid4
 
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
+import httpx
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.orm import Session
 
 from app.main import app
 from app.modules.common.models import AuditLog
 from app.modules.content.models import Drama, DramaTag, Episode, MediaUpload, Tag
-from app.modules.tenancy.india import IndiaError, IndiaReply
+from app.modules.tenancy.india import IndiaClient, IndiaError, IndiaReply
 from app.modules.tenancy.models import DEFAULT_TENANT, INDIA_TENANT, IndiaConnection, Tenant, TenantMember
 
 TENANTS = "/admin/v1/tenants"
@@ -516,3 +518,189 @@ def test_failed_tenant_membership_audit_rolls_back_members_and_connection(contex
     assert member is not None and member.role == "ops"
     assert remaining is not None and remaining.secret == saved_cipher
     assert context["client"].get(INDIA + "/session", headers=context["operator_headers"]).json()["connected"] is True
+
+
+@pytest.fixture()
+def india_auth_http(monkeypatch):
+    """Exercise the real connector's error classification without contacting India."""
+    from app.modules.tenancy import router as tenant_router
+    observed, state = [], {"challenge": True, "enrollment": False, "errors": {}}
+
+    def handler(request):
+        path = request.url.path.removeprefix("/v1/")
+        body = json.loads(request.content) if request.content else {}
+        observed.append((path, body))
+        error = state["errors"].get(path)
+        if error is None and path == "auth/admin/mfa" and body.get("code") == "000000":
+            error = (401, "MFA_INVALID")
+        if error:
+            status, code = error
+            return httpx.Response(status, json={"code": code, "request_id": "auth-http-error",
+                                               "details": {"secret": "upstream-private-body"}})
+        if path == "auth/admin/login" and state["challenge"]:
+            data = {"mfa_required": True, "challenge_token": CHALLENGE, "expires_at": "2099-01-01T00:00:00Z",
+                    "enrollment_required": state["enrollment"]}
+        elif path in {"auth/admin/login", "auth/admin/mfa"}:
+            data = {"access_token": ACCESS_A, "refresh_token": REFRESH, "user": OLD_ACTOR}
+        elif path == "me":
+            data = OLD_ACTOR
+        elif path == "admin/series":
+            data = {"items": [], "next_cursor": None}
+        else:
+            pytest.fail("Unexpected synthetic India path: " + path)
+        if path in state.get("malformed", set()):
+            data = {"user": OLD_ACTOR}
+        return httpx.Response(200, json={"data": data, "request_id": "auth-http-success"})
+
+    monkeypatch.setattr(tenant_router, "IndiaClient", lambda: IndiaClient(
+        base_url="https://india.example/v1", transport=httpx.MockTransport(handler)))
+    return observed, state
+
+
+def pending_india(context):
+    result = context["client"].post(INDIA + "/session", headers=context["owner_headers"],
+        json={"username": "old-existing", "password": "synthetic-password-not-stored"})
+    assert result.status_code == 200 and result.json()["mfa_required"] is True, result.text
+    return result.json()
+
+
+def saved_india(context):
+    db = context["db"]
+    db.expire_all()
+    key = (INDIA_TENANT, context["owner"].id, hashlib.sha256(context["owner_headers"]["Authorization"].encode()).hexdigest())
+    row = db.get(IndiaConnection, key)
+    return row, json.loads(context["cipher"].decrypt(row.secret.encode()).decode()) if row else None
+
+
+def test_wrong_india_mfa_code_keeps_same_challenge_for_success(context, india_auth_http):
+    pending_india(context)
+    old_cipher = saved_india(context)[0].secret
+    client, headers = context["client"], context["owner_headers"]
+    wrong = client.post(INDIA + "/session/mfa", headers=headers, json={"challenge_token": CHALLENGE, "code": "000000"})
+    assert wrong.status_code == 400
+    assert wrong.json()["detail"]["code"] == "india_mfa_invalid"
+    assert wrong.json()["detail"]["upstream_code"] == "MFA_INVALID"
+    assert wrong.json()["detail"]["request_id"] == "auth-http-error"
+    assert "upstream-private-body" not in wrong.text
+    row, data = saved_india(context)
+    assert row.secret == old_cipher and data["state"] == "mfa_required" and data["challenge_token"] == CHALLENGE
+    assert client.get("/admin/v1/auth/me", headers=headers).status_code == 200
+    accepted = client.post(INDIA + "/session/mfa", headers=headers, json={"challenge_token": CHALLENGE, "code": "123456"})
+    assert accepted.status_code == 200 and accepted.json()["connected"] is True
+    stored = json.dumps(saved_india(context)[1])
+    assert all(secret not in stored for secret in ["000000", "123456", "synthetic-password-not-stored", CHALLENGE])
+
+
+@pytest.mark.parametrize("upstream,code", [("MFA_EXPIRED", "india_challenge_expired"), ("MFA_REPLAYED", "india_mfa_replayed")])
+def test_consumed_india_challenge_is_cleared_without_ending_jjtv_login(context, india_auth_http, upstream, code):
+    pending_india(context)
+    india_auth_http[1]["errors"]["auth/admin/mfa"] = (401, upstream)
+    response = context["client"].post(INDIA + "/session/mfa", headers=context["owner_headers"],
+        json={"challenge_token": CHALLENGE, "code": "123456"})
+    assert response.status_code == 409 and response.json()["detail"]["code"] == code
+    assert saved_india(context)[0] is None
+    assert context["client"].get("/admin/v1/auth/me", headers=context["owner_headers"]).status_code == 200
+
+
+def test_local_wrong_challenge_preserves_pending_but_expired_challenge_is_removed(context, india_auth_http):
+    pending_india(context)
+    before = len(india_auth_http[0])
+    client, headers = context["client"], context["owner_headers"]
+    invalid = client.post(INDIA + "/session/mfa", headers=headers, json={"challenge_token": "x" * 43, "code": "123456"})
+    assert invalid.status_code == 409 and invalid.json()["detail"]["code"] == "india_challenge_invalid"
+    row, data = saved_india(context)
+    assert data["challenge_token"] == CHALLENGE and len(india_auth_http[0]) == before
+    data["expires_at"] = "2000-01-01T00:00:00Z"
+    row.secret = context["cipher"].encrypt(json.dumps(data).encode()).decode()
+    context["db"].commit()
+    expired = client.post(INDIA + "/session/mfa", headers=headers, json={"challenge_token": CHALLENGE, "code": "123456"})
+    assert expired.status_code == 409 and expired.json()["detail"]["code"] == "india_challenge_expired"
+    assert saved_india(context)[0] is None and len(india_auth_http[0]) == before
+
+
+@pytest.mark.parametrize("path,upstream,status,code", [
+    ("mfa", "RATE_LIMITED", 429, "india_rate_limited"),
+    ("enrollment", "MFA_INVALID", 400, "india_mfa_invalid"),
+])
+def test_retryable_india_auth_errors_keep_pending_challenge(context, india_auth_http, path, upstream, status, code):
+    india_auth_http[1]["enrollment"] = True
+    pending_india(context)
+    old_cipher = saved_india(context)[0].secret
+    endpoint = "auth/admin/mfa" if path == "mfa" else "auth/admin/mfa/enrollment"
+    india_auth_http[1]["errors"][endpoint] = (429 if upstream == "RATE_LIMITED" else 401, upstream)
+    body = {"challenge_token": CHALLENGE, **({"code": "123456"} if path == "mfa" else {})}
+    response = context["client"].post(INDIA + "/session/" + path, headers=context["owner_headers"], json=body)
+    assert response.status_code == status and response.json()["detail"]["code"] == code
+    assert response.json()["detail"]["retryable"] is (status == 429)
+    assert saved_india(context)[0].secret == old_cipher
+
+
+def test_bad_password_preserves_an_existing_india_business_connection(context, india_auth_http):
+    india_auth_http[1]["challenge"] = False
+    connect(context)
+    before = saved_india(context)[0].secret
+    india_auth_http[1]["errors"]["auth/admin/login"] = (401, "INVALID_CREDENTIALS")
+    rejected = context["client"].post(INDIA + "/session", headers=context["owner_headers"],
+        json={"username": "another-account", "password": "synthetic-wrong-password"})
+    assert rejected.status_code == 400 and rejected.json()["detail"]["code"] == "india_login_rejected"
+    assert saved_india(context)[0].secret == before
+    assert context["client"].get(INDIA + "/session", headers=context["owner_headers"]).json()["connected"] is True
+
+
+def test_real_connector_business_401_still_clears_its_connection_only(context, india_auth_http):
+    india_auth_http[1]["challenge"] = False
+    connect(context)
+    india_auth_http[1]["errors"]["admin/series"] = (401, "SESSION_EXPIRED")
+    expired = context["client"].get(INDIA + "/admin/series", headers=context["owner_headers"])
+    assert expired.status_code == 409 and expired.json()["detail"]["code"] == "india_auth_required"
+    assert saved_india(context)[0] is None
+    assert context["client"].get("/admin/v1/auth/me", headers=context["owner_headers"]).status_code == 200
+
+
+@pytest.mark.parametrize("stage", ["login", "mfa"])
+def test_malformed_auth_success_preserves_the_existing_connection_state(context, india_auth_http, stage):
+    client, headers = context["client"], context["owner_headers"]
+    if stage == "login":
+        india_auth_http[1]["challenge"] = False
+        connect(context)
+    else:
+        pending_india(context)
+    before = saved_india(context)[0].secret
+    india_auth_http[1]["malformed"] = {"auth/admin/" + stage}
+    response = client.post(INDIA + "/session" + ("/mfa" if stage == "mfa" else ""), headers=headers,
+        json={"challenge_token": CHALLENGE, "code": "123456"} if stage == "mfa" else
+             {"username": "old-existing", "password": "synthetic-password"})
+    assert response.status_code == 502 and response.json()["detail"]["code"] == "india_invalid_response"
+    assert saved_india(context)[0].secret == before
+
+
+@pytest.mark.parametrize("replacement", ["challenge", "connected"])
+def test_terminal_mfa_cleanup_cas_preserves_a_concurrent_replacement(context, india_auth_http, monkeypatch, replacement):
+    from app.modules.tenancy import service as tenant_service
+    pending_india(context)
+    india_auth_http[1]["errors"]["auth/admin/mfa"] = (401, "MFA_EXPIRED")
+    original_read = tenant_service.read_connection
+    calls, replacements = [], []
+
+    def replace_after_read(db, request, user):
+        row, data = original_read(db, request, user)
+        calls.append(True)
+        if len(calls) == 2:  # First read verifies ownership; second is the cleanup CAS.
+            updated = ({"state": "mfa_required", "challenge_token": "n" * 43, "expires_at": "2099-01-01T00:00:00Z"}
+                       if replacement == "challenge" else
+                       {"state": "connected", "access_token": ACCESS_B, "refresh_token": REFRESH, "user": OLD_ACTOR})
+            encrypted = context["cipher"].encrypt(json.dumps(updated).encode()).decode()
+            with Session(db.get_bind()) as concurrent:
+                concurrent.execute(update(IndiaConnection).where(
+                    IndiaConnection.tenant_id == row.tenant_id, IndiaConnection.user_id == row.user_id,
+                    IndiaConnection.session_key == row.session_key).values(secret=encrypted))
+                concurrent.commit()
+            replacements.append(encrypted)
+        return row, data
+
+    monkeypatch.setattr(tenant_service, "read_connection", replace_after_read)
+    response = context["client"].post(INDIA + "/session/mfa", headers=context["owner_headers"],
+        json={"challenge_token": CHALLENGE, "code": "123456"})
+    assert response.status_code == 409 and response.json()["detail"]["code"] == "india_challenge_expired"
+    assert replacements and saved_india(context)[0].secret == replacements[0]
+    assert saved_india(context)[1]["state"] == ("mfa_required" if replacement == "challenge" else "connected")

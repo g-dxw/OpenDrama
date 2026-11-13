@@ -4,7 +4,7 @@ import { LinkOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import { api } from "../api";
 import { useMe } from "../me";
 import { useTenant } from "../tenant";
-import { INDIA_BASE, indiaApi, indiaErrorText, STATUS, type IndiaSeries, type IndiaSession } from "./india-api";
+import { INDIA_BASE, indiaApi, indiaErrorText, indiaMfaNeedsRestart, STATUS, type IndiaSeries, type IndiaSession } from "./india-api";
 import IndiaSeriesForm from "./IndiaSeriesForm";
 import IndiaEpisodes from "./IndiaEpisodes";
 import IndiaAssets from "./IndiaAssets";
@@ -89,6 +89,21 @@ export default function IndiaContent() {
     if (challenge) void api(INDIA_BASE + "/session/cancel", { method: "POST", body: JSON.stringify({ challenge_token: challenge.challenge_token }) }).catch(() => {});
     loginForm.resetFields(); mfaForm.resetFields(); setChallenge(null); setEnrollment(null); setConnectError(""); setConnectOpen(false);
   };
+  const resetChallenge = () => {
+    loginForm.resetFields(); mfaForm.resetFields(); setChallenge(null); setEnrollment(null);
+  };
+  const restartVerification = async () => {
+    if (!challenge || connecting) return;
+    setConnecting(true);
+    try { await api(INDIA_BASE + "/session/cancel", { method: "POST", body: JSON.stringify({ challenge_token: challenge.challenge_token }) }); }
+    catch { /* A new password login replaces an expired or unavailable challenge. */ }
+    finally { if (mounted.current) { resetChallenge(); setConnectError(""); setConnecting(false); } }
+  };
+  const verificationFailed = (error: unknown) => {
+    if (!mounted.current) return;
+    setConnectError(indiaErrorText(error));
+    if (indiaMfaNeedsRestart(error)) resetChallenge();
+  };
   const connected = async () => {
     loginForm.resetFields(); mfaForm.resetFields(); setChallenge(null); setEnrollment(null); setConnectOpen(false); setConnectError("");
     setRows([]); setCursors([""]); setSelected(null); setDetail(null); await readSession();
@@ -99,14 +114,18 @@ export default function IndiaContent() {
     try {
       const result = await api<IndiaSession & Partial<Challenge> & { mfa_required?: boolean }>(INDIA_BASE + "/session", { method: "POST", body: JSON.stringify(credentials) });
       if (!mounted.current) return;
-      if (result.mfa_required && result.challenge_token) setChallenge({ challenge_token: result.challenge_token, expires_at: result.expires_at, enrollment_required: result.enrollment_required });
+      if (result.mfa_required && result.challenge_token) {
+        setChallenge({ challenge_token: result.challenge_token, expires_at: result.expires_at, enrollment_required: result.enrollment_required });
+        setSession(value => ({ ...value, connected: false, state: "mfa_required" }));
+        setRows([]); setSelected(null); setDetail(null); setCreating(false);
+      }
       else if (result.connected) { await connected(); message.success("旧站运营账号已连接"); }
       else throw new Error("旧站未返回有效连接，请重新验证");
     } catch (e) { if (mounted.current) setConnectError(indiaErrorText(e)); }
     finally { if (mounted.current) setConnecting(false); }
   };
   const verify = async (values: { code: string }) => {
-    if (!challenge) return;
+    if (!challenge || (challenge.enrollment_required && !enrollment)) return;
     const code = values.code;
     setConnecting(true); setConnectError(""); mfaForm.resetFields();
     try {
@@ -114,14 +133,14 @@ export default function IndiaContent() {
       if (!mounted.current) return;
       if (!result.connected) throw new Error("验证尚未建立有效连接");
       await connected(); message.success("旧站运营账号已连接");
-    } catch (e) { if (mounted.current) setConnectError(indiaErrorText(e)); }
+    } catch (e) { verificationFailed(e); }
     finally { if (mounted.current) setConnecting(false); }
   };
   const setup = async () => {
     if (!challenge) return;
     setConnecting(true); setConnectError("");
     try { const envelope = await api<Enrollment | { data: Enrollment }>(INDIA_BASE + "/session/enrollment", { method: "POST", body: JSON.stringify({ challenge_token: challenge.challenge_token }) }); const result = "data" in envelope ? envelope.data : envelope; if (!result.secret_base32 || !result.otpauth_uri) throw new Error("旧站未返回有效验证器设置"); if (mounted.current) setEnrollment(result); }
-    catch (e) { if (mounted.current) setConnectError(indiaErrorText(e)); }
+    catch (e) { verificationFailed(e); }
     finally { if (mounted.current) setConnecting(false); }
   };
   const renewConnection = async () => {
@@ -224,22 +243,27 @@ export default function IndiaContent() {
     <Modal title={challenge ? "验证旧站运营账号" : "连接旧站运营账号"} open={connectOpen} onCancel={closeConnect} footer={null} destroyOnHidden maskClosable={!connecting}>
       <Space direction="vertical" size="middle" style={{ width: "100%" }}>
         <Typography.Text type="secondary">此连接仅用于当前 JJTV 登录会话。密码与验证码不会保存。</Typography.Text>
-        {connectError && <Alert showIcon type="error" message={connectError} />}
+        {connectError && <Alert role="alert" showIcon type="error" message={connectError} />}
         {!challenge ? <Form form={loginForm} layout="vertical" onFinish={login} preserve={false}>
           <Form.Item label="旧站运营账号" name="username" rules={[{ required: true, whitespace: true, message: "请输入账号" }]}><Input autoComplete="off" disabled={connecting} /></Form.Item>
           <Form.Item label="旧站密码" name="password" rules={[{ required: true, message: "请输入密码" }]}><Input.Password autoComplete="off" disabled={connecting} /></Form.Item>
           <Button block type="primary" htmlType="submit" loading={connecting} aria-label="连接账号" aria-busy={connecting}>连接账号</Button>
         </Form> : <>
-          {challenge.enrollment_required && !enrollment && <Button onClick={() => void setup()} loading={connecting} aria-label="设置旧站验证器" aria-busy={connecting}>设置旧站验证器</Button>}
+          {challenge.enrollment_required && !enrollment && <>
+            <Alert type="info" showIcon message="首次使用此旧站账号，请先设置验证器，再输入新生成的验证码。" />
+            <Button onClick={() => void setup()} loading={connecting} aria-label="设置旧站验证器" aria-busy={connecting}>设置旧站验证器</Button>
+          </>}
           {enrollment && <Card size="small" title="添加至验证器后输入验证码"><Space direction="vertical" style={{ width: "100%" }}>
             <QRCode value={enrollment.otpauth_uri} size={180} />
             <Typography.Text>无法扫码时，可手动输入密钥：</Typography.Text><Typography.Text copyable code>{enrollment.secret_base32}</Typography.Text>
           </Space></Card>}
-          <Form form={mfaForm} layout="vertical" onFinish={verify} preserve={false}>
+          {(!challenge.enrollment_required || !!enrollment) && <Form form={mfaForm} layout="vertical" onFinish={verify} preserve={false}>
             <Form.Item label="验证器六位验证码" name="code" rules={[{ required: true, pattern: /^[0-9]{6}$/, message: "请输入六位数字验证码" }]}><Input autoComplete="one-time-code" inputMode="numeric" maxLength={6} disabled={connecting} /></Form.Item>
-            {challenge.expires_at && <Typography.Paragraph type="secondary">本次验证到期：{new Date(challenge.expires_at).toLocaleString()}</Typography.Paragraph>}
+            <Typography.Paragraph type="secondary">请使用当前旧站账号绑定的验证器；在其他页面重新登录同一账号会使本次验证失效。</Typography.Paragraph>
             <Button block type="primary" htmlType="submit" loading={connecting} aria-label="完成连接" aria-busy={connecting}>完成连接</Button>
-          </Form>
+          </Form>}
+          {challenge.expires_at && <Typography.Text type="secondary">本次验证到期：{new Date(challenge.expires_at).toLocaleString()}</Typography.Text>}
+          <Button block onClick={() => void restartVerification()} disabled={connecting}>重新开始验证</Button>
         </>}
       </Space>
     </Modal>
