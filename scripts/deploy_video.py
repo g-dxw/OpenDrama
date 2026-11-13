@@ -135,16 +135,18 @@ def main() -> None:
             "&& docker inspect dastaan-staging-edge-1 >/dev/null "
             "&& test -d /opt/dastaan/shared/edge && test -d /opt/dastaan/shared/acme "
             "&& printf 'JJTV server preflight passed\\n'"
-        ], check=True)
+        ], stdin=subprocess.DEVNULL, check=True)
         return
     print(f"Deploying committed source {sha} into {release_dir}; phase={args.phase}")
     subprocess.run(
         ssh + [f"umask 022; mkdir -p {shlex.quote(release_dir)} && tar -xzf - -C {shlex.quote(release_dir)}"],
         input=data, check=True,
     )
-    script = subprocess.check_output(["git", "show", sha + ":deploy/video/remote-deploy.sh"], cwd=ROOT)
-    command = "bash -s -- " + " ".join(shlex.quote(x) for x in (release_dir, sha, args.phase))
-    subprocess.run(ssh + [command], input=script, check=True)
+    # Execute the archived script file so child commands cannot consume its source from stdin.
+    command = "bash " + shlex.quote(release_dir + "/deploy/video/remote-deploy.sh") + " " + " ".join(
+        shlex.quote(x) for x in (release_dir, sha, args.phase)
+    )
+    subprocess.run(ssh + [command], stdin=subprocess.DEVNULL, check=True)
 
 
 if __name__ == "__main__":

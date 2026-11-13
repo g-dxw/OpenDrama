@@ -81,7 +81,7 @@ COMPOSE=(docker compose --env-file "$JJTV_ENV_FILE" -p jjtv -f "$RELEASE_DIR/dep
 "${COMPOSE[@]}" build api
 "${COMPOSE[@]}" up -d --wait postgres redis
 # First administrator password is supplied by the server .env, never printed.
-"${COMPOSE[@]}" run --rm --no-deps api sh -ec 'alembic upgrade head && python -m app.seed_admin && python -m app.seed_rewards'
+"${COMPOSE[@]}" run --rm --no-deps --interactive=false api sh -ec 'alembic upgrade head && python -m app.seed_admin && python -m app.seed_rewards'
 "${COMPOSE[@]}" up -d --wait api web
 curl -fsS http://127.0.0.1:18110/health
 printf '\n'

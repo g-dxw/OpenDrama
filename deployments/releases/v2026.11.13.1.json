@@ -1,7 +1,7 @@
 {
   "version": "v2026.11.13.1",
   "target": "video",
-  "status": "published",
+  "status": "failed",
   "sha": "a5a0071457109b283b09471df72ccb356c5af3b3",
   "short_sha": "a5a00714",
   "command": [
@@ -20,6 +20,11 @@
     "agent_session": null,
     "cwd": "/mnt/d/workspace/new/minitv"
   },
-  "note": "JJTV isolated HTTP deployment; DNS pending",
-  "dirty": false
+  "note": "JJTV isolated HTTP deployment; DNS pending; post-deploy acceptance failed: initialization completed but API/web/routes were not started",
+  "dirty": false,
+  "acceptance": {
+    "status": "failed",
+    "reason": "Remote bash received its source over stdin; docker compose run consumed remaining script lines. Only PostgreSQL, Redis and bootstrap migrations completed; API, web and public routes were not started.",
+    "command_exit_code": 0
+  }
 }
