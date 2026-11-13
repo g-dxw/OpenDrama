@@ -6,7 +6,13 @@ export type Me = {
   display_name: string;
   /** Global staff role; tenant content permissions never replace it. */
   role: string;
+  account_scope?: string;
+  session_kind?: string;
+  is_platform_admin?: boolean;
+  is_tenant_admin?: boolean;
+  must_change_password?: boolean;
   platform_role?: string;
+  enabled_modules?: string[];
   permissions?: string[];
   menu_keys?: string[];
   tenant_role_name?: string;
@@ -33,7 +39,7 @@ export function useMe(): Me | null {
 }
 
 export function hasPermission(me: Me | null, key: string): boolean {
-  return !!me && ((me.platform_role ?? me.role) === "admin" || (me.permissions ?? []).includes(key));
+  return !!me && (me.permissions ?? []).includes(key);
 }
 
 export function usePermission(key: string): boolean {
@@ -53,10 +59,16 @@ export function useCanWriteContent(): boolean {
 /** Platform administration never follows a tenant role name. */
 export function useIsAdmin(): boolean {
   const me = useMe();
-  return (me?.platform_role ?? me?.role) === "admin";
+  return !!me?.is_platform_admin && me.account_scope === "platform" && me.session_kind === "normal";
 }
 
 export function useIsPartner(): boolean {
   const me = useMe();
   return (me?.platform_role ?? me?.role) === "partner";
 }
+
+export const useIsPlatformAdmin = useIsAdmin;
+export function useIsTenantAdmin(): boolean { return !!useMe()?.is_tenant_admin; }
+export function useCanAdministerTenant(): boolean { const me = useMe(); return !!me?.is_tenant_admin || me?.session_kind === 'support'; }
+
+export function useModuleEnabled(key: string): boolean { return (useMe()?.enabled_modules ?? []).includes(key); }

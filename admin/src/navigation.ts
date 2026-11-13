@@ -57,6 +57,7 @@ export const NAVIGATION: NavigationNode[] = [
     key: "nav:system", label: "系统", children: [
       { key: "/tenants", label: "租户管理", platformAdminOnly: true },
       { key: "/staff", label: "员工账号" },
+      { key: "/roles", label: "角色与权限" },
       { key: "/api-keys", label: "API 密钥" },
     ],
   },
@@ -76,13 +77,14 @@ export function navigationPath(key: string, nodes: NavigationNode[] = NAVIGATION
 }
 
 export function visibleNavigation({
-  menuKeys, partner, platformAdmin, india,
-}: { menuKeys: string[]; partner: boolean; platformAdmin: boolean; india: boolean }): NavigationNode[] {
+  menuKeys, partner, platformAdmin, india, tenantAdmin = false,
+}: { menuKeys: string[]; partner: boolean; platformAdmin: boolean; india: boolean; tenantAdmin?: boolean }): NavigationNode[] {
   const allowed = new Set(menuKeys);
   const visible = (leaf: NavigationLeaf) => {
-    if (partner) return leaf.audience === "partner";
+    if (partner) return leaf.audience === "partner" && allowed.has(leaf.key);
     if (leaf.audience === "partner") return false;
     if (leaf.platformAdminOnly) return platformAdmin;
+    if (["/staff", "/roles", "/api-keys"].includes(leaf.key)) return tenantAdmin;
     if (india && leaf.key !== "/india-content") return false;
     if (!india && leaf.key === "/india-content") return false;
     return allowed.has(leaf.key);

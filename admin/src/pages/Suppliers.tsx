@@ -14,7 +14,7 @@ import {
 import { api, errorText } from "../api";
 import { useConfirm } from "../confirm";
 import { formatTime, useLoad } from "../hooks";
-import { useIsAdmin, usePermission } from "../me";
+import { usePermission } from "../me";
 
 type SupplierAccount = {
   id: number;
@@ -36,7 +36,7 @@ type SupplierRow = {
 };
 
 export default function Suppliers() {
-  const isAdmin = useIsAdmin();
+  const isAdmin = usePermission("suppliers.manage");
   const canManage = usePermission("suppliers.manage") && isAdmin;
   const canManageStaff = usePermission("staff.manage");
   const canManageAccounts = canManage && canManageStaff;

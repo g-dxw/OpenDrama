@@ -48,13 +48,15 @@ import {
 } from "@ant-design/icons";
 import { ApiError, api, errorText } from "../api";
 import { useConfirm } from "../confirm";
-import { useIsAdmin, usePermission } from "../me";
+import { usePermission, useModuleEnabled } from "../me";
 
-function useLoad<T>(path: string, fallback: T) {
+function useLoad<T>(path: string, fallback: T, options: { enabled?: boolean } = {}) {
+  const enabled = options.enabled !== false;
   const [data, setData] = useState<T>(fallback);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const reload = () => {
+    if (!enabled) { setLoading(false); setError(null); return Promise.resolve(); }
     setLoading(true);
     return api<T>(path)
       .then((value) => {
@@ -71,7 +73,7 @@ function useLoad<T>(path: string, fallback: T) {
   useEffect(() => {
     reload();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [path]);
+  }, [path, enabled]);
   return { data, reload, loading, error };
 }
 
@@ -897,7 +899,7 @@ function UserCell({ row }: { row: AdminUserRow }) {
 
 /** 行内「调账」弹窗：预选用户、方向切换、快捷金额、改后余额实时预览。 */
 function CoinAdjustModal({ user, onClose, onSaved }: { user: AdminUserRow; onClose: () => void; onSaved: (text: string) => void }) {
-  const isAdmin = useIsAdmin();
+  const isAdmin = usePermission("users.manage");
   const canManage = usePermission("users.manage") && isAdmin;
   const [form] = Form.useForm<{ amount: number; reason: string }>();
   const [direction, setDirection] = useState<"add" | "sub">("add");
@@ -998,7 +1000,7 @@ function CoinAdjustModal({ user, onClose, onSaved }: { user: AdminUserRow; onClo
 
 /** 行内「编辑」弹窗：管理员修改昵称 / 邮箱 / 性别 / 地区 / 语言 / 头像 / 简介。 */
 function UserEditModal({ user, onClose, onSaved }: { user: AdminUserRow; onClose: () => void; onSaved: (text: string) => void }) {
-  const isAdmin = useIsAdmin();
+  const isAdmin = usePermission("users.manage");
   const canManage = usePermission("users.manage") && isAdmin;
   const [form] = Form.useForm();
   const [saving, setSaving] = useState(false);
@@ -1133,8 +1135,9 @@ function previewExpiry(detail: MembershipDetail | null, days: number, mode: stri
 
 /** 行内「会员」弹窗：真实状态 + 开通/续期 + 取消会员。 */
 function MembershipModal({ user, onClose, onSaved }: { user: AdminUserRow; onClose: () => void; onSaved: (text: string) => void }) {
-  const isAdmin = useIsAdmin();
-  const canManage = usePermission("users.manage") && isAdmin;
+  const plansEnabled = useModuleEnabled("plans");
+  const isAdmin = usePermission("users.manage");
+  const canManage = usePermission("users.manage") && isAdmin && plansEnabled;
   const [detail, setDetail] = useState<MembershipDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [granting, setGranting] = useState(false);
@@ -1143,7 +1146,7 @@ function MembershipModal({ user, onClose, onSaved }: { user: AdminUserRow; onClo
   const [showRevoke, setShowRevoke] = useState(false);
   const [form] = Form.useForm<{ plan_code: string; days: number; mode: "extend" | "restart"; reason: string }>();
   const [revokeForm] = Form.useForm<{ mode: "now" | "period_end"; reason: string }>();
-  const { data: plans } = useLoad<{ items: PlanItem[] }>("/admin/v1/plans", { items: [] });
+  const { data: plans } = useLoad<{ items: PlanItem[] }>("/admin/v1/plans", { items: [] }, { enabled: plansEnabled });
 
   const planCode = Form.useWatch("plan_code", form) ?? "monthly";
   const days = Form.useWatch("days", form);
@@ -1279,7 +1282,7 @@ function MembershipModal({ user, onClose, onSaved }: { user: AdminUserRow; onClo
           </Card>
 
           {!canManage ? (
-            <Alert type="info" showIcon message="当前账号没有用户管理权限，会员信息只读。" />
+            <Alert type="info" showIcon message="当前账号没有会员操作权限或会员套餐模块未开通，会员信息只读。" />
           ) : (
             <>
               <Form
@@ -1412,7 +1415,7 @@ function MembershipModal({ user, onClose, onSaved }: { user: AdminUserRow; onClo
 }
 
 export function UsersPage() {
-  const isAdmin = useIsAdmin();
+  const isAdmin = usePermission("users.manage");
   const canManage = usePermission("users.manage") && isAdmin;
   const [keyword, setKeyword] = useState("");
   const [query, setQuery] = useState("");
@@ -1438,7 +1441,7 @@ export function UsersPage() {
     reload();
   };
 
-  const adminOnly = canManage ? "" : "需要用户管理权限和平台管理员角色";
+  const adminOnly = canManage ? "" : "需要本租户的用户管理权限";
 
   return (
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
@@ -2542,7 +2545,7 @@ function dollarsToCents(value: number) {
 }
 
 export function PlansPage() {
-  const isAdmin = useIsAdmin();
+  const isAdmin = usePermission("plans.manage");
   const canManage = usePermission("plans.manage") && isAdmin;
   const { data, reload, loading } = useLoad<{ items: PlanItem[]; billing_mode?: BillingMode }>(
     "/admin/v1/plans",

@@ -23,7 +23,7 @@ import {
   SearchOutlined,
 } from "@ant-design/icons";
 import { api, errorText } from "../api";
-import { usePermission } from "../me";
+import { usePermission, useModuleEnabled } from "../me";
 import { DragRow, GRAY, Handle, LINE, RED, RED_SOFT, reorder, type DragVisual } from "./dragSort";
 
 type FloorStyle = "poster3" | "rank" | "grid2";
@@ -105,7 +105,7 @@ function MoveButtons({
   onUp: () => void;
   onDown: () => void;
 }) {
-  const canManage = usePermission("home_ops.manage");
+  const canManage = usePermission("groups.manage");
   return (
     <Space size={0}>
       <Tooltip title="上移">
@@ -141,6 +141,10 @@ function MoveButtons({
 type DragKey = { kind: "tab" | "banner" | "floor"; id: number };
 
 export function HomeOpsPage() {
+  const groupsEnabled = useModuleEnabled("groups");
+  const dramasEnabled = useModuleEnabled("dramas");
+  const canViewGroups = usePermission("groups.view") && groupsEnabled;
+  const canManageGroups = usePermission("groups.manage") && groupsEnabled;
   const canManage = usePermission("home_ops.manage");
   const [tabs, setTabs] = useState<TabRow[]>([]);
   const [groups, setGroups] = useState<GroupRow[]>([]);
@@ -163,9 +167,9 @@ export function HomeOpsPage() {
     try {
       const [tabRes, groupRes, bannerRes, dramaRes] = await Promise.all([
         api<{ items: TabRow[] }>("/admin/v1/tabs"),
-        api<{ items: GroupRow[] }>("/admin/v1/groups"),
+        groupsEnabled ? api<{ items: GroupRow[] }>("/admin/v1/groups") : Promise.resolve({ items: [] as GroupRow[] }),
         api<{ items: BannerRow[] }>("/admin/v1/banners"),
-        api<{ items: DramaHit[] }>("/admin/v1/dramas?status=published&page_size=100"),
+        dramasEnabled ? api<{ items: DramaHit[] }>("/admin/v1/dramas?status=published&page_size=100") : Promise.resolve({ items: [] as DramaHit[] }),
       ]);
       setTabs(tabRes.items);
       setGroups(groupRes.items.slice().sort((a, b) => a.position - b.position || a.id - b.id));
@@ -189,7 +193,7 @@ export function HomeOpsPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [groupsEnabled, dramasEnabled]);
 
   useEffect(() => {
     load();
@@ -218,7 +222,7 @@ export function HomeOpsPage() {
   };
 
   const saveFloorOrder = async (next: GroupRow[]) => {
-    if (!canManage) return;
+    if (!canManageGroups) return;
     setGroups(next);
     try {
       await Promise.all(
@@ -261,7 +265,7 @@ export function HomeOpsPage() {
   };
 
   const patchGroup = async (group: GroupRow, body: Partial<GroupRow>) => {
-    if (!canManage) return;
+    if (!canManageGroups) return;
     const previous = groups;
     setGroups(groups.map((item) => (item.id === group.id ? { ...item, ...body } : item)));
     try {
@@ -319,7 +323,7 @@ export function HomeOpsPage() {
   };
 
   const moveFloor = (fromId: number, toId: number) => {
-    if (!canManage) return;
+    if (!canManageGroups) return;
     const from = discoverFloors.findIndex((item) => item.id === fromId);
     const to = discoverFloors.findIndex((item) => item.id === toId);
     if (from < 0 || to < 0 || from === to) return;
@@ -349,7 +353,7 @@ export function HomeOpsPage() {
           size="small"
           styles={{ body: { paddingTop: 10 } }}
           extra={
-            <Button disabled={!canManage} size="small" icon={<PlusOutlined />} onClick={() => setAddingTab(true)}>
+            <Button disabled={!canManage || !groupsEnabled} size="small" icon={<PlusOutlined />} onClick={() => setAddingTab(true)}>
               添加频道
             </Button>
           }
@@ -394,7 +398,7 @@ export function HomeOpsPage() {
                           固定发现页
                         </Tag>
                       ) : (
-                        <Select disabled={!canManage}
+                        <Select disabled={!canManage || !groupsEnabled}
                           size="small"
                           style={{ width: "100%" }}
                           value={tab.group_id ?? undefined}
@@ -516,8 +520,8 @@ export function HomeOpsPage() {
             {banners.length < BANNER_LIMIT ? (
               <button
                 type="button"
-                disabled={!canManage}
-                onClick={() => setPicking(true)}
+                disabled={!canManage || !dramasEnabled}
+                onClick={() => { if (dramasEnabled) setPicking(true); }}
                 style={{
                   width: 176,
                   alignSelf: "stretch",
@@ -543,11 +547,11 @@ export function HomeOpsPage() {
           styles={{ body: { paddingTop: 10 } }}
           extra={
             <Space size={12}>
-              <Link to="/groups">管理分组内容</Link>
+              {canViewGroups && <Link to="/groups">管理分组内容</Link>}
               <Button
                 size="small"
                 icon={<PlusOutlined />}
-                disabled={!canManage || idleGroups.length === 0}
+                disabled={!canManageGroups || !groupsEnabled || idleGroups.length === 0}
                 onClick={() => setAddingFloor(true)}
               >
                 添加楼层
@@ -566,16 +570,16 @@ export function HomeOpsPage() {
               <DragRow
                 key={group.id}
                 columns={FLOOR_COLS}
-                draggable={canManage}
+                draggable={canManageGroups}
                 visual={visual}
                 onDragStart={() => setDrag({ kind: "floor", id: group.id })}
                 onDragEnd={endDrag}
                 onDragOver={() => {
-                  if (!canManage || drag?.kind !== "floor") return;
+                  if (!canManageGroups || drag?.kind !== "floor") return;
                   setOver({ kind: "floor", id: group.id });
                 }}
                 onDrop={() => {
-                  if (!canManage || drag?.kind !== "floor") return;
+                  if (!canManageGroups || drag?.kind !== "floor") return;
                   moveFloor(drag.id, group.id);
                   endDrag();
                 }}
@@ -583,14 +587,14 @@ export function HomeOpsPage() {
               >
                 {(onArm) => (
                   <>
-                    <Handle locked={!canManage} onArm={onArm} title="按住拖动排序，也可用右侧箭头微调" />
+                    <Handle locked={!canManageGroups} onArm={onArm} title="按住拖动排序，也可用右侧箭头微调" />
                     <div style={{ minWidth: 0 }}>
                       <Typography.Text style={{ fontSize: 13 }}>{group.name}</Typography.Text>
                       <Typography.Text type="secondary" style={{ marginLeft: 6, fontSize: 11 }}>
                         {group.drama_count} 部
                       </Typography.Text>
                     </div>
-                    <Select disabled={!canManage}
+                    <Select disabled={!canManageGroups}
                       size="small"
                       style={{ width: "100%" }}
                       value={group.style}
@@ -598,7 +602,7 @@ export function HomeOpsPage() {
                       onChange={(style) => patchGroup(group, { style })}
                       onClick={(event) => event.stopPropagation()}
                     />
-                    <Select disabled={!canManage}
+                    <Select disabled={!canManageGroups}
                       size="small"
                       style={{ width: "100%" }}
                       value={group.badge}
@@ -607,7 +611,7 @@ export function HomeOpsPage() {
                       onClick={(event) => event.stopPropagation()}
                     />
                     <Switch
-                      disabled={!canManage}
+                      disabled={!canManageGroups}
                       size="small"
                       checked={group.status === "active"}
                       onChange={(active) => patchGroup(group, { status: active ? "active" : "inactive" })}
@@ -631,7 +635,7 @@ export function HomeOpsPage() {
             );
           })}
             {discoverFloors.length === 0 ? (
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有启用的分组" />
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={groupsEnabled ? "还没有启用的分组" : "首页分组模块未开通"} />
             ) : null}
           </Space>
         </Card>
@@ -795,7 +799,7 @@ export function HomeOpsPage() {
         groups={idleGroups}
         onCancel={() => setAddingFloor(false)}
         onPick={async (groupId) => {
-          if (!canManage) return;
+          if (!canManageGroups) return;
           const group = groups.find((item) => item.id === groupId);
           if (!group) return;
           await patchGroup(group, { status: "active", position: discoverFloors.length });
@@ -1667,7 +1671,7 @@ function AddFloorModal({
   onCancel: () => void;
   onPick: (groupId: number) => Promise<void>;
 }) {
-  const canManage = usePermission("home_ops.manage");
+  const canManage = usePermission("groups.manage");
   const [groupId, setGroupId] = useState<number | null>(null);
   return (
     <Modal

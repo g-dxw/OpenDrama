@@ -1,15 +1,10 @@
-const CURRENT_TENANT_KEY = "jjtv_admin_tenant";
-export const DEFAULT_TENANT_ID = "jjtv";
-export const INDIA_TENANT_ID = "india-short-drama";
-
-export function getCurrentTenantId(): string {
-  return localStorage.getItem(CURRENT_TENANT_KEY) || DEFAULT_TENANT_ID;
-}
-export function setCurrentTenantId(id: string): void {
-  localStorage.setItem(CURRENT_TENANT_KEY, id);
-}
+import { CURRENT_ENTRY, supportSession } from './entry';
+export const DEFAULT_TENANT_ID = 'jjtv';
+export const INDIA_TENANT_ID = 'india-short-drama';
+let boundTenantId = CURRENT_ENTRY.kind === 'support' ? supportSession()?.tenant_id || '' : '';
+export function getCurrentTenantId(): string { return boundTenantId; }
+export function setCurrentTenantId(id: string): void { boundTenantId = id; }
 export function tenantHeaders(path: string): Record<string, string> {
-  if (/\/(?:auth|auth\/me)\//.test(path) || /\/auth\/me$/.test(path) ||
-      /^\/admin\/v1\/tenants(?:\?|$)/.test(path)) return {};
-  return { "X-JJTV-Tenant": getCurrentTenantId() };
+  if (!['tenant','support'].includes(CURRENT_ENTRY.kind) || /\/auth\//.test(path) || path.endsWith('/context')) return {};
+  return boundTenantId ? { 'X-JJTV-Tenant': boundTenantId } : {};
 }

@@ -2,6 +2,8 @@ import { createContext, useContext } from "react";
 
 export type Tenant = {
   id: string;
+  code?: string;
+  version?: number;
   name: string;
   kind: "native" | "india_legacy";
   status: "active" | "paused";

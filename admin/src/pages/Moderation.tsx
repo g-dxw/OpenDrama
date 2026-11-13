@@ -28,7 +28,7 @@ import {
 } from "@ant-design/icons";
 import { api, errorText } from "../api";
 import { useConfirm } from "../confirm";
-import { useIsAdmin, usePermission } from "../me";
+import { usePermission } from "../me";
 
 /**
  * 自动审核配置：用 OpenAI 模型在评论落库前给出 allow / review / block 判定。
@@ -107,7 +107,7 @@ const STATUS_LABEL: Record<string, string> = {
 const SAMPLE = "Best episode yet! Where can I watch the next one?";
 
 export default function Moderation() {
-  const isAdmin = useIsAdmin();
+  const isAdmin = usePermission("moderation.manage");
   const canManage = usePermission("moderation.manage") && isAdmin;
   const canTest = usePermission("moderation.view");
   const [form] = Form.useForm<Settings>();

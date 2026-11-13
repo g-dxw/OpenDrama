@@ -1,7 +1,7 @@
 import { NAVIGATION, navigationLeaves, navigationPath } from "./navigation";
 
-export type TenantRole = { id: string; name: string; permissions: string[]; version: number; builtin_key: string | null };
-export type PermissionEntry = { key: string; label: string; group: string; requires: string[]; menu_key?: string };
+export type TenantRole = { id: string; name: string; permissions: string[]; version: number; builtin_key: string | null; kind?: 'business' | 'tenant_admin' };
+export type PermissionEntry = { key: string; label: string; group: string; requires: string[]; enabled?: boolean; menu_key?: string };
 export type TenantRolesPayload = { roles: TenantRole[]; catalog: PermissionEntry[] };
 export function changePermission(current: string[], key: string, checked: boolean, catalog: PermissionEntry[]): string[] {
   const entries = new Map(catalog.map(entry => [entry.key, entry]));

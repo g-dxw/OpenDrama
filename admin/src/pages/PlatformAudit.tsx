@@ -1,0 +1,12 @@
+import { useCallback, useEffect, useState } from 'react';
+import { Alert, Button, Card, Select, Space, Table, Tag, Typography } from 'antd';
+import { api, errorText } from '../api';
+import type { BusinessTenant } from '../identity';
+type AuditRow = { id?: number; created_at?: string; actor_id?: number; actor_username?: string; tenant_id?: string; tenant_name?: string; action?: string; outcome?: string; payload?: { tenant_id?: string; outcome?: string } };
+export default function PlatformAudit() {
+  const [tenants, setTenants] = useState<BusinessTenant[]>([]); const [tenantId, setTenantId] = useState<string>(); const [rows, setRows] = useState<AuditRow[]>([]); const [loading, setLoading] = useState(false); const [error, setError] = useState('');
+  useEffect(() => { void api<BusinessTenant[]>('/platform/v1/tenants').then(setTenants).catch(() => {}); }, []);
+  const load = useCallback(async () => { setLoading(true); setError(''); try { const result = await api<{ items: AuditRow[] }>('/platform/v1/audit' + (tenantId ? '?tenant_id=' + encodeURIComponent(tenantId) : '')); setRows(result.items); } catch (e) { setError(errorText(e)); } finally { setLoading(false); } }, [tenantId]);
+  useEffect(() => { void load(); }, [load]);
+  return <Space direction="vertical" size="middle" style={{ width: '100%' }}><Card><Space direction="vertical" style={{ width: '100%' }}><Typography.Title level={4} style={{ margin: 0 }}>平台审计</Typography.Title><Typography.Text type="secondary">查看租户管理及平台支持访问记录。</Typography.Text><Space wrap><Select aria-label="按租户筛选审计" allowClear placeholder="全部租户" value={tenantId} onChange={setTenantId} style={{ minWidth: 220 }} options={tenants.map(tenant => ({ value: tenant.id, label: tenant.name }))} /><Button onClick={() => void load()}>刷新</Button></Space></Space></Card>{error && <Alert type="error" showIcon message={error} />}<Table<AuditRow> rowKey={(row, index) => String(row.id ?? index)} dataSource={rows} loading={loading} scroll={{ x: 700 }} columns={[{ title: '时间', render: (_, row) => row.created_at ? new Date(row.created_at).toLocaleString() : '—' },{ title: '操作', dataIndex: 'action' },{ title: '操作人', render: (_, row) => row.actor_username || row.actor_id || '—' },{ title: '租户', render: (_, row) => row.tenant_name || tenants.find(tenant => tenant.id === (row.tenant_id || row.payload?.tenant_id))?.name || row.tenant_id || row.payload?.tenant_id || '—' },{ title: '结果', render: (_, row) => <Tag>{row.outcome || row.payload?.outcome || '已记录'}</Tag> }]} /></Space>;
+}

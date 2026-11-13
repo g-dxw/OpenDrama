@@ -17,7 +17,7 @@ import {
 import { api, errorText } from "../api";
 import { useConfirm } from "../confirm";
 import { formatTime, useLoad } from "../hooks";
-import { ROLE_LABELS, useIsAdmin, usePermission } from "../me";
+import { ROLE_LABELS, useCanAdministerTenant, usePermission } from "../me";
 
 type KeyState = "active" | "expiring" | "expired" | "revoked";
 
@@ -46,7 +46,7 @@ type Summary = {
   total: number;
 };
 
-type StaffRow = { id: number; username: string; display_name: string; role: string; status: string };
+type StaffRow = { id: number; username: string; display_name: string; role?: string; role_name?: string; is_tenant_admin?: boolean; is_partner?: boolean; status: string };
 
 const SCOPE_LABELS: Record<string, string> = {
   read: "读",
@@ -91,7 +91,7 @@ function scopeText(scopes: string[]): string {
 }
 
 export default function ApiKeys() {
-  const isAdmin = useIsAdmin();
+  const isAdmin = useCanAdministerTenant();
   const canManage = usePermission("api_keys.manage") && isAdmin;
   const { confirm, confirmModal } = useConfirm();
 
@@ -124,14 +124,14 @@ export default function ApiKeys() {
     { items: [], summary: { active: 0, expiring: 0, expired: 0, revoked: 0, total: 0 }, total: 0 }
   );
 
-  const staff = useLoad<{ items: StaffRow[] }>("/admin/v1/staff", { items: [] }, { enabled: canManage && createOpen });
+  const staff = useLoad<{ items: StaffRow[] }>("/tenant/v1/staff", { items: [] }, { enabled: canManage && createOpen });
   const staffOptions = useMemo(
     () =>
       staff.data.items
         .filter((row) => row.status === "active")
         .map((row) => ({
           value: row.id,
-          label: `${row.username}（${ROLE_LABELS[row.role] ?? row.role}）`,
+          label: `${row.username}（${row.role_name || (row.is_tenant_admin ? "租户管理员" : row.is_partner ? "上剧方账号" : row.role ? ROLE_LABELS[row.role] || row.role : "租户员工")}）`,
         })),
     [staff.data.items]
   );

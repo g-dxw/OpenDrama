@@ -32,7 +32,7 @@ import {
 } from "@ant-design/icons";
 import type { UploadProps } from "antd";
 import { api, errorText } from "../api";
-import { usePermission } from "../me";
+import { usePermission, useModuleEnabled } from "../me";
 import EpisodesPanel from "./EpisodesPanel";
 import { PublishPanel } from "./StagePages";
 import { DramaGroupsPanel } from "./Groups";
@@ -71,8 +71,10 @@ export default function DramaEdit() {
   const canPricing = usePermission("dramas.pricing");
   const canPublish = usePermission("dramas.publish");
   const canDelete = usePermission("dramas.delete");
-  const canViewGroups = usePermission("groups.view");
-  const canViewTags = usePermission("tags.view");
+  const groupsEnabled = useModuleEnabled("groups");
+  const tagsEnabled = useModuleEnabled("tags");
+  const canViewGroups = usePermission("groups.view") && groupsEnabled;
+  const canViewTags = usePermission("tags.view") && tagsEnabled;
   const [form] = Form.useForm();
   const [drama, setDrama] = useState<Drama | null>(null);
   const [tagOptions, setTagOptions] = useState<TagOption[]>([]);
@@ -141,7 +143,8 @@ export default function DramaEdit() {
   const onSave = async (values: any) => {
     if (!(canWrite || canPricing || canUpload)) return;
     const payload: Record<string, unknown> = {};
-    if (canWrite) for (const key of ["title", "synopsis", "tag_ids"]) payload[key] = values[key];
+    if (canWrite) for (const key of ["title", "synopsis"]) payload[key] = values[key];
+    if (canWrite && canViewTags) payload.tag_ids = values.tag_ids;
     if (canPricing) for (const key of ["free_episode_count", "coin_price_per_episode"]) payload[key] = values[key];
     if (canUpload) payload.cover_url = values.cover_url;
     setSaving(true);
@@ -423,7 +426,7 @@ export default function DramaEdit() {
               <Input.TextArea rows={6} maxLength={20000} showCount placeholder="请输入剧情简介" />
             </Form.Item>
 
-            <Form.Item label="标签" name="tag_ids" style={{ maxWidth: 640 }}>
+            {canViewTags && <Form.Item label="标签" name="tag_ids" style={{ maxWidth: 640 }}>
               <Select
                 mode="multiple"
                 placeholder="选择标签"
@@ -434,7 +437,7 @@ export default function DramaEdit() {
                   label: `${t.name_zh || t.name_en}（${t.name_en}）`,
                 }))}
               />
-            </Form.Item>
+            </Form.Item>}
 
             <Row gutter={24} style={{ maxWidth: 640 }}>
               <Col span={12}>
