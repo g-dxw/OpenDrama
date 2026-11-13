@@ -1,134 +1,13 @@
 {
   "provider_repository": "88jj-com/india-short-drama",
-  "provider_source_sha": "2d5d88a5b6b956f95b92b4bc18dab62e93d202ce",
+  "provider_source_sha": "21bcc5c578d5f11f615c4ec53b5585027b5dfd16",
   "canonical_sha256": {
-    "openapi.json": "0b67a545b2dbebc9cb8a7e2a1b034f79d27285c588f8f4b7339ff9565ddee133",
-    "openapi.yaml": "0b67a545b2dbebc9cb8a7e2a1b034f79d27285c588f8f4b7339ff9565ddee133"
+    "openapi.json": "f9635c1839b9e005e834f0eebf4068a41cde1f0e6a2a087627bbed1734ae00f3",
+    "openapi.yaml": "f9635c1839b9e005e834f0eebf4068a41cde1f0e6a2a087627bbed1734ae00f3"
   },
-  "scope": "Fixed India content integration; snapshot is not a claim about the live deployed SHA.",
+  "canonicalization": "Recursively sorted object keys, JSON.stringify without whitespace, UTF-8",
+  "scope": "Fixed India content integration using the dedicated default-off JJTV client password provider; this snapshot is not a production admission claim.",
   "paths": {
-    "/auth/refresh": {
-      "post": {
-        "operationId": "post_auth_refresh",
-        "tags": [
-          "auth"
-        ],
-        "security": [],
-        "responses": {
-          "200": {
-            "description": "Success; request_id permits correlation",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "data": {},
-                    "request_id": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "data",
-                    "request_id"
-                  ]
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Structured domain error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Structured domain error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Structured domain error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Structured domain error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Structured domain error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Structured domain error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "429": {
-            "description": "Structured domain error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        },
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "refresh_token": {
-                    "type": "string",
-                    "minLength": 20,
-                    "maxLength": 500
-                  }
-                },
-                "required": [
-                  "refresh_token"
-                ]
-              }
-            }
-          }
-        },
-        "description": "Rotate ordinary internal business credentials under their original policy. Direct staff requests fail with LOGTO_STAFF_EXTERNAL_PROOF_REQUIRED and must use /auth/logto/staff/refresh with a new resource proof. Neither path advances the original API TOTP time."
-      }
-    },
     "/me": {
       "get": {
         "operationId": "get_me",
@@ -2131,284 +2010,6 @@
         }
       }
     },
-    "/configuration": {
-      "get": {
-        "operationId": "get_configuration",
-        "tags": [
-          "configuration"
-        ],
-        "security": [],
-        "responses": {
-          "200": {
-            "description": "Success",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "data": {
-                      "type": "object",
-                      "properties": {
-                        "version": {
-                          "type": "integer"
-                        },
-                        "autoplay": {
-                          "type": "boolean"
-                        },
-                        "maintenance": {
-                          "type": "boolean"
-                        },
-                        "policy_version": {
-                          "type": "string"
-                        },
-                        "authentication": {
-                          "type": "object",
-                          "additionalProperties": false,
-                          "properties": {
-                            "demo_login_enabled": {
-                              "type": "boolean"
-                            },
-                            "admin_password_enabled": {
-                              "type": "boolean"
-                            },
-                            "consumer_login_enabled": {
-                              "type": "boolean",
-                              "description": "Whether the server-selected identity mode can issue consumer business sessions. First-party capability is explicit; Logto mode still requires its configured Viewer application."
-                            },
-                            "consumer_account_sync_enabled": {
-                              "type": "boolean",
-                              "description": "Whether the selected mode can establish the server-authoritative business session used for personal synchronization. Does not migrate external identities."
-                            },
-                            "consumer_unavailable_reason": {
-                              "enum": [
-                                null,
-                                "disabled",
-                                "configuration_required"
-                              ],
-                              "description": "Selected consumer mode readiness reason; null when enabled. Readiness is not production account or provider acceptance evidence."
-                            },
-                            "password_staff_roles": {
-                              "type": "object",
-                              "readOnly": true,
-                              "description": "Present for enabled server-configured staff rosters or scoped Admin password-only mode. Role categories only; no username, staff ID or credentials. Old servers/default empty rosters omit this descriptor. Does not grant authority or verify a real person/MFA.",
-                              "additionalProperties": false,
-                              "properties": {
-                                "version": {
-                                  "type": "integer",
-                                  "const": 1
-                                },
-                                "roles": {
-                                  "type": "array",
-                                  "minItems": 1,
-                                  "maxItems": 6,
-                                  "uniqueItems": true,
-                                  "contains": {
-                                    "const": "admin"
-                                  },
-                                  "items": {
-                                    "type": "string",
-                                    "enum": [
-                                      "admin",
-                                      "editor",
-                                      "reviewer",
-                                      "finance",
-                                      "support",
-                                      "growth"
-                                    ]
-                                  }
-                                }
-                              },
-                              "required": [
-                                "version",
-                                "roles"
-                              ]
-                            },
-                            "logto": {
-                              "$ref": "#/components/schemas/LogtoCapability"
-                            },
-                            "identity_mode": {
-                              "type": "string",
-                              "enum": [
-                                "logto",
-                                "first_party"
-                              ],
-                              "description": "Server-selected mode. Absent on older servers; no client-selected authentication fallback."
-                            },
-                            "first_party": {
-                              "$ref": "#/components/schemas/FirstPartyCapability"
-                            },
-                            "better_auth": {
-                              "$ref": "#/components/schemas/ViewerBetterAuthCapability"
-                            },
-                            "staff_password_only_enabled": {
-                              "type": "boolean",
-                              "const": true,
-                              "readOnly": true,
-                              "description": "Present only when the application-scoped Admin password-only mode is enabled. Does not select consumer authentication mode."
-                            }
-                          },
-                          "required": [
-                            "demo_login_enabled",
-                            "admin_password_enabled",
-                            "consumer_login_enabled",
-                            "consumer_account_sync_enabled",
-                            "consumer_unavailable_reason"
-                          ]
-                        },
-                        "max_concurrent_playback": {
-                          "type": "integer",
-                          "minimum": 0,
-                          "maximum": 10
-                        },
-                        "content_classification": {
-                          "type": "object",
-                          "description": "Client write-capability descriptor, not content supply or licensing approval. Absent on old servers; editors must keep new controls disabled there.",
-                          "properties": {
-                            "version": {
-                              "const": 1
-                            },
-                            "writable_formats": {
-                              "type": "array",
-                              "items": {
-                                "enum": [
-                                  "unknown",
-                                  "micro_series",
-                                  "complete_short_film"
-                                ]
-                              }
-                            },
-                            "collections": {
-                              "type": "array",
-                              "items": {
-                                "type": "object",
-                                "properties": {
-                                  "key": {
-                                    "const": "india_launch"
-                                  },
-                                  "required_format": {
-                                    "const": "micro_series"
-                                  }
-                                },
-                                "required": [
-                                  "key",
-                                  "required_format"
-                                ]
-                              }
-                            }
-                          },
-                          "required": [
-                            "version",
-                            "writable_formats",
-                            "collections"
-                          ]
-                        },
-                        "ai_provenance": {
-                          "$ref": "#/components/schemas/AiProvenanceCapability"
-                        },
-                        "age_policy": {
-                          "$ref": "#/components/schemas/EffectiveAgePolicy"
-                        }
-                      },
-                      "required": [
-                        "authentication",
-                        "age_policy"
-                      ]
-                    },
-                    "request_id": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "data",
-                    "request_id"
-                  ]
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Structured domain error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Structured domain error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Structured domain error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Structured domain error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Structured domain error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "413": {
-            "description": "Structured domain error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "429": {
-            "description": "Structured domain error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Invalid or unavailable stored age configuration; fails closed without changing access or account PINs.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/admin/episodes/{id}/uploads": {
       "post": {
         "operationId": "post_admin_episodes_id_uploads",
@@ -4117,395 +3718,6 @@
         ]
       }
     },
-    "/auth/admin/login": {
-      "post": {
-        "operationId": "post_auth_admin_login",
-        "tags": [
-          "auth"
-        ],
-        "security": [],
-        "responses": {
-          "200": {
-            "description": "Success; request_id permits correlation",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "data": {
-                      "oneOf": [
-                        {
-                          "$ref": "#/components/schemas/Login"
-                        },
-                        {
-                          "$ref": "#/components/schemas/StaffMfaChallenge"
-                        }
-                      ]
-                    },
-                    "request_id": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "data",
-                    "request_id"
-                  ]
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Structured domain error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Structured domain error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Structured domain error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Structured domain error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Structured domain error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Structured domain error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "429": {
-            "description": "Structured domain error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Structured domain error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        },
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AdminPasswordLogin"
-              }
-            }
-          }
-        },
-        "description": "Configured password staff login. Body cannot choose role. Optional named-roster mfa_required returns only a short-lived MFA challenge; no session exists before successful TOTP. Default and legacy administrator/reviewer login retain the existing session shape. In explicit first_party mode, the named configured identity must already resolve to a matching active physical staff user. Missing enrollment returns FIRST_PARTY_STAFF_BINDING_REQUIRED; Logto-managed ownership returns ACCOUNT_MIGRATION_REQUIRED. This route never bootstraps or migrates a staff user in that mode."
-      }
-    },
-    "/auth/admin/mfa": {
-      "post": {
-        "operationId": "post_auth_admin_mfa",
-        "tags": [
-          "auth"
-        ],
-        "security": [],
-        "responses": {
-          "200": {
-            "description": "Success; request_id permits correlation",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "data": {
-                      "$ref": "#/components/schemas/Login"
-                    },
-                    "request_id": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "data",
-                    "request_id"
-                  ]
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Structured domain error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Structured domain error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Structured domain error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Structured domain error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Structured domain error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Structured domain error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "429": {
-            "description": "Structured domain error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Structured domain error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        },
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/StaffMfaVerification"
-              }
-            }
-          }
-        },
-        "description": "Complete the current server-bound password challenge with a six-digit TOTP. Atomic single use, seed replay watermark, expiry and account quota apply. Current role/credential/MFA generation is rechecked; no password-only fallback. Restore seed-rotation guard returns503."
-      }
-    },
-    "/auth/admin/mfa/cancel": {
-      "post": {
-        "operationId": "post_auth_admin_mfa_cancel",
-        "tags": [
-          "auth"
-        ],
-        "security": [],
-        "responses": {
-          "200": {
-            "description": "Success; request_id permits correlation",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "data": {
-                      "type": "object",
-                      "additionalProperties": false,
-                      "required": [
-                        "cancelled"
-                      ],
-                      "properties": {
-                        "cancelled": {
-                          "type": "boolean",
-                          "const": true
-                        }
-                      }
-                    },
-                    "request_id": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "data",
-                    "request_id"
-                  ]
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Structured domain error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Structured domain error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Structured domain error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Structured domain error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Structured domain error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Structured domain error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "429": {
-            "description": "Structured domain error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Structured domain error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        },
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/StaffMfaCancellation"
-              }
-            }
-          }
-        },
-        "description": "Invalidate the supplied server-bound pending MFA challenge. Idempotent generic response; does not create a session."
-      }
-    },
     "/admin/episodes/{id}/reprocess": {
       "post": {
         "operationId": "post_admin_episodes_id_reprocess",
@@ -4771,24 +3983,27 @@
         }
       }
     },
-    "/auth/admin/mfa/enrollment": {
+    "/auth/jjtv/login": {
       "post": {
-        "operationId": "post_auth_admin_mfa_enrollment",
+        "operationId": "post_auth_jjtv_login",
         "tags": [
           "auth"
         ],
-        "security": [],
-        "description": "Managed first-party account only, authorized by its current password challenge and bound request identity. Confirmed or expired enrollment is refused. TOTP verification uses the existing /auth/admin/mfa endpoint; no business session exists before confirmation.",
+        "security": [
+          {
+            "jjtvClientSecret": []
+          }
+        ],
         "responses": {
           "200": {
-            "description": "Success",
+            "description": "Success; request_id permits correlation",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
                   "properties": {
                     "data": {
-                      "$ref": "#/components/schemas/FirstPartyStaffEnrollment"
+                      "$ref": "#/components/schemas/JjtvClientSession"
                     },
                     "request_id": {
                       "type": "string"
@@ -4871,6 +4086,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Structured domain error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         },
         "requestBody": {
@@ -4878,1377 +4103,1314 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/FirstPartyStaffEnrollmentRequest"
+                "$ref": "#/components/schemas/JjtvClientLogin"
               }
             }
           }
-        }
+        },
+        "description": "Default-off server-to-server JJTV managed-staff password authentication. Requires all three client headers, an explicitly allowlisted physical staff ID and its current enabled managed credential. No account creation, ownership migration or MFA enrollment. Returns only a content/media-scoped JJTV family; web administrator MFA is unchanged.",
+        "parameters": [
+          {
+            "name": "X-JJTV-Client-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "const": "jjtv"
+            }
+          },
+          {
+            "name": "X-JJTV-Operator-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{1,160}$"
+            },
+            "description": "Authenticated native JJTV operator identifier, derived by JJTV backend and bound to the session family."
+          }
+        ]
+      }
+    },
+    "/auth/jjtv/refresh": {
+      "post": {
+        "operationId": "post_auth_jjtv_refresh",
+        "tags": [
+          "auth"
+        ],
+        "security": [
+          {
+            "jjtvClientSecret": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; request_id permits correlation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/JjtvClientSession"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "request_id"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Structured domain error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Structured domain error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Structured domain error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Structured domain error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Structured domain error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Structured domain error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Structured domain error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Structured domain error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JjtvClientRefresh"
+              }
+            }
+          }
+        },
+        "description": "Rotate only this JJTV family with the same current client key, native operator, physical staff, role and credential version. Access lifetime is 15 minutes; refresh absolute expiry is bounded by the original family creation plus 8 hours and never extended. Reuse revokes the family. Generic /auth/refresh rejects JJTV families.",
+        "parameters": [
+          {
+            "name": "X-JJTV-Client-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "const": "jjtv"
+            }
+          },
+          {
+            "name": "X-JJTV-Operator-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{1,160}$"
+            },
+            "description": "Authenticated native JJTV operator identifier, derived by JJTV backend and bound to the session family."
+          }
+        ]
+      }
+    },
+    "/auth/jjtv/logout": {
+      "post": {
+        "operationId": "post_auth_jjtv_logout",
+        "tags": [
+          "auth"
+        ],
+        "security": [
+          {
+            "jjtvClientSecret": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; request_id permits correlation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "required": [
+                        "logged_out"
+                      ],
+                      "properties": {
+                        "logged_out": {
+                          "const": true
+                        }
+                      }
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "request_id"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Structured domain error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Structured domain error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Structured domain error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Structured domain error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Structured domain error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Structured domain error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Structured domain error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Structured domain error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JjtvClientRefresh"
+              }
+            }
+          }
+        },
+        "description": "Revoke only the matching JJTV family after client and operator verification. Does not log the physical user out of existing website sessions. Generic /auth/logout rejects JJTV families.",
+        "parameters": [
+          {
+            "name": "X-JJTV-Client-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "const": "jjtv"
+            }
+          },
+          {
+            "name": "X-JJTV-Operator-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{1,160}$"
+            },
+            "description": "Authenticated native JJTV operator identifier, derived by JJTV backend and bound to the session family."
+          }
+        ]
       }
     }
   },
-  "schemas": {
-    "AdminPasswordLogin": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "username": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 80
-        },
-        "password": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 128,
-          "writeOnly": true
-        }
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer"
       },
-      "required": [
-        "username",
-        "password"
-      ]
-    },
-    "AdminSeries": {
-      "allOf": [
-        {
-          "$ref": "#/components/schemas/Series"
-        },
-        {
-          "type": "object",
-          "properties": {
-            "ai_provenance": {
-              "$ref": "#/components/schemas/AiProvenanceDraft"
-            }
-          },
-          "description": "Authorized Admin-only private registry; never part of the public Series schema."
-        }
-      ]
-    },
-    "AiProvenanceCapability": {
-      "type": "object",
-      "readOnly": true,
-      "additionalProperties": false,
-      "properties": {
-        "version": {
-          "const": 1
-        },
-        "mode": {
-          "const": "draft_registry"
-        },
-        "evidence_purposes": {
-          "const": [
-            "rights",
-            "ai_provenance"
-          ]
-        },
-        "publication": {
-          "const": "hold"
-        }
-      },
-      "required": [
-        "version",
-        "mode",
-        "evidence_purposes",
-        "publication"
-      ],
-      "description": "Fixed public write capability only; no private provenance. Clients require exact supported values; missing/unknown capability disables registration and AI-purpose evidence uploads."
-    },
-    "AiProvenanceDraft": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "schema_version": {
-          "const": 1
-        },
-        "models": {
-          "type": "array",
-          "maxItems": 16,
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-              "scope": {
-                "type": "string",
-                "enum": [
-                  "video",
-                  "script",
-                  "cover",
-                  "subtitles",
-                  "promotion"
-                ]
-              },
-              "provider": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 160,
-                "pattern": "\\S"
-              },
-              "model": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 160,
-                "pattern": "\\S"
-              },
-              "model_version": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 100,
-                "pattern": "\\S"
-              },
-              "terms_version": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 100,
-                "pattern": "\\S"
-              },
-              "evidence_refs": {
-                "type": "array",
-                "maxItems": 16,
-                "items": {
-                  "$ref": "#/components/schemas/AiProvenanceEvidenceReference"
-                }
-              }
-            },
-            "required": [
-              "scope",
-              "provider",
-              "model",
-              "model_version",
-              "terms_version",
-              "evidence_refs"
-            ]
-          }
-        },
-        "inputs": {
-          "type": "array",
-          "maxItems": 64,
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-              "scope": {
-                "type": "string",
-                "enum": [
-                  "video",
-                  "script",
-                  "cover",
-                  "subtitles",
-                  "promotion"
-                ]
-              },
-              "kind": {
-                "type": "string",
-                "enum": [
-                  "script",
-                  "material",
-                  "music",
-                  "voice",
-                  "likeness"
-                ]
-              },
-              "source": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 2000,
-                "pattern": "\\S"
-              },
-              "evidence_refs": {
-                "type": "array",
-                "maxItems": 16,
-                "items": {
-                  "$ref": "#/components/schemas/AiProvenanceEvidenceReference"
-                }
-              }
-            },
-            "required": [
-              "scope",
-              "kind",
-              "source",
-              "evidence_refs"
-            ]
-          }
-        },
-        "human_reviews": {
-          "type": "array",
-          "maxItems": 32,
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-              "scope": {
-                "type": "string",
-                "enum": [
-                  "video",
-                  "script",
-                  "cover",
-                  "subtitles",
-                  "promotion"
-                ]
-              },
-              "source": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 2000,
-                "pattern": "\\S",
-                "description": "Private documentary claim only, never verified reviewer identity or approval."
-              },
-              "evidence_refs": {
-                "type": "array",
-                "maxItems": 16,
-                "items": {
-                  "$ref": "#/components/schemas/AiProvenanceEvidenceReference"
-                }
-              }
-            },
-            "required": [
-              "scope",
-              "source",
-              "evidence_refs"
-            ]
-          }
-        }
-      },
-      "required": [
-        "schema_version",
-        "models",
-        "inputs",
-        "human_reviews"
-      ],
-      "description": "Private draft registry only. Presence, including empty lists, blocks submit and publish. Scope never changes content_origin or grants permissions. Null/removal, client approval and reviewer IDs are unsupported."
-    },
-    "AiProvenanceEvidenceReference": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "evidence_ref": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 200,
-          "pattern": "^[A-Za-z0-9_-]+$"
-        },
-        "document_version": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 100,
-          "pattern": "\\S"
-        }
-      },
-      "required": [
-        "evidence_ref",
-        "document_version"
-      ],
-      "description": "Private same-series ready evidence file and exact immutable document version. No URLs or synthetic fixture references."
-    },
-    "EffectiveAgePolicy": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "age_restriction_enabled": {
-          "type": "boolean"
-        },
-        "parental_control_enabled": {
-          "type": "boolean"
-        },
-        "configuration_version": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 9007199254740991
-        },
-        "adapter": {
-          "const": "local_declaration_only"
-        },
-        "production_ready": {
-          "const": false
-        }
-      },
-      "required": [
-        "age_restriction_enabled",
-        "parental_control_enabled",
-        "configuration_version",
-        "adapter",
-        "production_ready"
-      ],
-      "description": "Independent optional local gates. Missing stored optional flags default to false/false; malformed stored configuration fails closed with503. Existing saved booleans are retained. Neither switch enables a production adapter or bypasses the mandatory A-rated adult declaration, rights, entitlement or session checks."
-    },
-    "Episode": {
-      "type": "object",
-      "properties": {
-        "id": {
-          "type": "string"
-        },
-        "series_id": {
-          "type": "string"
-        },
-        "episode_no": {
-          "type": "integer"
-        },
-        "title": {
-          "type": "string"
-        },
-        "duration_ms": {
-          "type": "integer"
-        },
-        "is_free": {
-          "type": "boolean"
-        },
-        "subtitle_url": {
-          "type": "string"
-        },
-        "media_status": {
-          "type": "string"
-        },
-        "subtitle_languages": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "media_profiles": {
-          "type": "array",
-          "items": {
-            "type": "object"
-          }
-        },
-        "subtitle_availability": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "enum": [
-            "provided",
-            "not_provided",
-            null
-          ]
-        },
-        "subtitle_unavailable_reason": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "maxLength": 1000
-        }
-      },
-      "required": [
-        "id",
-        "series_id",
-        "episode_no",
-        "title",
-        "duration_ms",
-        "is_free"
-      ]
-    },
-    "Error": {
-      "type": "object",
-      "properties": {
-        "code": {
-          "type": "string"
-        },
-        "message_key": {
-          "type": "string"
-        },
-        "retryable": {
-          "type": "boolean"
-        },
-        "request_id": {
-          "type": "string"
-        },
-        "details": {}
-      },
-      "required": [
-        "code",
-        "message_key",
-        "retryable",
-        "request_id"
-      ]
-    },
-    "EvidenceUpload": {
-      "type": "object",
-      "properties": {
-        "filename": {
-          "type": "string"
-        },
-        "size_bytes": {
-          "type": "integer"
-        },
-        "content_type": {
-          "type": "string",
-          "enum": [
-            "application/pdf",
-            "image/png",
-            "image/jpeg",
-            "text/plain"
-          ]
-        },
-        "document_version": {
-          "type": "string"
-        },
-        "purpose": {
-          "type": "string",
-          "enum": [
-            "rights",
-            "ai_provenance"
-          ],
-          "description": "Optional evidence purpose; omitted legacy files use rights. AI-purpose completion preserves the current rights evidence/license while resetting approval.",
-          "default": "rights"
-        }
-      },
-      "required": [
-        "filename",
-        "size_bytes",
-        "content_type",
-        "document_version"
-      ]
-    },
-    "FirstPartyCapability": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "enabled": {
-          "type": "boolean"
-        },
-        "registration_enabled": {
-          "type": "boolean"
-        },
-        "password_login_enabled": {
-          "type": "boolean"
-        },
-        "password_change_enabled": {
-          "type": "boolean"
-        },
-        "staff_password_enabled": {
-          "type": "boolean"
-        },
-        "staff_totp_configured": {
-          "type": "boolean"
-        },
-        "self_migration_enabled": {
-          "type": "boolean",
-          "description": "True only while Logto remains selected, its configured resource-token verifier is available, and the default-disabled FIRST_PARTY_SELF_MIGRATION_ENABLED staging gate is explicitly enabled. Missing means false. This does not activate first-party login or migrate staff."
-        },
-        "staff_self_migration_enabled": {
-          "type": "boolean",
-          "description": "Default false. Enables only authenticated Logto staff migration preparation with current API-verified MFA and the dedicated configured encryption key. It does not switch authentication mode or admit Logto-only sessions without API MFA."
-        },
-        "phone_login_enabled": {
-          "type": "boolean",
-          "description": "Default false. Requires explicit first_party mode and protected server-side SMS configuration. Submission acceptance is not authentication or delivery confirmation. Missing means disabled."
-        },
-        "whatsapp_login_enabled": {
-          "type": "boolean",
-          "description": "Default false. Requires an explicitly enabled protected WhatsApp Business configuration and an operator-declared approved authentication template. This flag does not establish real provider delivery or verification."
-        }
-      },
-      "required": [
-        "enabled",
-        "registration_enabled",
-        "password_login_enabled",
-        "password_change_enabled",
-        "staff_password_enabled",
-        "staff_totp_configured"
-      ],
-      "description": "Available only for explicit first_party mode. This does not confirm an existing staff binding, enable payments or migrate any external identity."
-    },
-    "FirstPartyStaffEnrollment": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "secret_base32": {
-          "type": "string",
-          "pattern": "^[A-Z2-7]{32}$"
-        },
-        "otpauth_uri": {
-          "type": "string",
-          "pattern": "^otpauth://totp/"
-        },
-        "expires_at": {
-          "type": "string",
-          "format": "date-time"
-        }
-      },
-      "required": [
-        "secret_base32",
-        "otpauth_uri",
-        "expires_at"
-      ],
-      "description": "Only the unexpired password challenge for this same managed account may obtain its unconfirmed seed; sent with Cache-Control:no-store. Never listed or returned to another administrator."
-    },
-    "FirstPartyStaffEnrollmentRequest": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "challenge_token": {
-          "type": "string",
-          "pattern": "^[A-Za-z0-9_-]{43}$"
-        }
-      },
-      "required": [
-        "challenge_token"
-      ]
-    },
-    "License": {
-      "type": "object",
-      "properties": {
-        "territories": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "languages": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "starts_at": {
-          "type": "string",
-          "format": "date-time"
-        },
-        "ends_at": {
-          "type": "string",
-          "format": "date-time"
-        },
-        "evidence_ref": {
-          "type": "string"
-        },
-        "approved_by": {
-          "type": "string"
-        },
-        "submitted_by": {
-          "type": "string"
-        },
-        "holder": {
-          "type": "string"
-        },
-        "license_version": {
-          "type": "string"
-        },
-        "platforms": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "enum": [
-              "android",
-              "web",
-              "ios"
-            ]
-          },
-          "minItems": 1
-        },
-        "monetization_modes": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "enum": [
-              "free",
-              "subscription",
-              "advertising"
-            ]
-          },
-          "minItems": 1
-        },
-        "allowed_uses": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "enum": [
-              "streaming",
-              "promotion",
-              "clips",
-              "adaptation",
-              "dubbing",
-              "ai_inputs",
-              "ai_voice",
-              "ai_likeness",
-              "offline_download"
-            ]
-          },
-          "minItems": 1,
-          "description": "offline_download records an explicit licensing claim subject to the existing independent content review. Its absence does not grant download rights. This declaration does not enable or authorize offline downloading."
-        },
-        "exclusive": {
-          "type": "boolean"
-        },
-        "withdrawal_terms": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "territories",
-        "languages",
-        "starts_at",
-        "ends_at",
-        "evidence_ref",
-        "holder",
-        "license_version",
-        "platforms",
-        "monetization_modes",
-        "allowed_uses",
-        "exclusive",
-        "withdrawal_terms"
-      ]
-    },
-    "Login": {
-      "type": "object",
-      "properties": {
-        "access_token": {
-          "type": "string"
-        },
-        "user": {
-          "$ref": "#/components/schemas/User"
-        },
-        "environment": {
-          "type": "string"
-        },
-        "refresh_token": {
-          "type": "string",
-          "description": "The existing rotating internal business refresh credential, distinct from any Logto refresh token."
-        },
-        "expires_at": {
-          "type": "string",
-          "format": "date-time",
-          "description": "Expiry of this internal access credential; direct staff authority is additionally bounded by staff_authorization.proof_expires_at."
-        },
-        "refresh_expires_at": {
-          "type": "string",
-          "format": "date-time",
-          "description": "Expiry of the internal refresh credential. Direct API TOTP preserves the original MFA freshness deadline; direct Logto-only preserves the original business family creation time plus 15 minutes. Neither deadline slides on renewal."
-        },
-        "staff_authorization": {
-          "$ref": "#/components/schemas/LogtoStaffAuthorization"
-        }
-      },
-      "required": [
-        "access_token",
-        "user",
-        "environment"
-      ]
-    },
-    "LogtoCapability": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "enabled": {
-          "type": "boolean"
-        },
-        "status": {
-          "enum": [
-            "ready",
-            "disabled",
-            "configuration_required"
-          ]
-        },
-        "endpoint": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "app_id": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "Viewer SPA application ID, or null when Viewer authentication is not configured. An Admin-only deployment keeps this null and scopes empty; employee login uses staff_app_id and staff_scopes independently."
-        },
-        "resource": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "scopes": {
-          "type": "array",
-          "items": {
-            "const": "session:exchange"
-          },
-          "maxItems": 1,
-          "description": "Viewer exchange scopes only. Empty when the Viewer application is not configured; this does not disable an explicitly available direct staff application or its separate complete staff_scopes."
-        },
-        "staff_enabled": {
-          "type": "boolean"
-        },
-        "staff_step_up": {
-          "enum": [
-            "existing_password_totp",
-            "api_totp",
-            "none"
-          ],
-          "description": "existing_password_totp retains legacy employee step-up; api_totp belongs only to direct_api_totp; none belongs only to explicitly selected direct_logto_only and does not assert verified MFA."
-        },
-        "staff_mode": {
-          "enum": [
-            "disabled",
-            "existing_password_totp",
-            "direct_api_totp",
-            "direct_logto_only"
-          ],
-          "description": "Optional on older providers. Selected server authentication authority, distinct from staff_enabled availability. Direct configuration selects direct_api_totp or direct_logto_only explicitly and retains that mode even when all named staff rows are disabled; it never falls back to password authority."
-        },
-        "staff_app_id": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "The independent Admin SPA public application ID when a staff login is available; null when staff_enabled is false. Never substitute the Viewer app_id."
-        },
-        "staff_scopes": {
-          "type": "array",
-          "uniqueItems": true,
-          "items": {
-            "type": "string",
-            "minLength": 1
-          },
-          "description": "Exact business API scopes for direct staff role bundles. These are separate from Viewer session:exchange. An SDK still requests its OIDC and offline scopes; wildcard scopes grant no authority. Current finite registry has 24 unique business scopes including session:exchange; complete bundles are defined by LogtoStaffRole policy, not wildcards. Empty when staff_enabled is false; this does not change the configured direct staff authority or permit password fallback."
-        },
-        "staff_mfa": {
-          "enum": [
-            null,
-            "api_totp"
-          ],
-          "description": "api_totp is advertised only for direct_api_totp, including when all named staff rows are disabled. direct_logto_only advertises null together with staff_step_up none; its business session truthfully has mfa_verified false. No client-supplied MFA result grants authority."
-        },
-        "staff_proof_max_age_seconds": {
-          "type": "integer",
-          "minimum": 30,
-          "maximum": 300,
-          "description": "Maximum direct staff authorization lease measured from the signed resource access token iat, never from exchange or refresh time."
-        }
-      },
-      "required": [
-        "enabled",
-        "status",
-        "endpoint",
-        "app_id",
-        "resource",
-        "scopes",
-        "staff_enabled",
-        "staff_step_up"
-      ]
-    },
-    "LogtoStaffAuthorization": {
-      "oneOf": [
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "mode": {
-              "const": "direct_api_totp"
-            },
-            "role": {
-              "$ref": "#/components/schemas/LogtoStaffRole"
-            },
-            "permissions": {
-              "type": "array",
-              "uniqueItems": true,
-              "items": {
-                "type": "string",
-                "minLength": 1
-              },
-              "description": "Effective permissions in the one active complete role bundle, derived and revalidated by the API. Logto roles, client claims and partial bundles do not grant business authority."
-            },
-            "proof_expires_at": {
-              "type": "string",
-              "format": "date-time",
-              "description": "End of this active business authorization lease, bounded by resource proof exp and iat + configured staff proof maximum age."
-            },
-            "mfa_authenticated_at": {
-              "type": "string",
-              "format": "date-time",
-              "description": "Time the API accepted TOTP. Refresh never advances this timestamp; the staff MFA freshness window is 15 minutes."
-            },
-            "mfa_verified": {
-              "const": true
-            }
-          },
-          "required": [
-            "mode",
-            "role",
-            "permissions",
-            "proof_expires_at",
-            "mfa_authenticated_at",
-            "mfa_verified"
-          ]
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "mode": {
-              "const": "direct_logto_only"
-            },
-            "role": {
-              "$ref": "#/components/schemas/LogtoStaffRole"
-            },
-            "permissions": {
-              "type": "array",
-              "uniqueItems": true,
-              "items": {
-                "type": "string",
-                "minLength": 1
-              },
-              "description": "Effective permissions in the one active complete role bundle, derived and revalidated by the API. Logto roles, client claims and partial bundles do not grant business authority."
-            },
-            "proof_expires_at": {
-              "type": "string",
-              "format": "date-time",
-              "description": "End of the current Logto-only access authorization lease: no later than resource proof exp, signed iat plus the configured 30-300 second maximum, or the original internal business family creation time plus 15 minutes."
-            },
-            "mfa_authenticated_at": {
-              "type": "null",
-              "description": "No API MFA was completed in Logto-only mode. This value is always null; the API does not manufacture an MFA time from Logto claims or a session creation time."
-            },
-            "mfa_verified": {
-              "const": false
-            }
-          },
-          "required": [
-            "mode",
-            "role",
-            "permissions",
-            "proof_expires_at",
-            "mfa_authenticated_at",
-            "mfa_verified"
-          ]
-        }
-      ],
-      "description": "Mode-discriminated server authorization. Existing direct_api_totp retains its verified MFA fact and timestamp unchanged. Explicit direct_logto_only uses mfa_verified false and mfa_authenticated_at null; roles and complete permissions remain server-verified in both modes."
-    },
-    "LogtoStaffRole": {
-      "type": "string",
-      "enum": [
-        "admin",
-        "editor",
-        "reviewer",
-        "finance",
-        "support",
-        "growth"
-      ],
-      "description": "One active server-validated business role. The Admin application identity is not itself the admin business role."
-    },
-    "MemberWindow": {
-      "description": "Optional series-wide member window. Missing or standard preserves free/paid episode rules. Exclusive and pre-public early access require a current verified source granting both catalog and exclusive content; after public_at, existing episode rules apply. Publication requires subscription rights.",
-      "oneOf": [
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "mode"
-          ],
-          "properties": {
-            "mode": {
-              "const": "standard"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "mode"
-          ],
-          "properties": {
-            "mode": {
-              "const": "exclusive"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "mode",
-            "public_at"
-          ],
-          "properties": {
-            "mode": {
-              "const": "early_access"
-            },
-            "public_at": {
-              "type": "string",
-              "format": "date-time",
-              "description": "UTC timestamp ending in Z."
-            }
-          }
-        }
-      ]
-    },
-    "PublicAttribution": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "title",
-        "creator",
-        "source_url",
-        "license_name",
-        "license_url",
-        "changes"
-      ],
-      "properties": {
-        "title": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 200
-        },
-        "creator": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 300
-        },
-        "source_url": {
-          "type": "string",
-          "format": "uri",
-          "maxLength": 2000,
-          "description": "Public HTTPS source; no credentials, query, fragment, custom port or local/private literal IP."
-        },
-        "license_name": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 100
-        },
-        "license_url": {
-          "type": "string",
-          "format": "uri",
-          "maxLength": 2000,
-          "description": "Public HTTPS licence URL; no credentials, query, fragment or custom port."
-        },
-        "changes": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 2000
-        },
-        "notice": {
-          "type": "string",
-          "maxLength": 3000
-        }
+      "jjtvClientSecret": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-JJTV-Client-Secret",
+        "description": "Independent server-only JJTV client key over HTTPS; never supplied to a browser or reused as an MFA key."
       }
     },
-    "Rights": {
-      "type": "object",
-      "properties": {
-        "territories": {
-          "type": "array",
-          "items": {
+    "schemas": {
+      "User": {
+        "type": "object",
+        "properties": {
+          "id": {
             "type": "string"
-          }
-        },
-        "languages": {
-          "type": "array",
-          "items": {
+          },
+          "name": {
             "type": "string"
-          }
-        },
-        "starts_at": {
-          "type": "string",
-          "format": "date-time"
-        },
-        "ends_at": {
-          "type": "string",
-          "format": "date-time"
-        },
-        "evidence_ref": {
-          "type": "string"
-        },
-        "approved_by": {
-          "type": "string"
-        },
-        "submitted_by": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "territories",
-        "languages",
-        "starts_at",
-        "ends_at",
-        "evidence_ref"
-      ]
-    },
-    "Series": {
-      "type": "object",
-      "properties": {
-        "id": {
-          "type": "string"
-        },
-        "title": {
-          "type": "string"
-        },
-        "title_hi": {
-          "type": "string"
-        },
-        "synopsis": {
-          "type": "string"
-        },
-        "genre": {
-          "type": "string"
-        },
-        "language": {
-          "type": "string"
-        },
-        "content_origin": {
-          "type": "string",
-          "enum": [
-            "live_action",
-            "ai_generated",
-            "ai_assisted",
-            "animation"
-          ]
-        },
-        "age_rating": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "enum": [
-            "U",
-            "U/A 7+",
-            "U/A 13+",
-            "U/A 16+",
-            "A",
-            null
-          ]
-        },
-        "descriptors": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "status": {
-          "type": "string"
-        },
-        "episode_count": {
-          "type": "integer"
-        },
-        "free_episode_count": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 1000,
-          "description": "Number of leading free episodes; publication still requires this count not exceed the actual episode count."
-        },
-        "poster_theme": {
-          "type": "string"
-        },
-        "rights": {
-          "oneOf": [
-            {
-              "$ref": "#/components/schemas/Rights"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "version": {
-          "type": "integer"
-        },
-        "cover_url": {
-          "type": "string"
-        },
-        "tags": {
-          "type": "array",
-          "maxItems": 20,
-          "items": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 80
-          }
-        },
-        "actors": {
-          "type": "array",
-          "maxItems": 20,
-          "items": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 80
-          }
-        },
-        "search_aliases": {
-          "type": "array",
-          "maxItems": 20,
-          "items": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 80
-          }
-        },
-        "created_at": {
-          "type": "string",
-          "format": "date-time"
-        },
-        "updated_at": {
-          "type": "string",
-          "format": "date-time"
-        },
-        "audio_languages": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "subtitle_languages": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "release_status": {
-          "type": "string"
-        },
-        "availability": {
-          "enum": [
-            "available",
-            "unavailable"
-          ]
-        },
-        "public_attribution": {
-          "$ref": "#/components/schemas/PublicAttribution"
-        },
-        "content_format": {
-          "type": "string",
-          "enum": [
-            "unknown",
-            "micro_series",
-            "complete_short_film"
-          ],
-          "default": "unknown",
-          "description": "Explicit narrative format. unknown preserves unclassified legacy records; no inference from duration, language, content_origin or episode count."
-        },
-        "content_collections": {
-          "type": "array",
-          "items": {
+          },
+          "avatar_seed": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 11
+          },
+          "role": {
             "type": "string",
             "enum": [
-              "india_launch"
+              "viewer",
+              "editor",
+              "reviewer",
+              "support",
+              "finance",
+              "growth",
+              "admin"
             ]
           },
-          "maxItems": 1,
-          "uniqueItems": true,
-          "default": [],
-          "description": "Editorial collection. India Launch requires explicitly classified micro_series; never grants region, language, age, publication or monetization rights."
+          "age_verified": {
+            "type": "boolean"
+          },
+          "roles": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/components/schemas/LogtoStaffRole"
+            },
+            "description": "Optional direct-staff projection: exactly the current active business role, consistent with role. It is not a list of self-selected or Console roles."
+          },
+          "permissions": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "Effective permissions in the one active complete role bundle, derived and revalidated by the API. Logto roles, client claims and partial bundles do not grant business authority."
+          }
         },
-        "member_window": {
-          "$ref": "#/components/schemas/MemberWindow"
-        }
+        "required": [
+          "id",
+          "name",
+          "role",
+          "age_verified"
+        ]
       },
-      "required": [
-        "id",
-        "title",
-        "synopsis",
-        "genre",
-        "language",
-        "content_origin",
-        "age_rating",
-        "status",
-        "episode_count",
-        "free_episode_count",
-        "version"
-      ],
-      "allOf": [
-        {
-          "if": {
+      "LogtoStaffRole": {
+        "type": "string",
+        "enum": [
+          "admin",
+          "editor",
+          "reviewer",
+          "finance",
+          "support",
+          "growth"
+        ],
+        "description": "One active server-validated business role. The Admin application identity is not itself the admin business role."
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message_key": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "details": {}
+        },
+        "required": [
+          "code",
+          "message_key",
+          "retryable",
+          "request_id"
+        ]
+      },
+      "AdminSeries": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Series"
+          },
+          {
+            "type": "object",
             "properties": {
-              "status": {
-                "enum": [
-                  "published",
-                  "scheduled"
-                ]
+              "ai_provenance": {
+                "$ref": "#/components/schemas/AiProvenanceDraft"
               }
             },
-            "required": [
-              "status"
+            "description": "Authorized Admin-only private registry; never part of the public Series schema."
+          }
+        ]
+      },
+      "Series": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "title_hi": {
+            "type": "string"
+          },
+          "synopsis": {
+            "type": "string"
+          },
+          "genre": {
+            "type": "string"
+          },
+          "language": {
+            "type": "string"
+          },
+          "content_origin": {
+            "type": "string",
+            "enum": [
+              "live_action",
+              "ai_generated",
+              "ai_assisted",
+              "animation"
             ]
           },
-          "then": {
-            "properties": {
-              "age_rating": {
-                "enum": [
-                  "U",
-                  "U/A 7+",
-                  "U/A 13+",
-                  "U/A 16+",
-                  "A"
-                ]
-              },
-              "rights": {
+          "age_rating": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "U",
+              "U/A 7+",
+              "U/A 13+",
+              "U/A 16+",
+              "A",
+              null
+            ]
+          },
+          "descriptors": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "status": {
+            "type": "string"
+          },
+          "episode_count": {
+            "type": "integer"
+          },
+          "free_episode_count": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000,
+            "description": "Number of leading free episodes; publication still requires this count not exceed the actual episode count."
+          },
+          "poster_theme": {
+            "type": "string"
+          },
+          "rights": {
+            "oneOf": [
+              {
                 "$ref": "#/components/schemas/Rights"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "version": {
+            "type": "integer"
+          },
+          "cover_url": {
+            "type": "string"
+          },
+          "tags": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            }
+          },
+          "actors": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            }
+          },
+          "search_aliases": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            }
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "audio_languages": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "subtitle_languages": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "release_status": {
+            "type": "string"
+          },
+          "availability": {
+            "enum": [
+              "available",
+              "unavailable"
+            ]
+          },
+          "public_attribution": {
+            "$ref": "#/components/schemas/PublicAttribution"
+          },
+          "content_format": {
+            "type": "string",
+            "enum": [
+              "unknown",
+              "micro_series",
+              "complete_short_film"
+            ],
+            "default": "unknown",
+            "description": "Explicit narrative format. unknown preserves unclassified legacy records; no inference from duration, language, content_origin or episode count."
+          },
+          "content_collections": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "india_launch"
+              ]
+            },
+            "maxItems": 1,
+            "uniqueItems": true,
+            "default": [],
+            "description": "Editorial collection. India Launch requires explicitly classified micro_series; never grants region, language, age, publication or monetization rights."
+          },
+          "member_window": {
+            "$ref": "#/components/schemas/MemberWindow"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "synopsis",
+          "genre",
+          "language",
+          "content_origin",
+          "age_rating",
+          "status",
+          "episode_count",
+          "free_episode_count",
+          "version"
+        ],
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "enum": [
+                    "published",
+                    "scheduled"
+                  ]
+                }
+              },
+              "required": [
+                "status"
+              ]
+            },
+            "then": {
+              "properties": {
+                "age_rating": {
+                  "enum": [
+                    "U",
+                    "U/A 7+",
+                    "U/A 13+",
+                    "U/A 16+",
+                    "A"
+                  ]
+                },
+                "rights": {
+                  "$ref": "#/components/schemas/Rights"
+                }
               }
             }
           }
-        }
-      ]
-    },
-    "StaffMfaCancellation": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "challenge_token"
-      ],
-      "properties": {
-        "challenge_token": {
-          "type": "string",
-          "pattern": "^[A-Za-z0-9_-]{43}$",
-          "writeOnly": true
-        }
-      }
-    },
-    "StaffMfaChallenge": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "mfa_required",
-        "challenge_token",
-        "expires_at"
-      ],
-      "properties": {
-        "mfa_required": {
-          "type": "boolean",
-          "const": true
-        },
-        "challenge_token": {
-          "type": "string",
-          "pattern": "^[A-Za-z0-9_-]{43}$"
-        },
-        "expires_at": {
-          "type": "string",
-          "format": "date-time"
-        },
-        "enrollment_required": {
-          "type": "boolean",
-          "description": "Present only for managed first-party staff; true requires enrollment through the current password challenge before a business session can exist."
-        }
-      }
-    },
-    "StaffMfaVerification": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "challenge_token",
-        "code"
-      ],
-      "properties": {
-        "challenge_token": {
-          "type": "string",
-          "pattern": "^[A-Za-z0-9_-]{43}$",
-          "writeOnly": true
-        },
-        "code": {
-          "type": "string",
-          "pattern": "^[0-9]{6}$",
-          "writeOnly": true
-        }
-      }
-    },
-    "User": {
-      "type": "object",
-      "properties": {
-        "id": {
-          "type": "string"
-        },
-        "name": {
-          "type": "string"
-        },
-        "avatar_seed": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "minimum": 0,
-          "maximum": 11
-        },
-        "role": {
-          "type": "string",
-          "enum": [
-            "viewer",
-            "editor",
-            "reviewer",
-            "support",
-            "finance",
-            "growth",
-            "admin"
-          ]
-        },
-        "age_verified": {
-          "type": "boolean"
-        },
-        "roles": {
-          "type": "array",
-          "minItems": 1,
-          "maxItems": 1,
-          "uniqueItems": true,
-          "items": {
-            "$ref": "#/components/schemas/LogtoStaffRole"
-          },
-          "description": "Optional direct-staff projection: exactly the current active business role, consistent with role. It is not a list of self-selected or Console roles."
-        },
-        "permissions": {
-          "type": "array",
-          "uniqueItems": true,
-          "items": {
-            "type": "string",
-            "minLength": 1
-          },
-          "description": "Effective permissions in the one active complete role bundle, derived and revalidated by the API. Logto roles, client claims and partial bundles do not grant business authority."
-        }
+        ]
       },
-      "required": [
-        "id",
-        "name",
-        "role",
-        "age_verified"
-      ]
-    },
-    "ViewerBetterAuthCapability": {
-      "type": "object",
-      "description": "Present when the server enables the same-origin Viewer authentication entry point. Does not change the authentication mode of other applications.",
-      "additionalProperties": false,
-      "properties": {
-        "enabled": {
-          "const": true
-        },
-        "base_path": {
-          "const": "/v1/auth/better"
-        },
-        "native_social_providers": {
-          "type": "array",
-          "readOnly": true,
-          "uniqueItems": true,
-          "items": {
-            "type": "string",
-            "enum": [
-              "google",
-              "facebook"
-            ]
+      "Rights": {
+        "type": "object",
+        "properties": {
+          "territories": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           },
-          "description": "Optional, present only when the server-side native social feature is explicitly enabled; absence means disabled. Advertised provider configuration is not real-device or provider acceptance."
-        },
-        "social_providers": {
-          "type": "array",
-          "uniqueItems": true,
-          "items": {
-            "enum": [
-              "google",
-              "facebook"
-            ]
+          "languages": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "starts_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "ends_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "evidence_ref": {
+            "type": "string"
+          },
+          "approved_by": {
+            "type": "string"
+          },
+          "submitted_by": {
+            "type": "string"
           }
         },
-        "existing_account_migration_enabled": {
-          "type": "boolean"
-        },
-        "existing_account_migration_proof_max_age_seconds": {
-          "type": "integer",
-          "const": 300
-        },
-        "existing_account_recovery_enabled": {
-          "type": "boolean",
-          "description": "Always false: the Logto signed-resource recovery purpose has been retired. This is not a global Web recovery switch: first-party username recovery independently requires identity_mode=first_party, first_party.enabled/password_login_enabled and both consumer global flags; binding still requires existing_account_migration_enabled and both fresh ownership proofs."
+        "required": [
+          "territories",
+          "languages",
+          "starts_at",
+          "ends_at",
+          "evidence_ref"
+        ]
+      },
+      "PublicAttribution": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "title",
+          "creator",
+          "source_url",
+          "license_name",
+          "license_url",
+          "changes"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "creator": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
+          },
+          "source_url": {
+            "type": "string",
+            "format": "uri",
+            "maxLength": 2000,
+            "description": "Public HTTPS source; no credentials, query, fragment, custom port or local/private literal IP."
+          },
+          "license_name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "license_url": {
+            "type": "string",
+            "format": "uri",
+            "maxLength": 2000,
+            "description": "Public HTTPS licence URL; no credentials, query, fragment or custom port."
+          },
+          "changes": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "notice": {
+            "type": "string",
+            "maxLength": 3000
+          }
         }
       },
-      "required": [
-        "enabled",
-        "base_path",
-        "social_providers"
-      ]
+      "MemberWindow": {
+        "description": "Optional series-wide member window. Missing or standard preserves free/paid episode rules. Exclusive and pre-public early access require a current verified source granting both catalog and exclusive content; after public_at, existing episode rules apply. Publication requires subscription rights.",
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "mode"
+            ],
+            "properties": {
+              "mode": {
+                "const": "standard"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "mode"
+            ],
+            "properties": {
+              "mode": {
+                "const": "exclusive"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "mode",
+              "public_at"
+            ],
+            "properties": {
+              "mode": {
+                "const": "early_access"
+              },
+              "public_at": {
+                "type": "string",
+                "format": "date-time",
+                "description": "UTC timestamp ending in Z."
+              }
+            }
+          }
+        ]
+      },
+      "AiProvenanceDraft": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "schema_version": {
+            "const": 1
+          },
+          "models": {
+            "type": "array",
+            "maxItems": 16,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "scope": {
+                  "type": "string",
+                  "enum": [
+                    "video",
+                    "script",
+                    "cover",
+                    "subtitles",
+                    "promotion"
+                  ]
+                },
+                "provider": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 160,
+                  "pattern": "\\S"
+                },
+                "model": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 160,
+                  "pattern": "\\S"
+                },
+                "model_version": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 100,
+                  "pattern": "\\S"
+                },
+                "terms_version": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 100,
+                  "pattern": "\\S"
+                },
+                "evidence_refs": {
+                  "type": "array",
+                  "maxItems": 16,
+                  "items": {
+                    "$ref": "#/components/schemas/AiProvenanceEvidenceReference"
+                  }
+                }
+              },
+              "required": [
+                "scope",
+                "provider",
+                "model",
+                "model_version",
+                "terms_version",
+                "evidence_refs"
+              ]
+            }
+          },
+          "inputs": {
+            "type": "array",
+            "maxItems": 64,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "scope": {
+                  "type": "string",
+                  "enum": [
+                    "video",
+                    "script",
+                    "cover",
+                    "subtitles",
+                    "promotion"
+                  ]
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "script",
+                    "material",
+                    "music",
+                    "voice",
+                    "likeness"
+                  ]
+                },
+                "source": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 2000,
+                  "pattern": "\\S"
+                },
+                "evidence_refs": {
+                  "type": "array",
+                  "maxItems": 16,
+                  "items": {
+                    "$ref": "#/components/schemas/AiProvenanceEvidenceReference"
+                  }
+                }
+              },
+              "required": [
+                "scope",
+                "kind",
+                "source",
+                "evidence_refs"
+              ]
+            }
+          },
+          "human_reviews": {
+            "type": "array",
+            "maxItems": 32,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "scope": {
+                  "type": "string",
+                  "enum": [
+                    "video",
+                    "script",
+                    "cover",
+                    "subtitles",
+                    "promotion"
+                  ]
+                },
+                "source": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 2000,
+                  "pattern": "\\S",
+                  "description": "Private documentary claim only, never verified reviewer identity or approval."
+                },
+                "evidence_refs": {
+                  "type": "array",
+                  "maxItems": 16,
+                  "items": {
+                    "$ref": "#/components/schemas/AiProvenanceEvidenceReference"
+                  }
+                }
+              },
+              "required": [
+                "scope",
+                "source",
+                "evidence_refs"
+              ]
+            }
+          }
+        },
+        "required": [
+          "schema_version",
+          "models",
+          "inputs",
+          "human_reviews"
+        ],
+        "description": "Private draft registry only. Presence, including empty lists, blocks submit and publish. Scope never changes content_origin or grants permissions. Null/removal, client approval and reviewer IDs are unsupported."
+      },
+      "AiProvenanceEvidenceReference": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "evidence_ref": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "document_version": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "pattern": "\\S"
+          }
+        },
+        "required": [
+          "evidence_ref",
+          "document_version"
+        ],
+        "description": "Private same-series ready evidence file and exact immutable document version. No URLs or synthetic fixture references."
+      },
+      "License": {
+        "type": "object",
+        "properties": {
+          "territories": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "languages": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "starts_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "ends_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "evidence_ref": {
+            "type": "string"
+          },
+          "approved_by": {
+            "type": "string"
+          },
+          "submitted_by": {
+            "type": "string"
+          },
+          "holder": {
+            "type": "string"
+          },
+          "license_version": {
+            "type": "string"
+          },
+          "platforms": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "android",
+                "web",
+                "ios"
+              ]
+            },
+            "minItems": 1
+          },
+          "monetization_modes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "free",
+                "subscription",
+                "advertising"
+              ]
+            },
+            "minItems": 1
+          },
+          "allowed_uses": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "streaming",
+                "promotion",
+                "clips",
+                "adaptation",
+                "dubbing",
+                "ai_inputs",
+                "ai_voice",
+                "ai_likeness",
+                "offline_download"
+              ]
+            },
+            "minItems": 1,
+            "description": "offline_download records an explicit licensing claim subject to the existing independent content review. Its absence does not grant download rights. This declaration does not enable or authorize offline downloading."
+          },
+          "exclusive": {
+            "type": "boolean"
+          },
+          "withdrawal_terms": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "territories",
+          "languages",
+          "starts_at",
+          "ends_at",
+          "evidence_ref",
+          "holder",
+          "license_version",
+          "platforms",
+          "monetization_modes",
+          "allowed_uses",
+          "exclusive",
+          "withdrawal_terms"
+        ]
+      },
+      "Episode": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "series_id": {
+            "type": "string"
+          },
+          "episode_no": {
+            "type": "integer"
+          },
+          "title": {
+            "type": "string"
+          },
+          "duration_ms": {
+            "type": "integer"
+          },
+          "is_free": {
+            "type": "boolean"
+          },
+          "subtitle_url": {
+            "type": "string"
+          },
+          "media_status": {
+            "type": "string"
+          },
+          "subtitle_languages": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "audio_tracks": {
+            "type": "array",
+            "description": "Audio renditions of a multi-audio episode in playback order. The first track is muxed with the video. Audio playlist names are HLS metadata and require the usual signed playback authorization.",
+            "minItems": 2,
+            "maxItems": 8,
+            "items": {
+              "type": "object",
+              "properties": {
+                "language": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "pattern": "^[a-z]{2,3}$"
+                },
+                "playlist": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "pattern": "^a[1-7]\\.m3u8$"
+                }
+              },
+              "required": [
+                "language",
+                "playlist"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "media_profiles": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "subtitle_availability": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "provided",
+              "not_provided",
+              null
+            ]
+          },
+          "subtitle_unavailable_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 1000
+          }
+        },
+        "required": [
+          "id",
+          "series_id",
+          "episode_no",
+          "title",
+          "duration_ms",
+          "is_free"
+        ]
+      },
+      "EvidenceUpload": {
+        "type": "object",
+        "properties": {
+          "filename": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": "integer"
+          },
+          "content_type": {
+            "type": "string",
+            "enum": [
+              "application/pdf",
+              "image/png",
+              "image/jpeg",
+              "text/plain"
+            ]
+          },
+          "document_version": {
+            "type": "string"
+          },
+          "purpose": {
+            "type": "string",
+            "enum": [
+              "rights",
+              "ai_provenance"
+            ],
+            "description": "Optional evidence purpose; omitted legacy files use rights. AI-purpose completion preserves the current rights evidence/license while resetting approval.",
+            "default": "rights"
+          }
+        },
+        "required": [
+          "filename",
+          "size_bytes",
+          "content_type",
+          "document_version"
+        ]
+      },
+      "JjtvClientSession": {
+        "type": "object",
+        "required": [
+          "access_token",
+          "refresh_token",
+          "expires_at",
+          "refresh_expires_at",
+          "auth_method",
+          "mfa_verified",
+          "user"
+        ],
+        "properties": {
+          "access_token": {
+            "type": "string"
+          },
+          "refresh_token": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "refresh_expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "auth_method": {
+            "const": "jjtv_client_password"
+          },
+          "mfa_verified": {
+            "const": false
+          },
+          "user": {
+            "$ref": "#/components/schemas/User"
+          }
+        }
+      },
+      "JjtvClientLogin": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "username",
+          "password"
+        ],
+        "properties": {
+          "username": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$"
+          },
+          "password": {
+            "type": "string",
+            "minLength": 12,
+            "maxLength": 128,
+            "writeOnly": true
+          }
+        }
+      },
+      "JjtvClientRefresh": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "refresh_token"
+        ],
+        "properties": {
+          "refresh_token": {
+            "type": "string",
+            "minLength": 20,
+            "maxLength": 500,
+            "writeOnly": true
+          }
+        }
+      }
     }
   }
 }

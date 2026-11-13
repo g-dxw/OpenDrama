@@ -16,7 +16,7 @@ from app.modules.ops.router import require_admin, require_admin_role
 from app.modules.ops import service as ops_service
 from app.modules.tenancy import service
 from app.modules.tenancy.models import Tenant, TenantMember, IndiaConnection, DEFAULT_TENANT, INDIA_TENANT
-from app.modules.tenancy.india import IndiaClient, IndiaError, normalize_login, normalize_staff
+from app.modules.tenancy.india import IndiaClient, IndiaError, normalize_login, normalize_refresh, normalize_staff, client_fingerprint
 
 router = APIRouter(prefix="/admin/v1/tenants", tags=["tenants"])
 
@@ -42,13 +42,6 @@ class LoginInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     username: str = Field(min_length=1, max_length=64)
     password: str = Field(min_length=1, max_length=128)
-
-class ChallengeInput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    challenge_token: str = Field(min_length=43, max_length=43)
-
-class MfaInput(ChallengeInput):
-    code: str = Field(pattern=r"^[0-9]{6}$")
 
 def audit(db, user, tenant_id, action, *, old_actor=None, request_id=None, outcome="success", code=None, resource_id=None):
     payload = {"tenant_id": tenant_id, "outcome": outcome}
@@ -125,12 +118,11 @@ def describe(data=None, *, configured=True):
     data = data or {}
     actor = data.get("user") or {}
     connected = data.get("state") == "connected"
-    result = {"configured": configured, "connected": connected, "state": data.get("state", "disconnected")}
+    result = {"configured": configured, "auth_mode": "jjtv_client_password" if configured else "unavailable",
+              "connected": connected, "state": "connected" if connected else "disconnected"}
     if connected:
         result.update(username=actor.get("name") or actor.get("id"), role=actor.get("role"))
         if data.get("expires_at"): result["expires_at"] = data["expires_at"]
-    if data.get("state") == "mfa_required":
-        result.update(mfa_required=True, challenge_token=data["challenge_token"], expires_at=data["expires_at"], enrollment_required=data.get("enrollment_required", False))
     return result
 
 def fail_india(error, db, request, user, *, expected_access_token=None, expected_challenge_token=None):
@@ -140,6 +132,8 @@ def fail_india(error, db, request, user, *, expected_access_token=None, expected
         service.clear_connection(db, request, user, expected_challenge_token=expected_challenge_token)
     messages = {"india_auth_required": "旧站授权已失效，请重新连接运营账号", "india_not_configured": "India 接入尚未配置",
                 "india_login_rejected": "旧站账号验证未通过，请检查账号和密码",
+                "india_client_unavailable": "旧站专用连接尚未启用或配置已失效，请联系管理员",
+                "india_client_contract_invalid": "旧站专用连接响应异常，请联系管理员",
                 "india_mfa_invalid": "验证码无效或验证已失效，请输入当前验证码；仍失败可重新连接",
                 "india_challenge_expired": "本次验证已过期，请重新连接运营账号",
                 "india_mfa_replayed": "验证码已使用，请重新连接后输入新的验证码",
@@ -150,8 +144,43 @@ def fail_india(error, db, request, user, *, expected_access_token=None, expected
 
 def active_connection(db, request, user):
     _, data = service.read_connection(db, request, user)
-    if data.get("state") != "connected": raise HTTPException(409, detail={"code": "india_auth_required", "message": "请先连接旧站运营账号"})
+    try:
+        fingerprint = client_fingerprint()
+    except IndiaError as error:
+        fail_india(error, db, request, user)
+    if (data.get("state") != "connected" or data.get("auth_mode") != "jjtv_client_password"
+            or data.get("client_fingerprint") != fingerprint):
+        raise HTTPException(409, detail={"code": "india_auth_required", "message": "请重新连接旧站运营账号"})
     return data
+
+def needs_refresh(data):
+    try:
+        expiry = datetime.fromisoformat(data["expires_at"].replace("Z", "+00:00"))
+        return (expiry - datetime.now(timezone.utc)).total_seconds() <= 60
+    except (ValueError, KeyError, TypeError):
+        return True
+
+
+async def connected_data(db, request, user):
+    """Renew before dispatch; never replay a content mutation or streamed upload."""
+    data = active_connection(db, request, user)
+    if not needs_refresh(data):
+        return data
+    with service.connection_mutation(request, user):
+        data = active_connection(db, request, user)
+        if not needs_refresh(data):
+            return data
+        try:
+            reply = await IndiaClient(operator_id=str(user.id)).call("refresh", payload={"refresh_token": data["refresh_token"]})
+            updated = normalize_refresh(reply.data, data["user"])
+            updated.update(auth_mode="jjtv_client_password", client_fingerprint=client_fingerprint())
+            service.save_connection(db, request, user, updated, commit=False)
+            audit(db, user, INDIA_TENANT, "india.refresh", old_actor=updated["user"]["id"], request_id=reply.request_id)
+            db.commit()
+            return updated
+        except IndiaError as error:
+            fail_india(error, db, request, user, expected_access_token=data.get("access_token"))
+
 
 def auth_limit(user):
     try:
@@ -169,10 +198,17 @@ async def india_session(tenant_id: str, request: Request, response: Response, db
     india_access(tenant_id, db, user, request)
     if not os.environ.get("INDIA_API_BASE_URL") or not os.environ.get("TENANT_CONNECTION_KEY"):
         return describe(configured=False)
+    try:
+        fingerprint = client_fingerprint()
+    except IndiaError:
+        return describe(configured=False)
     _, data = service.read_connection(db, request, user)
+    if data.get("auth_mode") != "jjtv_client_password" or data.get("client_fingerprint") != fingerprint:
+        return describe()
     if data.get("state") == "connected":
         try:
-            reply = await IndiaClient().call("me", access_token=data["access_token"])
+            data = await connected_data(db, request, user)
+            reply = await IndiaClient(operator_id=str(user.id)).call("me", access_token=data["access_token"])
             actor = normalize_staff(reply.data)
             if actor["id"] != data["user"]["id"]: raise IndiaError("india_auth_required", 409)
             data["user"] = actor
@@ -190,8 +226,9 @@ async def india_login(tenant_id: str, body: LoginInput, request: Request, respon
         response.headers["Cache-Control"] = "no-store"
         india_access(tenant_id, db, user, request); service.connection_cipher(); auth_limit(user)
         try:
-            reply = await IndiaClient().call("login", payload=body.model_dump())
+            reply = await IndiaClient(operator_id=str(user.id)).call("login", payload=body.model_dump())
             data = normalize_login(reply.data)
+            data.update(auth_mode="jjtv_client_password", client_fingerprint=client_fingerprint())
             service.save_connection(db, request, user, data, commit=False)
             audit(db, user, tenant_id, "india.login", old_actor=(data.get("user") or {}).get("id"), request_id=reply.request_id)
             return describe(data)
@@ -199,52 +236,13 @@ async def india_login(tenant_id: str, body: LoginInput, request: Request, respon
             audit(db, user, tenant_id, "india.login", outcome="rejected", code=error.upstream_code, request_id=error.request_id)
             fail_india(error, db, request, user)
 
-def own_challenge(db, request, user, challenge):
-    _, data = service.read_connection(db, request, user)
-    if data.get("state") != "mfa_required" or data.get("challenge_token") != challenge:
-        raise HTTPException(409, detail={"code": "india_challenge_invalid", "message": "验证已失效，请重新连接"})
-    try: valid = datetime.fromisoformat(data["expires_at"].replace("Z", "+00:00")) > datetime.now(timezone.utc)
-    except (ValueError, KeyError, TypeError): valid = False
-    if not valid:
-        service.clear_connection(db, request, user, expected_challenge_token=challenge)
-        raise HTTPException(409, detail={"code": "india_challenge_expired", "message": "验证码已过期，请重新连接"})
-    return data
-
 @router.post("/{tenant_id}/india/session/mfa")
-async def india_mfa(tenant_id: str, body: MfaInput, request: Request, response: Response, db: Session = Depends(get_db), user: AdminUser = Depends(require_admin)):
-    with service.connection_mutation(request, user):
-        response.headers["Cache-Control"] = "no-store"
-        india_access(tenant_id, db, user, request); own_challenge(db, request, user, body.challenge_token); auth_limit(user)
-        try:
-            reply = await IndiaClient().call("mfa_verify", payload=body.model_dump())
-            data = normalize_login(reply.data)
-            if data["state"] != "connected": raise IndiaError("india_invalid_response")
-            service.save_connection(db, request, user, data, commit=False)
-            audit(db, user, tenant_id, "india.mfa", old_actor=data["user"]["id"], request_id=reply.request_id)
-            return describe(data)
-        except IndiaError as error: fail_india(error, db, request, user, expected_challenge_token=body.challenge_token)
-
 @router.post("/{tenant_id}/india/session/enrollment")
-async def india_enrollment(tenant_id: str, body: ChallengeInput, request: Request, response: Response, db: Session = Depends(get_db), user: AdminUser = Depends(require_admin)):
-    with service.connection_mutation(request, user):
-        response.headers["Cache-Control"] = "no-store"
-        india_access(tenant_id, db, user, request)
-        data = own_challenge(db, request, user, body.challenge_token)
-        if not data.get("enrollment_required"): raise HTTPException(409, detail="当前账号不需要首次验证器登记")
-        try:
-            reply = await IndiaClient().call("mfa_enrollment", payload=body.model_dump())
-            return {"data": reply.data, "request_id": reply.request_id}
-        except IndiaError as error: fail_india(error, db, request, user, expected_challenge_token=body.challenge_token)
-
 @router.post("/{tenant_id}/india/session/cancel")
-async def india_cancel(tenant_id: str, body: ChallengeInput, request: Request, response: Response, db: Session = Depends(get_db), user: AdminUser = Depends(require_admin)):
-    with service.connection_mutation(request, user):
-        response.headers["Cache-Control"] = "no-store"
-        india_access(tenant_id, db, user, request); own_challenge(db, request, user, body.challenge_token)
-        try: await IndiaClient().call("mfa_cancel", payload=body.model_dump())
-        except IndiaError: pass
-        service.clear_connection(db, request, user, expected_challenge_token=body.challenge_token)
-        return describe()
+def retired_india_mfa(tenant_id: str, request: Request, db: Session = Depends(get_db), user: AdminUser = Depends(require_admin)):
+    india_access(tenant_id, db, user, request)
+    raise HTTPException(410, detail={"code": "india_mfa_retired", "message": "JJTV 已改用专用账号密码连接，请重新连接"})
+
 
 @router.post("/{tenant_id}/india/session/refresh")
 async def india_refresh(tenant_id: str, request: Request, response: Response, db: Session = Depends(get_db), user: AdminUser = Depends(require_admin)):
@@ -253,19 +251,28 @@ async def india_refresh(tenant_id: str, request: Request, response: Response, db
         india_access(tenant_id, db, user, request)
         data = active_connection(db, request, user)
         try:
-            reply = await IndiaClient().call("refresh", payload={"refresh_token": data["refresh_token"]})
+            reply = await IndiaClient(operator_id=str(user.id)).call("refresh", payload={"refresh_token": data["refresh_token"]})
             # The upstream refresh rotates tokens but does not return a user object.
-            updated = normalize_login({**reply.data, "user": data["user"]})
+            updated = normalize_refresh(reply.data, data["user"])
+            updated.update(auth_mode="jjtv_client_password", client_fingerprint=client_fingerprint())
             service.save_connection(db, request, user, updated, commit=False)
             audit(db, user, tenant_id, "india.refresh", old_actor=updated["user"]["id"], request_id=reply.request_id)
             return describe(updated)
         except IndiaError as error: fail_india(error, db, request, user, expected_access_token=data.get("access_token"))
 
 @router.delete("/{tenant_id}/india/session")
-def india_disconnect(tenant_id: str, request: Request, response: Response, db: Session = Depends(get_db), user: AdminUser = Depends(require_admin)):
+async def india_disconnect(tenant_id: str, request: Request, response: Response, db: Session = Depends(get_db), user: AdminUser = Depends(require_admin)):
     with service.connection_mutation(request, user):
         response.headers["Cache-Control"] = "no-store"
         india_access(tenant_id, db, user, request)
+        _, data = service.read_connection(db, request, user)
+        if (data.get("state") == "connected" and data.get("auth_mode") == "jjtv_client_password"):
+            try:
+                await IndiaClient(operator_id=str(user.id)).call("logout", payload={"refresh_token": data["refresh_token"]})
+            except IndiaError as error:
+                # Never report a successful revocation if the provider could not receive it.
+                if error.code != "india_auth_required":
+                    fail_india(error, db, request, user)
         service.clear_connection(db, request, user, commit=False)
         audit(db, user, tenant_id, "india.disconnect")
         return describe()
@@ -323,10 +330,10 @@ async def india_content(tenant_id: str, upstream_path: str, request: Request, re
     if request.method != "GET":
         try: key = str(UUID(request.headers.get("Idempotency-Key", "")))
         except ValueError: raise HTTPException(400, detail="操作需要有效 Idempotency-Key") from None
-    data = active_connection(db, request, user)
+    data = await connected_data(db, request, user)
     db.commit()  # Release the read connection before streaming a large upload.
     try:
-        client = IndiaClient()
+        client = IndiaClient(operator_id=str(user.id))
         if upload_kind:
             try: size = int(request.headers.get("Content-Length", ""))
             except ValueError: raise HTTPException(411, detail="上传需要声明文件长度") from None

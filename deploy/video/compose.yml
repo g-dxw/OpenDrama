@@ -43,6 +43,13 @@ services:
     restart: unless-stopped
     env_file:
       - ${JJTV_ENV_FILE:?}
+    volumes:
+      - type: bind
+        source: ${JJTV_INDIA_CLIENT_DIR:-/opt/jjtv/shared/india-client}
+        target: /run/secrets/india-client
+        read_only: true
+        bind:
+          create_host_path: false
     ports:
       - "127.0.0.1:18110:18110"
     depends_on:
