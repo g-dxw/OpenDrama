@@ -8,24 +8,28 @@ MODULES = [
  dict(key='reviews', label='内容审核', menu_key='/reviews', permissions=['reviews.view','reviews.decide'], backend='native'),
  dict(key='tags', label='标签库', menu_key='/tags', permissions=['tags.view','tags.manage'], backend='native'),
  dict(key='groups', label='首页分组', menu_key='/groups', permissions=['groups.view','groups.manage'], backend='native'),
+ dict(key='home_ops', label='首页运营', menu_key='/home-ops', permissions=['home_ops.view','home_ops.manage'], backend='native'),
 ]
-for key, label, menu in [('dashboard','数据看板','/dashboard'),('users','用户管理','/users'),('home_ops','首页运营','/home-ops'),('rewards','金币与任务','/rewards'),('comments','评论审核','/comments'),('moderation','自动审核','/moderation'),('finance','财务订单','/finance'),('settlements','结算单','/settlements'),('plans','会员套餐','/plans'),('suppliers','上剧方管理','/suppliers')]:
+for key, label, menu in [('dashboard','数据看板','/dashboard'),('users','用户管理','/users'),('rewards','金币与任务','/rewards'),('comments','评论审核','/comments'),('moderation','自动审核','/moderation'),('finance','财务订单','/finance'),('settlements','结算单','/settlements'),('plans','会员套餐','/plans'),('suppliers','上剧方管理','/suppliers')]:
     MODULES.append(dict(key=key,label=label,menu_key=menu,permissions=[key+'.view']+([] if key in {'dashboard','finance'} else [key+'.manage']),backend='legacy_jjtv'))
 BY_KEY = {item['key']:item for item in MODULES}
 LEGACY_MODULE_KEYS = tuple(item['key'] for item in MODULES if item['backend']=='legacy_jjtv')
+# Native home_ops opens only channels/banners; its older global config routes
+# still belong to the explicitly registered legacy owner.
+LEGACY_BINDING_KEYS = LEGACY_MODULE_KEYS + ('home_ops',)
 INDIA_KEYS = {'dramas.view','dramas.edit','dramas.upload','dramas.publish','dramas.pricing','reviews.view','reviews.decide'}
 SYSTEM_PERMISSIONS = {'staff.view','staff.manage','roles.view','roles.manage','api_keys.view','api_keys.manage'}
 SYSTEM_MENUS = ['/staff','/roles','/api-keys']
 
 def seed_legacy_bindings(db, tenant_id='jjtv'):
-    for key in LEGACY_MODULE_KEYS:
+    for key in LEGACY_BINDING_KEYS:
         if db.get(LegacyBusinessBinding, key) is None:
             db.add(LegacyBusinessBinding(module_key=key, tenant_id=tenant_id))
     db.flush()
 
 def supported_keys(db, tenant):
     if tenant.kind == 'india_legacy': return {'dramas','reviews'}
-    result = {'dramas','reviews','tags','groups'}
+    result = {'dramas','reviews','tags','groups','home_ops'}
     result |= set(db.scalars(select(LegacyBusinessBinding.module_key).where(LegacyBusinessBinding.tenant_id==tenant.id))) & set(LEGACY_MODULE_KEYS)
     return result
 

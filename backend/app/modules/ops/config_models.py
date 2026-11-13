@@ -11,6 +11,8 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
+    Index,
     Integer,
     String,
     Text,
@@ -25,9 +27,15 @@ from app.db import Base
 
 class ChannelTab(Base):
     __tablename__ = "channel_tabs"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "code", name="uq_channel_tabs_tenant_code"),
+        ForeignKeyConstraint(["tenant_id", "group_id"], ["home_groups.tenant_id", "home_groups.id"], name="fk_channel_tabs_tenant_group"),
+        Index("ix_channel_tabs_tenant", "tenant_id"),
+    )
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="RESTRICT"), nullable=False, default="jjtv", server_default="jjtv")
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    code: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)
+    code: Mapped[str] = mapped_column(String(32), nullable=False)
     title_en: Mapped[str] = mapped_column(String(64), nullable=False)
     title_zh: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -40,6 +48,11 @@ class ChannelTab(Base):
 
 class Banner(Base):
     __tablename__ = "banners"
+    __table_args__ = (
+        ForeignKeyConstraint(["tenant_id", "drama_id"], ["dramas.tenant_id", "dramas.id"], name="fk_banners_tenant_drama"),
+        Index("ix_banners_tenant", "tenant_id"),
+    )
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="RESTRICT"), nullable=False, default="jjtv", server_default="jjtv")
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     slot: Mapped[str] = mapped_column(String(32), nullable=False, default="home")

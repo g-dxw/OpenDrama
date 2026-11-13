@@ -68,6 +68,7 @@ class Drama(Base):
     reviewed_by: Mapped[int | None] = mapped_column(ForeignKey("admin_users.id"), nullable=True)
 
     __table_args__ = (
+        UniqueConstraint("tenant_id", "id", name="uq_dramas_tenant_id"),
         Index("ix_dramas_status", "status"),
         Index("ix_dramas_supplier_status", "supplier_id", "status"),
         Index(
@@ -126,6 +127,8 @@ class Episode(Base):
 
 class Tag(Base):
     __tablename__ = "tags"
+    # Internal seed identity survives operator renames; never an API authority.
+    default_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), nullable=False, default="jjtv", server_default="jjtv", index=True)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -137,7 +140,11 @@ class Tag(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
-    __table_args__ = (UniqueConstraint("tenant_id", "name_en", name="uq_tags_tenant_name_en"),)
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "name_en", name="uq_tags_tenant_name_en"),
+        UniqueConstraint("tenant_id", "id", name="uq_tags_tenant_id"),
+        UniqueConstraint("tenant_id", "default_key", name="uq_tags_tenant_default_key"),
+    )
 
 
 class DramaTag(Base):
@@ -155,6 +162,11 @@ class HomeGroup(Base):
     content service from stage 6, as is position semantics."""
 
     __tablename__ = "home_groups"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "id", name="uq_home_groups_tenant_id"),
+        UniqueConstraint("tenant_id", "default_key", name="uq_home_groups_tenant_default_key"),
+    )
+    default_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), nullable=False, default="jjtv", server_default="jjtv", index=True)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)

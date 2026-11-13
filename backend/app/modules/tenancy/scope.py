@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session, with_loader_criteria
 from app.modules.common.models import AuditLog
 from app.modules.content.models import Drama, Episode, Tag, HomeGroup, DramaTag, DramaHomeGroup, MediaUpload
 from app.modules.tenancy.models import LegacyBusinessBinding
+from app.modules.ops.config_models import ChannelTab, Banner
 
 @event.listens_for(Session, "do_orm_execute")
 def scope_queries(state):
@@ -19,7 +20,8 @@ def scope_queries(state):
     dramas = select(Drama.id).where(Drama.tenant_id == tenant)
     episodes = select(Episode.id).where(Episode.drama_id.in_(dramas))
     rules = [(Drama, Drama.tenant_id == tenant), (Tag, Tag.tenant_id == tenant),
-             (HomeGroup, HomeGroup.tenant_id == tenant), (Episode, Episode.drama_id.in_(dramas)),
+             (HomeGroup, HomeGroup.tenant_id == tenant), (ChannelTab, ChannelTab.tenant_id == tenant),
+             (Banner, Banner.tenant_id == tenant), (Episode, Episode.drama_id.in_(dramas)),
              (MediaUpload, MediaUpload.episode_id.in_(episodes)),
              (DramaTag, DramaTag.drama_id.in_(dramas)), (DramaHomeGroup, DramaHomeGroup.drama_id.in_(dramas))]
     statement = state.statement
@@ -47,7 +49,7 @@ def scope_writes(session, flush_context, instances):
         record = session.get(model, identifier)
         if record is None:
             return False
-        if isinstance(record, (Drama, Tag, HomeGroup)):
+        if isinstance(record, (Drama, Tag, HomeGroup, ChannelTab, Banner)):
             return record.tenant_id == tenant
         if isinstance(record, Episode):
             return owns(Drama, record.drama_id)
@@ -71,10 +73,14 @@ def scope_writes(session, flush_context, instances):
                 if record.tenant_id is None: record.tenant_id=tenant
                 record.payload.setdefault("tenant_id", record.tenant_id)
             if record.actor_scope in (None, "legacy"): record.actor_scope=session.info.get("actor_scope", "tenant")
-        if isinstance(record, (Drama, Tag, HomeGroup)):
+        if isinstance(record, (Drama, Tag, HomeGroup, ChannelTab, Banner)):
             if record in session.new and not record.tenant_id:
                 record.tenant_id = tenant
             if record.tenant_id != tenant:
+                refuse()
+            if isinstance(record, ChannelTab) and record.group_id is not None and not owns(HomeGroup, record.group_id):
+                refuse()
+            if isinstance(record, Banner) and record.drama_id is not None and not owns(Drama, record.drama_id):
                 refuse()
             if isinstance(record, Drama) and record.supplier_id is not None and not session.scalar(select(LegacyBusinessBinding.module_key).where(LegacyBusinessBinding.module_key=='suppliers',LegacyBusinessBinding.tenant_id==tenant)):
                 raise HTTPException(400, detail="上剧方配置仅属于 JJTV 自营")

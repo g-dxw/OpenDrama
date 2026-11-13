@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -470,7 +470,7 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
 
 @router.get("/config")
 def config(locale: str = "en", db: Session = Depends(get_db)):
-    tabs = db.scalars(select(ChannelTab).where(ChannelTab.enabled.is_(True)).order_by(ChannelTab.position)).all()
+    tabs = db.scalars(select(ChannelTab).where(ChannelTab.enabled.is_(True)).order_by(case((ChannelTab.code == "discover", 0), else_=1), ChannelTab.position, ChannelTab.id)).all()
     copies = {}
     for row in db.scalars(select(CopyEntry)).all():
         if locale == "zh" and row.zh:

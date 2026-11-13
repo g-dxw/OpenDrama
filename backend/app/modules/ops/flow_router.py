@@ -10,7 +10,7 @@ from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import case, delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -1432,7 +1432,7 @@ class TabUpdateIn(BaseModel):
 
 @router.get("/tabs")
 def list_tabs(db: Session = Depends(get_db), user: AdminUser = Depends(require_admin)):
-    rows = db.scalars(select(ChannelTab).order_by(ChannelTab.position, ChannelTab.id)).all()
+    rows = db.scalars(select(ChannelTab).order_by(case((ChannelTab.code == DISCOVER_CODE, 0), else_=1), ChannelTab.position, ChannelTab.id)).all()
     return {"items": [_tab_out(row) for row in rows]}
 
 

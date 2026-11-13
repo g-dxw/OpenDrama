@@ -208,9 +208,11 @@ def create_tenant(body:CreateTenant,request:Request,db:Session=Depends(get_db),u
     if body.modules is not None: allowed_modules(db,tenant,body.modules)
     seed_tenant_defaults(db,tenant,body.modules)
     owner,password=create_tenant_account(db,tenant,body.admin_username,'租户管理员',preset_role_id(tenant.id,'tenant_admin'))
-    audit(db,request,user,tenant.id,'platform.tenant.create')
+    from app.modules.tenancy.content_defaults import seed_content_defaults
+    defaults=seed_content_defaults(db,tenant)
+    audit(db,request,user,tenant.id,'platform.tenant.create',payload={'content_defaults':defaults})
     commit(db,'租户编码或管理员账号已存在')
-    return dict(tenant=tenant_info(tenant),administrator=dict(id=owner.id,username=owner.username,temporary_password=password))
+    return dict(tenant=tenant_info(tenant),administrator=dict(id=owner.id,username=owner.username,temporary_password=password),content_defaults=defaults)
 
 @legacy_router.post('',status_code=201)
 def legacy_create_tenant(body:dict,request:Request,db:Session=Depends(get_db),user:AdminUser=Depends(require_platform_admin)):
