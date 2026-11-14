@@ -21,9 +21,12 @@ const server = await createServer({
       configureServer(server) {
         server.middlewares.use((request, response, next) => {
           if (
-            !["/v1/commerce/checkout", "/v1/billing/cancel"].includes(
-              new URL(request.url, "http://fixture").pathname,
-            )
+            ![
+              "/v1/commerce/checkout",
+              "/v1/billing/cancel",
+              "/v1/dramas/1/play",
+              "/v1/playback",
+            ].includes(new URL(request.url, "http://fixture").pathname)
           ) {
             next();
             return;
@@ -120,7 +123,10 @@ let activeMember = false,
   playableFirst = false,
   media = Buffer.alloc(0),
   checkoutHold = null,
-  cancelHold = null;
+  cancelHold = null,
+  memberAccess = false,
+  memberHold = null,
+  memberProfileBarrier = null;
 const recoveryReplies = [];
 const pending = [],
   inFlight = new Set();
@@ -138,7 +144,14 @@ await page.evaluateOnNewDocument(() => {
       input instanceof Request ? input.url : String(input),
       location.href,
     );
-    if (!["/v1/commerce/checkout", "/v1/billing/cancel"].includes(url.pathname))
+    if (
+      ![
+        "/v1/commerce/checkout",
+        "/v1/billing/cancel",
+        "/v1/dramas/1/play",
+        "/v1/playback",
+      ].includes(url.pathname)
+    )
       return nativeFetch(input, init);
     const id = String(++sequence),
       headers = new Headers(init?.headers);
@@ -183,12 +196,14 @@ function hold(kind, order = "H5-ORDER", delivery = "respond") {
     started,
     order,
     delivery,
+    kind,
     fixtureDone,
     handled,
   };
   pending.push(item);
   if (kind === "checkout") checkoutHold = item;
-  else cancelHold = item;
+  else if (kind === "cancel") cancelHold = item;
+  else memberHold = item;
   return item;
 }
 async function fulfillHeld(request, item, result) {
@@ -383,17 +398,58 @@ page.on("request", async (req) => {
         google: { enabled: false, client_id: null },
         facebook: { enabled: false, app_id: null },
       };
-    else if (p === "/v1/me") {
+    else if (p === "/v1/auth/email/code") {
+      assert.equal(body.email, "member@example.com");
+      result = { sent: true };
+    } else if (p === "/v1/auth/email/authenticate") {
+      assert.equal(body.email, "member@example.com");
+      assert.equal(body.code, "123456");
+      result = {
+        token: "mobile-member-token",
+        user_id: 3,
+        public_id: "member-viewer",
+      };
+    } else if (p === "/v1/me") {
+      if (
+        req.headers().authorization === "Bearer mobile-member-token" &&
+        memberProfileBarrier
+      ) {
+        const barrier = memberProfileBarrier;
+        memberProfileBarrier = null;
+        await barrier.started;
+        status = 401;
+        result = { detail: "Expired member session" };
+        await req.respond({
+          status,
+          contentType: "application/json",
+          body: JSON.stringify(result),
+        });
+        return;
+      }
       if (
         ![
           "Bearer desktop-token",
           "Bearer mobile-token",
           "Bearer mobile-token-b",
+          "Bearer mobile-member-token",
         ].includes(req.headers().authorization)
       ) {
         status = 401;
         result = { detail: "Sign in required" };
-      } else result = profile(req.headers().authorization);
+      } else {
+        result = profile(req.headers().authorization);
+        if (req.headers().authorization === "Bearer mobile-member-token") {
+          result.id = 3;
+          result.display_name = "Member viewer";
+          result.membership = {
+            active: true,
+            plan_code: "weekly",
+            until: "2026-12-14T00:00:00Z",
+            canceling: false,
+            billing_mode: "one_time",
+          };
+        }
+      }
     } else if (p === "/v1/me/tasks" || p === "/v1/tasks")
       result = {
         today: "2026-11-14",
@@ -424,7 +480,10 @@ page.on("request", async (req) => {
         page_size: 5,
         preload: { fetch_when_remaining: 2 },
       };
-    else if (p === "/v1/dramas/1/play")
+    else if (p === "/v1/dramas/1/play") {
+      const member =
+        memberAccess &&
+        req.headers().authorization === "Bearer mobile-member-token";
       result = {
         drama,
         items: [10, 11].map((id, i) => ({
@@ -433,21 +492,38 @@ page.on("request", async (req) => {
           title: "Episode " + (i + 1),
           duration_seconds: 60,
           free: playableFirst && i === 0,
-          locked: !(playableFirst && i === 0),
+          locked: !member && !(playableFirst && i === 0),
+          membership_required: memberAccess && !member,
           progress_seconds: 0,
           comment_count: 0,
           unlock: { coin_price: 20 },
         })),
         resume: { episode_id: 10 },
-        entitlement: { member: false, unlocked_episode_ids: [] },
+        entitlement: { member, unlocked_episode_ids: [] },
       };
-    else if (p === "/v1/playback")
+      if (member && memberHold?.kind === "access") {
+        const held = memberHold;
+        memberHold = null;
+        await fulfillHeld(req, held, result);
+        return;
+      }
+    } else if (p === "/v1/playback") {
+      const allowed =
+        !memberAccess ||
+        req.headers().authorization === "Bearer mobile-member-token" ||
+        (playableFirst && body.episode_id === 10);
       result = {
-        allowed: true,
-        url: origin + "/fixtures/clip.webm",
+        allowed,
+        url: allowed ? origin + "/fixtures/clip.webm" : null,
         episode_id: body.episode_id,
       };
-    else if (/^\/v1\/playback\/(start|progress|complete)$/.test(p))
+      if (allowed && memberHold?.kind === "media") {
+        const held = memberHold;
+        memberHold = null;
+        await fulfillHeld(req, held, result);
+        return;
+      }
+    } else if (/^\/v1\/playback\/(start|progress|complete)$/.test(p))
       result = { ok: true };
     else if (p === "/v1/commerce/checkout") {
       if (recoveryReplies.length) {
@@ -782,6 +858,114 @@ try {
   );
   playableFirst = false;
   pass("real H5 media completion advances the selected episode URL");
+
+  memberAccess = true;
+  const memberLogin = async () => {
+    await page.locator(".lock-cta").click();
+    await page.waitForSelector('[data-testid="login-sheet"]');
+    await page.type("#auth-email", "member@example.com");
+    await page.locator(".auth-primary").click();
+    await page.waitForSelector(".auth-code");
+    await page.type(".auth-box", "123456", { delay: 20 });
+    await page.locator(".auth-primary").click();
+  };
+  await goto("#watch/1?episode=11");
+  await page.reload({ waitUntil: "networkidle0" });
+  await surface("mobile");
+  await page.waitForSelector(".locked-view");
+  const beforeMember = calls.length;
+  await memberLogin();
+  await page.waitForFunction(
+    () =>
+      document.querySelector(".play:not(.locked-view) video")?.readyState >= 2,
+  );
+  assert(
+    calls
+      .slice(beforeMember)
+      .some(
+        (c) =>
+          c.path === "/v1/dramas/1/play" &&
+          c.headers.authorization === "Bearer mobile-member-token",
+      ),
+  );
+  assert(
+    calls
+      .slice(beforeMember)
+      .some(
+        (c) =>
+          c.path === "/v1/playback" &&
+          c.body.episode_id === 11 &&
+          c.headers.authorization === "Bearer mobile-member-token",
+      ),
+  );
+  assert.equal(await page.$('[data-testid="premium-sheet"]'), null);
+  await goto("#account/settings");
+  await page.locator('[data-testid="settings-sign-out"]').click();
+  await page.locator('[data-testid="signout-confirm"]').click();
+  await page.waitForFunction(() => !localStorage.getItem("minitv_h5_token"));
+  const afterLogout = calls.length;
+  await goto("#watch/1?episode=11");
+  await page.waitForSelector(".locked-view");
+  await page.waitForFunction(() => window.__jjtvPendingFetches === 0);
+  assert.equal(
+    calls
+      .slice(afterLogout)
+      .filter((c) => c.path === "/v1/playback" && c.body.episode_id === 11)
+      .length,
+    0,
+  );
+  pass(
+    "H5 member login refreshes server access and resumes paid playback; signing out restores the guest lock without minting paid media",
+  );
+  for (const kind of ["access", "media"]) {
+    await goto("#watch/1?episode=11");
+    await page.reload({ waitUntil: "networkidle0" });
+    await surface("mobile");
+    await page.waitForSelector(".locked-view");
+    const held = hold(kind, "STALE-MEMBER-" + kind);
+    memberProfileBarrier = held;
+    const beforeLate = calls.length;
+    await memberLogin();
+    await held.started;
+    await page.waitForFunction(
+      () =>
+        !localStorage.getItem("minitv_h5_token") &&
+        !!document.querySelector(".locked-view") &&
+        !document.querySelector(".play video"),
+    );
+    const afterIdentity = calls.length;
+    await settleHeld(held);
+    await page.waitForFunction(() => window.__jjtvPendingFetches === 0);
+    assert.equal(await page.$(".play video"), null);
+    assert(await page.$(".locked-view"));
+    assert.equal(
+      calls
+        .slice(afterIdentity)
+        .filter(
+          (c) =>
+            c.path === "/v1/playback" ||
+            /^\/v1\/playback\/(start|progress|complete)$/.test(c.path),
+        ).length,
+      0,
+    );
+    assert.equal(
+      calls
+        .slice(beforeLate)
+        .filter(
+          (c) =>
+            c.path === "/v1/playback" &&
+            c.headers.authorization !== "Bearer mobile-member-token",
+        ).length,
+      0,
+    );
+    await page.locator('[data-testid="login-sheet"] .close-btn').click();
+    pass(
+      "a late member " +
+        kind +
+        " response cannot restore old access or report playback after the session becomes guest",
+    );
+  }
+  memberAccess = false;
   await goto("#search?q=Orange");
   await surface("mobile");
   await page.waitForSelector(".search .result");

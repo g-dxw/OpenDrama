@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { postJson } from "../api";
+import { authToken, postJson } from "../api";
 import { prepareSubtitleTracks } from "../../../shared/consumer/subtitles";
 import { IconPlayCenter } from "../icons";
 import type { PlaybackAuth } from "../types";
@@ -34,6 +34,7 @@ export function EpisodeView({
   onQualitiesChange,
   onFinished,
 }: Props) {
+  const ownerToken = authToken();
   const videoRef = useRef<HTMLVideoElement>(null);
   const handleRef = useRef<PlayerHandle | null>(null);
   const [paused, setPaused] = useState(false);
@@ -55,6 +56,8 @@ export function EpisodeView({
     let heartbeat = 0;
     let cancelled = false;
     let finished = false;
+    let removeMetadataListener = () => {};
+    const ownsPlayback = () => !cancelled && authToken() === ownerToken;
     const subtitleController = new AbortController();
     let disposeSubtitles = () => {};
 
@@ -62,6 +65,7 @@ export function EpisodeView({
       kind: "start" | "progress" | "complete",
       position: number,
     ) => {
+      if (!ownsPlayback()) return;
       postJson(`/v1/playback/${kind}`, {
         episode_id: episodeId,
         position_seconds: position,
@@ -69,7 +73,7 @@ export function EpisodeView({
     };
 
     const finish = () => {
-      if (finished) return;
+      if (finished || !ownsPlayback()) return;
       finished = true;
       window.clearInterval(heartbeat);
       report("complete", Math.floor(video.duration || 0));
@@ -77,7 +81,7 @@ export function EpisodeView({
     };
 
     const onTime = () => {
-      if (!video.duration) return;
+      if (!ownsPlayback() || !video.duration) return;
       setProgress(video.currentTime / video.duration);
       if (video.currentTime >= video.duration - 1.5) finish();
     };
@@ -88,8 +92,8 @@ export function EpisodeView({
           drama_id: dramaId,
           episode_id: episodeId,
         });
-        if (cancelled || !auth.allowed || !auth.url) {
-          if (!cancelled && auth.allowed === false) setFailed(true);
+        if (!ownsPlayback() || !auth.allowed || !auth.url) {
+          if (ownsPlayback() && auth.allowed === false) setFailed(true);
           return;
         }
         void prepareSubtitleTracks(
@@ -97,7 +101,7 @@ export function EpisodeView({
           subtitleController.signal,
         )
           .then((result) => {
-            if (cancelled) {
+            if (!ownsPlayback()) {
               result.dispose();
               return;
             }
@@ -106,16 +110,19 @@ export function EpisodeView({
           })
           .catch(() => undefined);
         handle = attachHls(video, auth.url, (levels) => {
-          onQualitiesChangeRef.current?.(levels);
+          if (ownsPlayback()) onQualitiesChangeRef.current?.(levels);
         });
         handleRef.current = handle;
         if (quality) {
           handle.setQuality(quality);
         }
         const start = () => {
+          if (!ownsPlayback()) return;
           if (resumeSeconds > 0) video.currentTime = resumeSeconds;
           video.playbackRate = playbackSpeed;
-          video.play().catch(() => setPaused(true));
+          video.play().catch(() => {
+            if (ownsPlayback()) setPaused(true);
+          });
           report("start", resumeSeconds);
           heartbeat = window.setInterval(
             () => report("progress", Math.floor(video.currentTime || 0)),
@@ -123,11 +130,15 @@ export function EpisodeView({
           );
         };
         if (video.readyState >= 1) start();
-        else video.addEventListener("loadedmetadata", start, { once: true });
+        else {
+          video.addEventListener("loadedmetadata", start, { once: true });
+          removeMetadataListener = () =>
+            video.removeEventListener("loadedmetadata", start);
+        }
         video.addEventListener("timeupdate", onTime);
         video.addEventListener("ended", finish);
       } catch {
-        if (!cancelled) setFailed(true);
+        if (ownsPlayback()) setFailed(true);
       }
     })();
 
@@ -137,12 +148,16 @@ export function EpisodeView({
       disposeSubtitles();
       setSubtitles([]);
       window.clearInterval(heartbeat);
+      removeMetadataListener();
+      video.pause();
+      video.removeAttribute("src");
+      video.load();
       video.removeEventListener("timeupdate", onTime);
       video.removeEventListener("ended", finish);
       handle?.destroy();
       handleRef.current = null;
     };
-  }, [active, playable, dramaId, episodeId, resumeSeconds]);
+  }, [active, playable, dramaId, episodeId, resumeSeconds, ownerToken]);
 
   useEffect(() => {
     const video = videoRef.current;

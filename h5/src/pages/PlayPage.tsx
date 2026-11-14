@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { getJson, postJson, type UnlockResult } from "../api";
+import { authToken, getJson, postJson, type UnlockResult } from "../api";
 import { useAuth } from "../auth/AuthProvider";
 import type { Locale } from "../copy";
 import { t } from "../copy";
@@ -45,11 +45,32 @@ export function PlayPage({
   onBack,
   onOpenRewards,
 }: Props) {
-  const { requireAuth, user, refresh } = useAuth();
+  const { requireAuth, user: profile, status, refresh } = useAuth();
+  const ownerToken = authToken();
+  const user = status === "user" ? profile : null;
+  const mounted = useRef(false);
+  const generation = useRef(0);
+  const reactionRevision = useRef({ like: 0, favorite: 0 });
   const requestedEpisode = useRef(episodeId);
   requestedEpisode.current = episodeId;
-  const [payload, setPayload] = useState<PlayPayload | null>(null);
-  const [error, setError] = useState(false);
+  const [snapshot, setSnapshot] = useState<{
+    owner: string | null;
+    dramaId: number;
+    data: PlayPayload;
+  } | null>(null);
+  // Hide the previous identity synchronously, before effect cleanup can run.
+  const payload =
+    snapshot?.owner === ownerToken && snapshot.dramaId === dramaId
+      ? snapshot.data
+      : null;
+  const [error, setError] = useState<{
+    owner: string | null;
+    dramaId: number;
+  } | null>(null);
+  const [pendingUnlock, setPendingUnlock] = useState<{
+    owner: string;
+    episodeId: number;
+  } | null>(null);
   const [index, setIndex] = useState(0);
   const [expanded, setExpanded] = useState(false);
   const [sheet, setSheet] = useState<
@@ -90,23 +111,58 @@ export function PlayPage({
     localStorage.setItem("minitv_quality", q);
   };
 
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      generation.current++;
+    };
+  }, []);
+
   const load = () => {
-    setError(false);
-    setPayload(null);
+    if (ownerToken !== authToken()) return;
+    const request = ++generation.current;
+    const revisions = { ...reactionRevision.current };
+    const ownsRequest = () =>
+      mounted.current &&
+      request === generation.current &&
+      ownerToken === authToken();
+    setError(null);
+    setSnapshot(null);
     getJson<PlayPayload>(`/v1/dramas/${dramaId}/play`)
       .then((data) => {
+        if (!ownsRequest()) return;
         const resumeId = requestedEpisode.current ?? data.resume?.episode_id;
         const start = data.items.findIndex((item) => item.id === resumeId);
         setIndex(start < 0 ? 0 : start);
-        setLiked(data.drama.liked);
-        setFavorited(data.drama.favorited);
-        setLikeCount(data.drama.like_count);
-        setPayload(data);
+        if (revisions.like === reactionRevision.current.like) {
+          setLiked(data.drama.liked);
+          setLikeCount(data.drama.like_count);
+        }
+        if (revisions.favorite === reactionRevision.current.favorite)
+          setFavorited(data.drama.favorited);
+        setSnapshot({ owner: ownerToken, dramaId, data });
       })
-      .catch(() => setError(true));
+      .catch(() => {
+        if (ownsRequest()) setError({ owner: ownerToken, dramaId });
+      });
   };
 
-  useEffect(load, [dramaId]);
+  useEffect(() => {
+    setSheet(null);
+    setUnlockTarget(null);
+    setPremiumOpen(false);
+    setCommentCounts({});
+    unlockKeys.current.clear();
+    setPendingUnlock((pending) =>
+      pending?.owner === ownerToken ? pending : null,
+    );
+    reactionRevision.current = { like: 0, favorite: 0 };
+    load();
+    return () => {
+      generation.current++;
+    };
+  }, [dramaId, ownerToken]);
   useEffect(() => {
     if (!payload || episodeId == null) return;
     const selected = payload.items.findIndex((item) => item.id === episodeId);
@@ -115,17 +171,30 @@ export function PlayPage({
       setExpanded(false);
     }
   }, [episodeId, payload]);
+  useEffect(() => {
+    if (!payload || !pendingUnlock || pendingUnlock.owner !== ownerToken)
+      return;
+    const episode = payload.items.find(
+      (item) => item.id === pendingUnlock.episodeId,
+    );
+    setPendingUnlock(null);
+    // A login replay must use the freshly authorized episode, not its guest copy.
+    if (!episode?.locked) return;
+    if (episode.membership_required || (episode.unlock?.coin_price ?? 0) <= 0)
+      setPremiumOpen(true);
+    else setUnlockTarget(episode);
+  }, [payload, pendingUnlock, ownerToken]);
 
   const openUnlock = (episode: PlayEpisode) =>
     requireAuth(() => {
-      const price = episode.unlock?.coin_price ?? 0;
-      // A zero price is membership-only (or a misconfigured drama): never
-      // create a coin flow for it, send the viewer to the plans instead.
-      if (episode.membership_required || price <= 0) {
-        setPremiumOpen(true);
+      const currentOwner = authToken();
+      if (
+        !mounted.current ||
+        !currentOwner ||
+        (ownerToken && ownerToken !== currentOwner)
+      )
         return;
-      }
-      setUnlockTarget(episode);
+      setPendingUnlock({ owner: currentOwner, episodeId: episode.id });
     });
 
   const unlockKeyFor = (episodeId: number) => {
@@ -140,11 +209,18 @@ export function PlayPage({
   };
 
   const finishUnlock = (result: UnlockResult) => {
+    if (!mounted.current || ownerToken !== authToken()) return;
     const episodeId = result.episode_id;
     setUnlockTarget(null);
     unlockKeys.current.delete(episodeId);
-    setPayload((prev) => {
-      if (!prev) return prev;
+    setSnapshot((snapshot) => {
+      if (
+        !snapshot ||
+        snapshot.owner !== ownerToken ||
+        snapshot.dramaId !== dramaId
+      )
+        return snapshot;
+      const prev = snapshot.data;
       const items = prev.items.map((item) =>
         result.status === "subscription" || item.id === episodeId
           ? { ...item, locked: false, unlock: null }
@@ -157,11 +233,14 @@ export function PlayPage({
               new Set([...prev.entitlement.unlocked_episode_ids, episodeId]),
             );
       return {
-        ...prev,
-        items,
-        entitlement: {
-          member: prev.entitlement.member || result.status === "subscription",
-          unlocked_episode_ids: unlocked,
+        ...snapshot,
+        data: {
+          ...prev,
+          items,
+          entitlement: {
+            member: prev.entitlement.member || result.status === "subscription",
+            unlocked_episode_ids: unlocked,
+          },
         },
       };
     });
@@ -177,9 +256,7 @@ export function PlayPage({
     }
   };
 
-  const openPremium = () => requireAuth(() => setPremiumOpen(true));
-
-  if (error)
+  if (error && error.owner === ownerToken && error.dramaId === dramaId)
     return (
       <div className="center">
         <button className="retry" onClick={load}>
@@ -216,6 +293,14 @@ export function PlayPage({
     };
     // Signed out: ask for a session, then replay this exact tap.
     requireAuth(() => {
+      const actionOwner = authToken();
+      if (
+        !mounted.current ||
+        !actionOwner ||
+        (ownerToken && ownerToken !== actionOwner)
+      )
+        return;
+      const revision = ++reactionRevision.current[kind];
       apply(next);
       postJson("/v1/reactions", {
         target_type: "drama",
@@ -223,6 +308,13 @@ export function PlayPage({
         kind,
         remove: !next,
       }).catch(() => {
+        if (
+          !mounted.current ||
+          authToken() !== actionOwner ||
+          reactionRevision.current[kind] !== revision
+        )
+          return;
+        reactionRevision.current[kind]++;
         apply(!next);
         toast(t(locale, "err_reaction"));
       });
@@ -256,7 +348,7 @@ export function PlayPage({
                   signedIn={Boolean(user)}
                   balance={user?.coins ?? 0}
                   onUnlock={() => openUnlock(episode)}
-                  onMember={openPremium}
+                  onMember={() => openUnlock(episode)}
                   onNeedCoins={onOpenRewards}
                 />
               ) : (
