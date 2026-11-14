@@ -267,10 +267,7 @@ export function startCheckout(planCode: string): Promise<CheckoutResult> {
       cancel_url: window.location.origin + "/?checkout=cancel&surface=h5" + window.location.hash,
     },
     { "Idempotency-Key": intent },
-  ).then((result) => {
-    sessionStorage.setItem("jjtv_h5_checkout_order", result.order_no);
-    return result;
-  });
+  );
 }
 
 /** Stop renewing; access stays until the end of the paid period. */

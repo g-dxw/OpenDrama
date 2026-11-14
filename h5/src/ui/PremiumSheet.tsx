@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ApiError,
+  authToken,
   cancelSubscription,
   getPlans,
   startCheckout,
@@ -12,6 +13,7 @@ import { t } from "../copy";
 import { Sheet } from "./Sheet";
 import { toast } from "./toast";
 import { useAuth } from "../auth/AuthProvider";
+import { setMobileCheckoutActive } from "../../../shared/consumer/surface";
 
 type Membership = NonNullable<MeProfile["membership"]>;
 type BillingMode = "subscription" | "one_time";
@@ -42,13 +44,66 @@ export function PremiumSheet({
   onChanged: () => void;
   onClose: () => void;
 }) {
-  const { requireAuth } = useAuth();
+  const { requireAuth, loginOpen, status } = useAuth();
   const [plans, setPlans] = useState<Plan[]>([]);
   const [mode, setMode] = useState<BillingMode>("one_time");
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   const [showPlans, setShowPlans] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const mounted = useRef(false),
+    generation = useRef(0),
+    ownerToken = useRef(authToken()),
+    pinOwner = useRef("");
+  if (!pinOwner.current) pinOwner.current = "h5-premium-" + crypto.randomUUID();
+  const awaitingAuth = useRef(false);
+  const currentToken = authToken();
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      generation.current++;
+      setMobileCheckoutActive(pinOwner.current, false);
+    };
+  }, []);
+  useEffect(() => {
+    if (ownerToken.current !== currentToken) {
+      ownerToken.current = currentToken;
+      generation.current++;
+      setBusy(null);
+      if (!awaitingAuth.current)
+        setMobileCheckoutActive(pinOwner.current, false);
+    }
+  }, [currentToken]);
+  useEffect(() => {
+    if (awaitingAuth.current && !loginOpen && status === "guest") {
+      awaitingAuth.current = false;
+      setMobileCheckoutActive(pinOwner.current, false);
+    }
+  }, [loginOpen, status]);
+  const beginRequest = (kind: string) => {
+    const token = authToken();
+    if (!mounted.current || !token) {
+      setMobileCheckoutActive(pinOwner.current, false);
+      return null;
+    }
+    ownerToken.current = token;
+    const id = ++generation.current;
+    setBusy(kind);
+    setError("");
+    setMobileCheckoutActive(pinOwner.current, true);
+    return { id, token };
+  };
+  const isCurrent = (request: { id: number; token: string }) =>
+    mounted.current &&
+    generation.current === request.id &&
+    authToken() === request.token;
+  const finishRequest = (request: { id: number; token: string }) => {
+    if (generation.current !== request.id) return;
+    generation.current++;
+    setMobileCheckoutActive(pinOwner.current, false);
+    if (mounted.current) setBusy(null);
+  };
 
   const active = Boolean(membership?.active);
   const isPass = membership?.billing_mode === "one_time";
@@ -71,35 +126,59 @@ export function PremiumSheet({
     };
   }, []);
 
-  const subscribe = (code: string) => requireAuth(() => { void startSubscription(code); });
+  const subscribe = (code: string) => {
+    if (!mounted.current) return;
+    awaitingAuth.current = status !== "user";
+    setMobileCheckoutActive(pinOwner.current, true);
+    requireAuth(() => {
+      awaitingAuth.current = false;
+      if (mounted.current) void startSubscription(code);
+      else setMobileCheckoutActive(pinOwner.current, false);
+    });
+  };
   async function startSubscription(code: string) {
-    setBusy(code);
-    setError("");
+    const request = beginRequest(code);
+    if (!request) return;
     try {
       const result = await startCheckout(code);
+      if (!isCurrent(request)) {
+        finishRequest(request);
+        return;
+      }
+      sessionStorage.setItem("jjtv_h5_checkout_order", result.order_no);
+      // Keep the owning mobile tree pinned until the checkout navigation unmounts it.
       window.location.assign(result.url);
     } catch (err) {
-      setBusy(null);
-      if (err instanceof ApiError && err.status === 401) {
-        setError(t(locale, "premium_need_sign_in"));
-      } else if (err instanceof ApiError && err.message.includes("0.50")) {
-        setError(t(locale, "premium_min_price"));
-      } else {
-        setError(t(locale, "premium_failed"));
+      if (!isCurrent(request)) {
+        finishRequest(request);
+        return;
       }
+      finishRequest(request);
+      if (err instanceof ApiError && err.status === 401)
+        setError(t(locale, "premium_need_sign_in"));
+      else if (err instanceof ApiError && err.message.includes("0.50"))
+        setError(t(locale, "premium_min_price"));
+      else setError(t(locale, "premium_failed"));
     }
   }
-
   async function stopRenewing() {
-    setBusy("cancel");
-    setError("");
+    const request = beginRequest("cancel");
+    if (!request) return;
     try {
       await cancelSubscription();
+      if (!isCurrent(request)) {
+        finishRequest(request);
+        return;
+      }
       onChanged();
       toast(t(locale, "premium_cancel_done"));
       onClose();
     } catch {
-      setBusy(null);
+      if (!isCurrent(request)) {
+        finishRequest(request);
+        return;
+      }
+      finishRequest(request);
       setError(t(locale, "premium_cancel_failed"));
     }
   }
@@ -123,18 +202,32 @@ export function PremiumSheet({
     >
       {showActive && membership ? (
         <>
-          <div className={membership.canceling ? "premium-status canceling" : "premium-status"}>
+          <div
+            className={
+              membership.canceling
+                ? "premium-status canceling"
+                : "premium-status"
+            }
+          >
             <span className="premium-status-crown">★</span>
             <div className="premium-status-main">
-              <b>{t(locale, `premium_plan_${membership.plan_code ?? "monthly"}`)}</b>
+              <b>
+                {t(locale, `premium_plan_${membership.plan_code ?? "monthly"}`)}
+              </b>
               <i>
                 {membership.canceling
-                  ? t(locale, "premium_ends_on", { date: formatDay(membership.until, locale) })
-                  : t(locale, "premium_active_until", { date: formatDay(membership.until, locale) })}
+                  ? t(locale, "premium_ends_on", {
+                      date: formatDay(membership.until, locale),
+                    })
+                  : t(locale, "premium_active_until", {
+                      date: formatDay(membership.until, locale),
+                    })}
               </i>
             </div>
             <span className="premium-status-tag">
-              {isPass ? t(locale, "premium_pass_badge") : t(locale, "premium_badge_active")}
+              {isPass
+                ? t(locale, "premium_pass_badge")
+                : t(locale, "premium_badge_active")}
             </span>
           </div>
           <ul className="premium-benefits status">
@@ -175,7 +268,9 @@ export function PremiumSheet({
                 disabled={busy !== null}
                 data-testid="premium-cancel"
               >
-                {busy === "cancel" ? t(locale, "premium_canceling") : t(locale, "premium_cancel_cta")}
+                {busy === "cancel"
+                  ? t(locale, "premium_canceling")
+                  : t(locale, "premium_cancel_cta")}
               </button>
               <p className="premium-note">{t(locale, "premium_cancel_hint")}</p>
             </>
@@ -184,7 +279,9 @@ export function PremiumSheet({
       ) : (
         <>
           <p className="premium-lede">
-            {mode === "one_time" ? t(locale, "premium_lede_onetime") : t(locale, "premium_lede")}
+            {mode === "one_time"
+              ? t(locale, "premium_lede_onetime")
+              : t(locale, "premium_lede")}
           </p>
           {state === "loading" && <div className="me-sheet-loading">…</div>}
           {state === "error" && (
@@ -194,10 +291,23 @@ export function PremiumSheet({
           )}
           <div className="premium-plans">
             {plans.map((plan) => (
-              <div key={plan.code} className={plan.benefits?.best ? "premium-plan best" : "premium-plan"}>
-                {plan.benefits?.best && <span className="premium-badge">{t(locale, "premium_popular")}</span>}
+              <div
+                key={plan.code}
+                className={
+                  plan.benefits?.best ? "premium-plan best" : "premium-plan"
+                }
+              >
+                {plan.benefits?.best && (
+                  <span className="premium-badge">
+                    {t(locale, "premium_popular")}
+                  </span>
+                )}
                 <div className="premium-plan-head">
-                  <b>{locale === "zh" ? plan.name_zh || plan.name_en : plan.name_en}</b>
+                  <b>
+                    {locale === "zh"
+                      ? plan.name_zh || plan.name_en
+                      : plan.name_en}
+                  </b>
                   <span className="premium-price">
                     ${(plan.price_cents / 100).toFixed(2)}
                     <i>/{unitOf(plan)}</i>
@@ -226,7 +336,9 @@ export function PremiumSheet({
           </div>
           {error && <p className="premium-error">{error}</p>}
           <p className="premium-note">
-            {mode === "one_time" ? t(locale, "premium_note_onetime") : t(locale, "premium_note")}
+            {mode === "one_time"
+              ? t(locale, "premium_note_onetime")
+              : t(locale, "premium_note")}
           </p>
         </>
       )}

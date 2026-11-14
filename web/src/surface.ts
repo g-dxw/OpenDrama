@@ -1,7 +1,6 @@
-/** A pending desktop payment must keep its owning React tree across resizes. */
-export const CHECKOUT_SURFACE_EVENT = "jjtv:desktop-checkout";
-export function setDesktopCheckoutActive(active: boolean) {
-  window.dispatchEvent(
-    new CustomEvent<boolean>(CHECKOUT_SURFACE_EVENT, { detail: active }),
-  );
-}
+export {
+  CHECKOUT_SURFACE_EVENT,
+  MOBILE_CHECKOUT_SURFACE_EVENT,
+  setDesktopCheckoutActive,
+  setMobileCheckoutActive,
+} from "../../shared/consumer/surface";

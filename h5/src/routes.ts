@@ -20,8 +20,12 @@ export function readMobileRoute(hash = window.location.hash) {
     candidate != null && Number.isSafeInteger(candidate) ? candidate : null;
   const episode = Number(params.get("episode"));
   const section = parts[1] || "history";
+  const library =
+    section === "favorites" || section === "likes"
+      ? section
+      : params.get("library") || (params.get("return") || "").split("/")[1];
   const meTab: MeTab =
-    section === "favorites" || section === "likes" ? section : "history";
+    library === "favorites" || library === "likes" ? library : "history";
   const sheets: Record<string, MeSheet> = {
     profile: "edit",
     ledger: "ledger",
@@ -52,6 +56,25 @@ export function readMobileRoute(hash = window.location.hash) {
     searching: path === "search",
     query: params.get("q") || "",
     meTab,
-    meSheet: premium ? "premium" : sheets[section] || null,
+    meSheet: premium
+      ? "premium"
+      : params.get("sheet") === "signout" && section === "settings"
+        ? "signout"
+        : sheets[section] || null,
   };
+}
+
+/** Replace only the hash, preserving landing/checkout query parameters and router listeners. */
+export function replaceMobileHash(hash: string) {
+  const next = "#" + hash.replace(/^#/, "");
+  if (window.location.hash === next) return;
+  const oldURL = window.location.href;
+  window.history.replaceState(
+    window.history.state,
+    "",
+    window.location.pathname + window.location.search + next,
+  );
+  window.dispatchEvent(
+    new HashChangeEvent("hashchange", { oldURL, newURL: window.location.href }),
+  );
 }

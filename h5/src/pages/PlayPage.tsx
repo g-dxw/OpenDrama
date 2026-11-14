@@ -23,6 +23,7 @@ import type { PlayEpisode, PlayPayload } from "../types";
 import { CommentSheet } from "../ui/CommentSheet";
 import { PremiumSheet } from "../ui/PremiumSheet";
 import { toast } from "../ui/toast";
+import { replaceMobileHash } from "../routes";
 import { UnlockSheet } from "../ui/UnlockSheet";
 
 interface Props {
@@ -37,8 +38,16 @@ const RANGE = 30;
 const SPEED_OPTIONS = [0.75, 1.0, 1.25, 1.5, 2.0];
 
 /** The drama's own page: every episode, opened at the resume point. Finishing one jumps to the next. */
-export function PlayPage({ dramaId, episodeId, locale, onBack, onOpenRewards }: Props) {
+export function PlayPage({
+  dramaId,
+  episodeId,
+  locale,
+  onBack,
+  onOpenRewards,
+}: Props) {
   const { requireAuth, user, refresh } = useAuth();
+  const requestedEpisode = useRef(episodeId);
+  requestedEpisode.current = episodeId;
   const [payload, setPayload] = useState<PlayPayload | null>(null);
   const [error, setError] = useState(false);
   const [index, setIndex] = useState(0);
@@ -86,7 +95,7 @@ export function PlayPage({ dramaId, episodeId, locale, onBack, onOpenRewards }: 
     setPayload(null);
     getJson<PlayPayload>(`/v1/dramas/${dramaId}/play`)
       .then((data) => {
-        const resumeId = episodeId ?? data.resume?.episode_id;
+        const resumeId = requestedEpisode.current ?? data.resume?.episode_id;
         const start = data.items.findIndex((item) => item.id === resumeId);
         setIndex(start < 0 ? 0 : start);
         setLiked(data.drama.liked);
@@ -97,7 +106,15 @@ export function PlayPage({ dramaId, episodeId, locale, onBack, onOpenRewards }: 
       .catch(() => setError(true));
   };
 
-  useEffect(load, [dramaId, episodeId]);
+  useEffect(load, [dramaId]);
+  useEffect(() => {
+    if (!payload || episodeId == null) return;
+    const selected = payload.items.findIndex((item) => item.id === episodeId);
+    if (selected >= 0) {
+      setIndex(selected);
+      setExpanded(false);
+    }
+  }, [episodeId, payload]);
 
   const openUnlock = (episode: PlayEpisode) =>
     requireAuth(() => {
@@ -180,6 +197,11 @@ export function PlayPage({ dramaId, episodeId, locale, onBack, onOpenRewards }: 
     if (next < 0 || next >= payload.items.length) return;
     setIndex(next);
     setExpanded(false);
+    const params = new URLSearchParams(
+      window.location.hash.split("?")[1] || "",
+    );
+    params.set("episode", String(payload.items[next].id));
+    replaceMobileHash("watch/" + dramaId + "?" + params.toString());
   };
   const toggleReaction = (kind: "like" | "favorite") => {
     const active = kind === "like" ? liked : favorited;

@@ -169,7 +169,7 @@ function AppShell() {
           </div>
         ) : playing ? (
           <PlayPage
-            key={dramaId + ":" + (route.episodeId || "resume")}
+            key={dramaId}
             dramaId={dramaId}
             episodeId={route.episodeId}
             locale={locale}
@@ -197,7 +197,6 @@ function AppShell() {
           <ForYouPage locale={locale} onOpenDrama={setDramaId} />
         ) : tab === "me" ? (
           <MePage
-            key={route.meTab + ":" + route.meSheet}
             locale={locale}
             initialTab={route.meTab}
             initialSheet={route.meSheet}

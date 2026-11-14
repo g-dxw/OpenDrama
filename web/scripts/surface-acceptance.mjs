@@ -28,7 +28,12 @@ const chrome =
 const browser = await puppeteer.launch({
   executablePath: chrome,
   headless: true,
-  args: ["--no-first-run", "--no-default-browser-check"],
+  ignoreDefaultArgs: ["--hide-scrollbars"],
+  args: [
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--autoplay-policy=no-user-gesture-required",
+  ],
 });
 const page = await browser.newPage(),
   errors = [],
@@ -36,6 +41,35 @@ const page = await browser.newPage(),
   calls = [],
   checks = [];
 page.on("pageerror", (e) => errors.push(e.message));
+let activeMember = false,
+  playableFirst = false,
+  media = Buffer.alloc(0),
+  checkoutHold = null,
+  cancelHold = null;
+const pending = [];
+function hold(kind, order = "H5-ORDER") {
+  let release, notify;
+  const gate = new Promise((resolve) => {
+      release = resolve;
+    }),
+    started = new Promise((resolve) => {
+      notify = resolve;
+    });
+  const item = { release, notify, gate, started, order };
+  pending.push(item);
+  if (kind === "checkout") checkoutHold = item;
+  else cancelHold = item;
+  return item;
+}
+const settled = async () => {
+  await page.waitForNetworkIdle({ idleTime: 200 });
+  await page.evaluate(
+    () =>
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      ),
+  );
+};
 const drama = {
   id: 1,
   title: "Surface fixture story",
@@ -64,11 +98,21 @@ const profile = (token) => ({
   follower_count: 0,
   received_likes: 0,
   reminder_opt_in: false,
-  membership: { active: false, plan_code: null, until: null, canceling: false },
+  membership: {
+    active: activeMember,
+    plan_code: activeMember ? "weekly" : null,
+    until: activeMember ? "2026-12-14T00:00:00Z" : null,
+    canceling: false,
+    billing_mode: activeMember ? "subscription" : null,
+  },
 });
 await page.setRequestInterception(true);
 page.on("request", async (req) => {
   const url = new URL(req.url());
+  if (url.pathname === "/fixtures/clip.webm") {
+    await req.respond({ status: 200, contentType: "video/webm", body: media });
+    return;
+  }
   if (url.pathname.startsWith("/v1/")) {
     let body = {};
     try {
@@ -107,9 +151,11 @@ page.on("request", async (req) => {
       };
     else if (p === "/v1/me") {
       if (
-        !["Bearer desktop-token", "Bearer mobile-token"].includes(
-          req.headers().authorization,
-        )
+        ![
+          "Bearer desktop-token",
+          "Bearer mobile-token",
+          "Bearer mobile-token-b",
+        ].includes(req.headers().authorization)
       ) {
         status = 401;
         result = { detail: "Sign in required" };
@@ -152,8 +198,8 @@ page.on("request", async (req) => {
           episode_number: i + 1,
           title: "Episode " + (i + 1),
           duration_seconds: 60,
-          free: false,
-          locked: true,
+          free: playableFirst && i === 0,
+          locked: !(playableFirst && i === 0),
           progress_seconds: 0,
           comment_count: 0,
           unlock: { coin_price: 20 },
@@ -161,7 +207,43 @@ page.on("request", async (req) => {
         resume: { episode_id: 10 },
         entitlement: { member: false, unlocked_episode_ids: [] },
       };
-    else if (p === "/v1/plans")
+    else if (p === "/v1/playback")
+      result = {
+        allowed: true,
+        url: origin + "/fixtures/clip.webm",
+        episode_id: body.episode_id,
+      };
+    else if (/^\/v1\/playback\/(start|progress|complete)$/.test(p))
+      result = { ok: true };
+    else if (p === "/v1/commerce/checkout") {
+      const held = checkoutHold;
+      checkoutHold = null;
+      if (!held) {
+        unknown.push("Unplanned checkout");
+        status = 409;
+        result = { detail: "Unexpected purchase" };
+      } else {
+        held.notify();
+        await held.gate;
+        result = {
+          url: origin + "/?checkout=cancel&surface=h5#account/orders",
+          session_id: "cs_fixture",
+          order_no: held.order,
+        };
+      }
+    } else if (p === "/v1/billing/cancel") {
+      const held = cancelHold;
+      cancelHold = null;
+      if (!held) {
+        unknown.push("Unplanned cancellation");
+        status = 409;
+        result = { detail: "Unexpected cancellation" };
+      } else {
+        held.notify();
+        await held.gate;
+        result = { ok: true };
+      }
+    } else if (p === "/v1/plans")
       result = {
         billing_mode: "one_time",
         items: [
@@ -282,7 +364,7 @@ try {
   assert.equal(await page.$$("#app").then((x) => x.length), 0);
   assert.equal(
     await page.$eval("body", (e) => getComputedStyle(e).minWidth),
-    "1024px",
+    "0px",
   );
   assert.equal(
     await page.$eval(
@@ -292,6 +374,33 @@ try {
     "flex",
   );
   pass("1024px switches to the desktop root with desktop navigation");
+  const gutter = await page.addStyleTag({
+    content:
+      "html{overflow-y:scroll!important;scrollbar-gutter:stable!important}html::-webkit-scrollbar{width:15px}",
+  });
+  const geometry = await page.evaluate(() => ({
+    inner: innerWidth,
+    client: document.documentElement.clientWidth,
+    scroll: document.documentElement.scrollWidth,
+    header: document.querySelector(".consumer-header").getBoundingClientRect()
+      .width,
+  }));
+  assert.equal(geometry.inner, 1024);
+  assert(
+    geometry.client < geometry.inner,
+    "fixture must reserve a real vertical scrollbar gutter",
+  );
+  assert(geometry.scroll <= geometry.client);
+  assert(geometry.header <= geometry.client + 0.5);
+  await gutter.dispose();
+  await page.evaluate(() => {
+    for (const style of [...document.head.querySelectorAll("style")])
+      if (style.textContent.includes("scrollbar-gutter:stable!important"))
+        style.remove();
+  });
+  pass(
+    "1024px desktop follows client width when a classic 15px scrollbar is reserved",
+  );
   await resize(390);
   await surface("mobile");
   assert.equal(
@@ -331,6 +440,110 @@ try {
   pass(
     "legacy watch links preserve an explicit episode instead of using the resume episode",
   );
+  await goto("?pid=landing#watch/1?episode=10&return=price");
+  await surface("mobile");
+  await page.waitForSelector(".ep-bar");
+  await page.$eval(
+    ".play",
+    (element) => (element.dataset.surfaceSentinel = "kept"),
+  );
+  const beforePlayReads = calls.filter(
+    (call) => call.path === "/v1/dramas/1/play",
+  ).length;
+  await page.click(".ep-bar");
+  await page.waitForSelector(".ep-grid button");
+  await page.$$eval(".ep-grid button", (buttons) =>
+    buttons.find((button) => button.textContent.trim() === "2").click(),
+  );
+  await page.waitForFunction(
+    () =>
+      new URLSearchParams(location.hash.split("?")[1]).get("episode") ===
+        "11" &&
+      document.querySelector(".back-title")?.textContent.includes("2"),
+  );
+  assert.equal(
+    await page.$eval(".play", (element) => element.dataset.surfaceSentinel),
+    "kept",
+  );
+  assert.equal(
+    calls.filter((call) => call.path === "/v1/dramas/1/play").length,
+    beforePlayReads,
+  );
+  assert.equal(new URL(page.url()).searchParams.get("pid"), "landing");
+  assert.equal(
+    new URLSearchParams(new URL(page.url()).hash.split("?")[1]).get("return"),
+    "price",
+  );
+  await page.reload({ waitUntil: "networkidle0" });
+  await surface("mobile");
+  await page.waitForFunction(() =>
+    document.querySelector(".back-title")?.textContent.includes("2"),
+  );
+  await resize(1440);
+  await surface("desktop");
+  await page.waitForFunction(() =>
+    document
+      .querySelector('.episode-button[aria-current="true"]')
+      ?.textContent.includes("2"),
+  );
+  await resize(390);
+  await surface("mobile");
+  await page.waitForFunction(() =>
+    document.querySelector(".back-title")?.textContent.includes("2"),
+  );
+  pass(
+    "H5 selection updates its URL without remounting; reload and resize retain the chosen episode and query",
+  );
+  media = Buffer.from(
+    await page.evaluate(async () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = 160;
+      canvas.height = 240;
+      const context = canvas.getContext("2d"),
+        stream = canvas.captureStream(12),
+        recorder = new MediaRecorder(stream, { mimeType: "video/webm" }),
+        chunks = [];
+      recorder.ondataavailable = (event) => chunks.push(event.data);
+      const stopped = new Promise((resolve) => {
+        recorder.onstop = resolve;
+      });
+      recorder.start();
+      const started = performance.now();
+      await new Promise((resolve) => {
+        const draw = () => {
+          context.fillStyle =
+            "rgb(" +
+            (Math.floor((performance.now() - started) / 7) % 255) +
+            ",40,70)";
+          context.fillRect(0, 0, 160, 240);
+          if (performance.now() - started < 1400) requestAnimationFrame(draw);
+          else resolve();
+        };
+        draw();
+      });
+      recorder.stop();
+      await stopped;
+      stream.getTracks().forEach((track) => track.stop());
+      return Array.from(new Uint8Array(await new Blob(chunks).arrayBuffer()));
+    }),
+  );
+  playableFirst = true;
+  await goto("#watch/1?episode=10");
+  await surface("mobile");
+  await page.waitForFunction(
+    () =>
+      new URLSearchParams(location.hash.split("?")[1]).get("episode") ===
+        "11" &&
+      document.querySelector(".back-title")?.textContent.includes("2"),
+  );
+  assert(
+    calls.some(
+      (call) =>
+        call.path === "/v1/playback/complete" && call.body.episode_id === 10,
+    ),
+  );
+  playableFirst = false;
+  pass("real H5 media completion advances the selected episode URL");
   await goto("#search?q=Orange");
   await surface("mobile");
   await page.waitForSelector(".search .result");
@@ -392,6 +605,183 @@ try {
     () => document.querySelector(".me-tab.on")?.textContent.trim() === "Saved",
   );
   pass("account section deep links open the matching H5 library tab");
+  await goto("#account");
+  await surface("mobile");
+  await page.waitForFunction(
+    () =>
+      document.querySelector(".me-hero h2")?.textContent === "Mobile viewer",
+  );
+  await page.$eval(
+    ".me-page",
+    (element) => (element.dataset.surfaceSentinel = "kept"),
+  );
+  await page.click('[data-testid="me-tab-favorites"]');
+  await page.waitForFunction(() =>
+    location.hash.startsWith("#account/favorites"),
+  );
+  assert.equal(
+    await page.$eval(".me-page", (element) => element.dataset.surfaceSentinel),
+    "kept",
+  );
+  await page.click('[data-testid="me-orders"]');
+  await page.waitForSelector('[data-testid="orders-sheet"]');
+  assert(new URL(page.url()).hash.startsWith("#account/orders"));
+  await resize(1440);
+  await surface("desktop");
+  await resize(390);
+  await surface("mobile");
+  await page.waitForSelector('[data-testid="orders-sheet"]');
+  assert.equal(
+    await page.$eval(".me-tab.on", (element) => element.textContent.trim()),
+    "Saved",
+  );
+  await page.click('[data-testid="orders-sheet"] .close-btn');
+  await page.waitForFunction(() => location.hash === "#account/favorites");
+  pass(
+    "H5 saved and order actions synchronize routes and survive desktop round trips without losing the library tab",
+  );
+  await page.evaluate(() => localStorage.removeItem("minitv_h5_token"));
+  await goto("#price");
+  await page.reload({ waitUntil: "networkidle0" });
+  await surface("mobile");
+  await page.waitForSelector('[data-testid="premium-buy-weekly"]');
+  const guestPurchases = calls.filter(
+    (call) => call.path === "/v1/commerce/checkout",
+  ).length;
+  await page.click('[data-testid="premium-buy-weekly"]');
+  await page.waitForSelector('[data-testid="login-sheet"]');
+  await resize(1920);
+  await surface("mobile");
+  await page.click('[data-testid="login-sheet"] .close-btn');
+  await surface("desktop");
+  assert.equal(
+    calls.filter((call) => call.path === "/v1/commerce/checkout").length,
+    guestPurchases,
+  );
+  pass(
+    "queued guest subscription login pins mobile and releases it when sign-in is canceled",
+  );
+  await page.evaluate(() =>
+    localStorage.setItem("minitv_h5_token", "mobile-token"),
+  );
+  await resize(390);
+  await goto("#price");
+  await surface("mobile");
+  await page.waitForSelector('[data-testid="premium-buy-weekly"]');
+  const purchase = hold("checkout", "H5-PINNED-ORDER");
+  await page.click('[data-testid="premium-buy-weekly"]');
+  await purchase.started;
+  await resize(1440);
+  await surface("mobile");
+  assert.equal(
+    await page.$$(".consumer-header").then((elements) => elements.length),
+    0,
+  );
+  const navigated = page.waitForNavigation({ waitUntil: "networkidle0" });
+  purchase.release();
+  await navigated;
+  await surface("mobile");
+  assert.equal(
+    await page.evaluate(() => sessionStorage.getItem("jjtv_h5_checkout_order")),
+    "H5-PINNED-ORDER",
+  );
+  pass(
+    "an in-flight H5 checkout remains mobile through resize until its confirmed redirect",
+  );
+  await resize(390);
+  await goto("#price");
+  await surface("mobile");
+  await page.waitForSelector('[data-testid="premium-buy-weekly"]');
+  const abandoned = hold("checkout", "ABANDONED-ORDER");
+  await page.click('[data-testid="premium-buy-weekly"]');
+  await abandoned.started;
+  await page.click('[data-testid="premium-sheet"] .close-btn');
+  await page.waitForSelector('[data-testid="premium-sheet"]', { hidden: true });
+  await resize(1440);
+  await surface("desktop");
+  await page.evaluate(() =>
+    sessionStorage.setItem("jjtv_h5_checkout_order", "NEW-OWNER-ORDER"),
+  );
+  const abandonedResponse = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/v1/commerce/checkout",
+  );
+  abandoned.release();
+  await (await abandonedResponse).buffer();
+  await settled();
+  assert(new URL(page.url()).hash.startsWith("#account/"));
+  assert.equal(
+    await page.evaluate(() => sessionStorage.getItem("jjtv_h5_checkout_order")),
+    "NEW-OWNER-ORDER",
+  );
+  pass(
+    "unmounted H5 checkout responses cannot navigate the new desktop tree or overwrite its order context",
+  );
+  await resize(390);
+  await goto("#price");
+  await surface("mobile");
+  await page.waitForSelector('[data-testid="premium-buy-weekly"]');
+  const changedOwner = hold("checkout", "OLD-TOKEN-ORDER");
+  await page.click('[data-testid="premium-buy-weekly"]');
+  await changedOwner.started;
+  await page.evaluate(() => {
+    localStorage.setItem("minitv_h5_token", "mobile-token-b");
+    sessionStorage.setItem("jjtv_h5_checkout_order", "OTHER-MOBILE-ORDER");
+  });
+  const changedResponse = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/v1/commerce/checkout",
+  );
+  changedOwner.release();
+  await (await changedResponse).buffer();
+  await settled();
+  assert.equal(new URL(page.url()).hash, "#price");
+  assert.equal(
+    await page.evaluate(() => sessionStorage.getItem("jjtv_h5_checkout_order")),
+    "OTHER-MOBILE-ORDER",
+  );
+  await resize(1440);
+  await surface("desktop");
+  pass(
+    "a late H5 checkout response for another token releases its pin without redirecting or overwriting the new order",
+  );
+  activeMember = true;
+  await page.evaluate(() =>
+    localStorage.setItem("minitv_h5_token", "mobile-token"),
+  );
+  await resize(390);
+  await goto("#price");
+  await surface("mobile");
+  await page.waitForSelector('[data-testid="premium-cancel"]');
+  const cancellation = hold("cancel");
+  await page.click('[data-testid="premium-cancel"]');
+  await cancellation.started;
+  await resize(1440);
+  await surface("mobile");
+  await page.click('[data-testid="premium-sheet"] .close-btn');
+  await surface("desktop");
+  const profileReads = calls.filter(
+    (call) =>
+      call.path === "/v1/me" && call.headers["x-device-id"]?.startsWith("h5-"),
+  ).length;
+  const canceledResponse = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/v1/billing/cancel",
+  );
+  cancellation.release();
+  await (await canceledResponse).buffer();
+  await settled();
+  assert.equal(
+    calls.filter(
+      (call) =>
+        call.path === "/v1/me" &&
+        call.headers["x-device-id"]?.startsWith("h5-"),
+    ).length,
+    profileReads,
+  );
+  activeMember = false;
+  pass(
+    "membership cancellation uses the same mobile pin and ignores effects after the sheet unmounts",
+  );
+  await resize(390);
+
   await goto("#coins");
   await surface("desktop");
   await page.waitForSelector(".desktop-route-notice a");
@@ -467,7 +857,12 @@ try {
     "all fixture requests keep device/token ownership; no unexpected APIs, providers or browser errors",
   );
   console.log(JSON.stringify({ passed: checks.length, screenshots: out }));
+} catch (error) {
+  await page.screenshot({ path: path.join(out, "surface-failure.png"), fullPage: true }).catch(() => {});
+  console.error(JSON.stringify({ route: page.url(), errors, unknown }));
+  throw error;
 } finally {
+  pending.forEach((item) => item.release());
   await browser.close();
   await server.close();
 }

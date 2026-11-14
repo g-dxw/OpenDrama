@@ -12,7 +12,10 @@ import playerCss from "./player.css?inline";
 import localeCss from "./locale.css?inline";
 const DesktopApp = lazy(() => import("./App"));
 const MobileApp = lazy(() => import("./mobile"));
-import { CHECKOUT_SURFACE_EVENT } from "./surface";
+import {
+  CHECKOUT_SURFACE_EVENT,
+  MOBILE_CHECKOUT_SURFACE_EVENT,
+} from "./surface";
 import { loadLocale, translate } from "./locale";
 export const DESKTOP_MIN_WIDTH = 1024;
 export function supportsMobile(hash: string) {
@@ -68,12 +71,13 @@ const desktopCss =
   desktopStyles(
     consumerCss + "\n" + detailsCss + "\n" + playerCss + "\n" + localeCss,
   ) +
-  "\nhtml,body,#root{min-width:1024px}.desktop-route-notice{width:100vw;max-width:1024px;padding:10px 16px;background:#25151d;color:#fff;font:13px/1.5 sans-serif;box-sizing:border-box}.desktop-route-notice a{color:#ffa4bc;margin-left:12px;text-decoration:underline}";
+  "\n@media(max-width:1023px){html,body,#root{min-width:1024px}}.desktop-route-notice{width:100vw;max-width:1024px;padding:10px 16px;background:#25151d;color:#fff;font:13px/1.5 sans-serif;box-sizing:border-box}.desktop-route-notice a{color:#ffa4bc;margin-left:12px;text-decoration:underline}";
 export function ResponsiveApp() {
   const [locale, setLocale] = useState(loadLocale);
   const [width, setWidth] = useState(window.innerWidth);
   const [hash, setHash] = useState(window.location.hash);
   const [checkoutPinned, setCheckoutPinned] = useState(false);
+  const [mobilePins, setMobilePins] = useState<Set<string>>(() => new Set());
   const [paymentSurface, setPaymentSurface] = useState<
     "desktop" | "mobile" | null
   >(() => {
@@ -94,11 +98,24 @@ export function ResponsiveApp() {
     const localeChanged = () => setLocale(loadLocale());
     const checkout = (event: Event) =>
       setCheckoutPinned((event as CustomEvent<boolean>).detail === true);
+    const mobileCheckout = (event: Event) => {
+      const detail = (event as CustomEvent<{ owner: string; active: boolean }>)
+        .detail;
+      if (!detail || typeof detail.owner !== "string") return;
+      setMobilePins((previous) => {
+        const next = new Set(previous);
+        if (detail.active) next.add(detail.owner);
+        else next.delete(detail.owner);
+        return next;
+      });
+    };
+    window.addEventListener(MOBILE_CHECKOUT_SURFACE_EVENT, mobileCheckout);
     window.addEventListener("resize", resize);
     window.addEventListener("hashchange", route);
     window.addEventListener(CHECKOUT_SURFACE_EVENT, checkout);
     window.addEventListener("jjtv:localechange", localeChanged);
     return () => {
+      window.removeEventListener(MOBILE_CHECKOUT_SURFACE_EVENT, mobileCheckout);
       window.removeEventListener("resize", resize);
       window.removeEventListener("hashchange", route);
       window.removeEventListener(CHECKOUT_SURFACE_EVENT, checkout);
@@ -106,6 +123,7 @@ export function ResponsiveApp() {
     };
   }, []);
   const mobile =
+    mobilePins.size > 0 ||
     paymentSurface === "mobile" ||
     (!checkoutPinned &&
       paymentSurface !== "desktop" &&
