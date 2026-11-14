@@ -104,6 +104,7 @@ page.on('request',request=>{
   else if(p==='/v1/home/groups')data={banners:[{id:1,drama_id:1,title:drama.title,headline:drama.title,cover_url:null,slot:'hero'}],groups:[{id:1,name:'Operator Collection',style:'poster3',position:0,dramas:[drama,{...drama,id:2}]}]};
   else if(p==='/v1/config')data={tabs:[],copies:{}};
   else if(p==='/v1/feed')data={session_id:'locale',page_size:1,items:[{item_id:'locale-feed',drama:{...drama,published_episode_count:12},episode:{id:11,episode_number:1,title:'Server episode',duration_seconds:60,free:false,comment_count:0},resume_seconds:0}],has_more:false,next_cursor:null,preload:{fetch_when_remaining:2}};
+  else if(p==='/v1/playback')data={allowed:false,reason:'membership_required'};
   else if(p==='/v1/catalog')data={items:[drama],total:1,limit:24,offset:0};
   else if(p==='/v1/plans')data={items:plans,billing_mode:'subscription'};
   else if(p==='/v1/coin-packs')data={items:packs};
@@ -201,7 +202,7 @@ try{
   await waitText('.feed-notice span',copy('de','Link copied.'));
   await choose('es');await waitText('.feed-notice span',copy('es','Link copied.'));
   check('visible feed notices update immediately with the selected language');
-  assert(!requests.some(request=>request.method!=='GET'),'Language checks must not trigger financial writes');
+  assert(!requests.some(request=>request.method!=='GET'&&!(request.method==='POST'&&request.path==='/v1/playback')),'Language checks may only revalidate playback; checkout, unlock and other financial writes remain forbidden');
   assert(!requests.some(request=>request.path==='/v1/catalog'&&new URLSearchParams(request.query).has('language')),'UI language must not silently filter catalog content');
   assert.deepEqual(unknown,[]);assert.deepEqual(errors,[]);
   await fs.rm(path.join(OUT,'locale-failure.png'),{force:true});await fs.rm(path.join(OUT,'locale-partial.json'),{force:true});

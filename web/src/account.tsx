@@ -88,7 +88,7 @@ export function Account({ section = "history" }: { section?: string }) {
     const endpoints: Record<string, string> = {
       favorites: "/v1/me/favorites?limit=48&offset=" + offset,
       history: "/v1/me/history?limit=20&offset=" + offset,
-      likes: "/v1/me/lists/likes",
+      likes: "/v1/me/lists/like",
       orders: "/v1/commerce/orders?limit=20&offset=" + offset,
       ledger: "/v1/me/ledger",
       messages: "/v1/me/messages",

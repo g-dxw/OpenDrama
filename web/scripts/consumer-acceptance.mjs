@@ -39,6 +39,8 @@ page.on("pageerror", (e) => errors.push(e.message));
 let media = Buffer.alloc(0);
 const unknown = [];
 const requests = [];
+const mediaRequests = [];
+let feedEntitlement = null;
 let tasksChecked = false,
   orderState = "paid";
 let membersOnly = false,
@@ -132,7 +134,12 @@ const profile = (second = false) => ({
   avatar_url: "",
   bio: "",
   coins,
-  membership: { active: false, plan_code: null, until: null, canceling: false },
+  membership: {
+    active: feedEntitlement === "membership" || feedEntitlement === "revoked",
+    plan_code: feedEntitlement === "membership" || feedEntitlement === "revoked" ? "weekly" : null,
+    until: feedEntitlement === "membership" || feedEntitlement === "revoked" ? "2026-12-14T00:00:00Z" : null,
+    canceling: false,
+  },
 });
 const play = () => ({
   drama: {
@@ -221,6 +228,7 @@ await page.setRequestInterception(true);
 page.on("request", async (req) => {
   const url = new URL(req.url());
   if (url.pathname === "/fixtures/clip.webm") {
+    mediaRequests.push({ scenario: feedEntitlement });
     await req.respond({ status: 200, contentType: "video/webm", body: media });
     return;
   }
@@ -336,6 +344,17 @@ page.on("request", async (req) => {
         has_more: false,
         preload: { fetch_when_remaining: 3 },
       };
+      if (feedEntitlement) {
+        // Like the real feed contract, these entries are viewer-eligible while free is guest-only.
+        result.items = [{
+          item_id: "entitled-" + feedEntitlement,
+          drama: { ...dramas[0], title: "Entitled " + feedEntitlement + " story" },
+          episode: { id: 11, episode_number: 2, title: "Episode 2", duration_seconds: 60, free: false, comment_count: 0 },
+          resume_seconds: 0,
+          entry_reason: "resume",
+          score: 1,
+        }];
+      }
       if (feedCursorScenario) {
         const cursor = url.searchParams.get("cursor");
         if (
@@ -388,20 +407,17 @@ page.on("request", async (req) => {
         result = { detail: "Temporary account outage" };
       } else result = profile(secondUser);
     } else if (p === "/v1/dramas/1/play") result = play();
-    else if (p === "/v1/playback")
-      result = {
-        allowed: body.episode_id !== 11 || unlocked,
+    else if (p === "/v1/playback") {
+      const allowed = feedEntitlement
+        ? req.headers().authorization === "Bearer browser-fixture-token" && feedEntitlement !== "revoked"
+        : body.episode_id === 11 ? unlocked && !membersOnly : body.episode_id !== 1002;
+      result = allowed ? {
+        allowed: true,
         url: origin + "/fixtures/clip.webm",
         episode_id: body.episode_id,
-        subtitles: [
-          {
-            language: "en",
-            label: "English",
-            url: origin + "/fixtures/caption.srt?token=fixture",
-            is_default: true,
-          },
-        ],
-      };
+        subtitles: [{ language: "en", label: "English", url: origin + "/fixtures/caption.srt?token=fixture", is_default: true }],
+      } : { allowed: false, reason: "membership_required" };
+    }
     else if (p === "/v1/unlock") {
       unlocked = true;
       coins -= 60;
@@ -573,7 +589,7 @@ page.on("request", async (req) => {
           },
         ],
       };
-    else if (p === "/v1/me/lists/likes")
+    else if (p === "/v1/me/lists/like")
       result = {
         total: 1,
         items: [{ target_type: "drama", target_id: 1, drama: dramas[0] }],
@@ -1316,10 +1332,50 @@ try {
   assert.equal(savedDramas.length, 48);
   assert.equal(await page.$$(".saved-card").then((items) => items.length), 48);
   pass("removing the last saved item returns to the previous valid page");
+  const likedRequest = page.waitForRequest((request) => new URL(request.url()).pathname.startsWith("/v1/me/lists/"));
   await go("#account/likes");
+  assert.equal(new URL((await likedRequest).url()).pathname, "/v1/me/lists/like", "the backend reaction resource kind is singular while the account route stays plural");
   await text("Test Story");
   assert(await page.$(".drama-card"));
-  pass("liked dramas load from the account list endpoint");
+  pass("liked dramas load from the real singular reaction endpoint without changing the account deep link");
+  const priorUnlocked = unlocked;
+  for (const eligibility of ["membership", "coin"]) {
+    feedEntitlement = eligibility;
+    unlocked = eligibility === "coin";
+    const authorizationStart = requests.length;
+    await page.goto(origin + "/?feed_case=" + eligibility + "#foryou", {waitUntil:"networkidle0"});
+    await page.waitForSelector('.feed-item[data-index="0"]');
+    assert.equal(await page.$$('.feed-item .feed-locked').then(items => items.length), 0, eligibility + " eligibility must not be treated as a guest-free lock");
+    await page.waitForFunction(() => {
+      const video = document.querySelector('.feed-item[data-index="0"] video');
+      return video && video.readyState >= 2 && video.currentTime > 0.1;
+    });
+    const authorizations = requests.slice(authorizationStart).filter(request => request.path === "/v1/playback" && request.body.episode_id === 11);
+    assert(authorizations.length > 0 && authorizations.every(request => request.headers.authorization === "Bearer browser-fixture-token"));
+    assert.equal(await page.$eval('.feed-item .feed-settings-toggle', button => button.disabled), false);
+    assert(await page.$eval('.feed-item video', video => video.currentSrc.endsWith('/fixtures/clip.webm')));
+    await page.screenshot({path:path.join(OUT,"entitled-feed-"+eligibility+".png"),fullPage:false});
+    pass("authenticated " + eligibility + " feed entries beyond guest preview authorize and decode actual media");
+    await go("#account/likes");
+    await text("Test Story");
+  }
+  feedEntitlement = "revoked";
+  const clipsBeforeRevoked = mediaRequests.length;
+  const revokedAuthorization = page.waitForResponse(response => new URL(response.url()).pathname === "/v1/playback");
+  await page.goto(origin + "/?feed_case=revoked#foryou", {waitUntil:"networkidle0"});
+  const deniedResponse = await revokedAuthorization;
+  assert.equal(deniedResponse.request().headers().authorization, "Bearer browser-fixture-token");
+  const denied = await deniedResponse.json();
+  assert.equal(denied.allowed, false);
+  assert.equal(denied.url, undefined);
+  await page.waitForSelector('.feed-item .video-error');
+  assert.equal(await page.$eval('.feed-item video', video => video.currentSrc), "");
+  assert.equal(mediaRequests.length, clipsBeforeRevoked);
+  pass("server revalidation denies stale feed eligibility without returning or requesting a paid media stream");
+  feedEntitlement = null;
+  unlocked = priorUnlocked;
+  await go("#account/likes");
+  await text("Test Story");
   favoritesDelay = 350;
   await go("#account");
   await page.evaluate(() => (window.location.hash = "account/favorites"));
