@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 import io
 from datetime import date
-from fastapi import APIRouter,Depends,HTTPException,Header,Request,Query
+from fastapi import APIRouter,Depends,HTTPException,Header,Request,Query,Response
 from pydantic import BaseModel,Field
 from sqlalchemy import select,func
 from sqlalchemy.orm import Session
@@ -12,8 +12,8 @@ from app.modules.ops.router import require_admin
 from app.modules.tenancy.permissions import require_permission
 from app.modules.common.auth import require_user
 from app.modules.billing import commerce as service
-from app.modules.billing.models import Plan,PlanVersion
-from app.modules.billing.commerce_models import CoinPack,StripePriceBinding
+from app.modules.billing.models import Order,Plan,PlanVersion
+from app.modules.billing.commerce_models import CoinPack,CommerceSettlement,StripePriceBinding
 from app.modules.billing.service import BillingError, PLAN_DAYS, INTERVAL_OF, billing_mode, apply_stripe_event
 from app.modules.wallet.models import CoinLedgerEntry,WalletAccount
 from app.modules.ops.managed_settings import get_config,save_config
@@ -97,6 +97,21 @@ def cancel_checkout(order_no:str,user=Depends(require_user),db:Session=Depends(g
 @public_router.get('/commerce/orders')
 def orders(limit:int=Query(30,ge=1,le=100),offset:int=Query(0,ge=0),user=Depends(require_user),db:Session=Depends(get_db)):
     return service.list_orders(db,user.id,limit,offset)
+@public_router.get('/commerce/orders/{order_no}')
+def consumer_order_detail(order_no:str,response:Response,user=Depends(require_user),db:Session=Depends(get_db)):
+    row=db.scalar(select(Order).where(Order.order_no==order_no,Order.user_id==user.id))
+    if row is None:raise HTTPException(404,'order not found',headers={'Cache-Control':'private, no-store','Vary':'Authorization'})
+    snapshot=row.product_snapshot if isinstance(row.product_snapshot,dict) else {}
+    code=snapshot.get('code')
+    if not isinstance(code,str):code=''
+    if not code and row.plan_version_id:
+        code=db.scalar(select(Plan.code).join(PlanVersion,PlanVersion.plan_id==Plan.id).where(PlanVersion.id==row.plan_version_id)) or ''
+    # Imported/local paid status alone never proves fulfillment. Keep this
+    # source fact separate from status, including pending and refunded orders.
+    settled=db.scalar(select(CommerceSettlement.order_id).where(CommerceSettlement.order_id==row.id)) is not None
+    response.headers['Cache-Control']='private, no-store'
+    response.headers['Vary']='Authorization'
+    return {'order':dict(order_no=row.order_no,product_type=row.product_type,product_code=code,status=row.status),'settled':settled}
 @public_router.post('/billing/stripe/accounts/{code}/webhook')
 async def webhook(code:str,request:Request,stripe_signature:str=Header(default='',alias='Stripe-Signature'),db:Session=Depends(get_db)):
     body=await request.body()
