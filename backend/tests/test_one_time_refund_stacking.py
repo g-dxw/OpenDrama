@@ -213,3 +213,68 @@ def test_historical_conflict_is_retained_after_the_other_source_refunds(session,
     resolve(session,case,first)
     assert grant(session,second).status == "refunded"
     assert active_duration(session,case["user"].id,case["point"]) == timedelta(days=30)
+
+
+def pending_subscription_checkout(db,case,local_state="created"):
+    billing.get_billing_settings(db).billing_mode="subscription";db.commit()
+    held=checkout(db,case,"old-subscription-checkout")
+    if local_state == "paid":
+        c.process_event(db,"env",dict(type="checkout.session.completed",data=dict(object=dict(
+            id=held.external_txn_id,payment_status="paid",amount_total=held.amount_cents,currency="usd",
+            subscription="sub_preinvoice_held",metadata=dict(commerce_order_no=held.order_no)))))
+        # Imported paid Checkout states still await their authoritative first invoice.
+        held.status="paid";db.commit()
+    return held
+
+
+@pytest.mark.parametrize("local_state",["created","paid"])
+def test_subscription_checkout_before_first_invoice_blocks_automatic_restore(session,stacking,local_state):
+    case=stacking;held=pending_subscription_checkout(session,case,local_state)
+    freeze(session,case,case["first"]);outcome(session,case,case["first"],"failed")
+    state=detail(session,case["first"])
+    assert state["required"] and not state["can_resolve"]
+    assert held.order_no in state["blocked_reason"]
+    assert grant(session,case["first"]).status == "refund_pending"
+    assert session.get(WalletAccount,case["user"].id).balance == 0
+
+
+@pytest.mark.parametrize("local_state",["created","paid"])
+def test_subscription_checkout_before_first_invoice_blocks_explicit_resolution(session,stacking,local_state):
+    case=stacking;first=case["first"];second=checkout(session,case,"paid-race")
+    held=pending_subscription_checkout(session,case,local_state)
+    freeze(session,case,first);pay(session,second);outcome(session,case,first,"failed")
+    case["clock"]["now"]=c.aware(grant(session,second).ends_at)
+    state=detail(session,first)
+    assert state["required"] and not state["can_resolve"]
+    assert held.order_no in state["blocked_reason"]
+    with pytest.raises(BillingError) as error:resolve(session,case,first)
+    assert error.value.detail["committed"] is False
+    assert session.scalar(select(CoinSource).where(CoinSource.order_id == first.id)).reserved == 25
+
+
+def test_confirmed_expired_subscription_checkout_releases_the_resolution_blocker(session,stacking):
+    case=stacking;first=case["first"];second=checkout(session,case,"paid-race")
+    held=pending_subscription_checkout(session,case)
+    freeze(session,case,first);pay(session,second);outcome(session,case,first,"failed")
+    case["clock"]["now"]=c.aware(grant(session,second).ends_at)
+    before=detail(session,first)
+    assert not before["can_resolve"]
+    c.cancel_checkout(session,case["user"].id,held.order_no)
+    assert held.status == "failed" and held.checkout_context["session_expired"]
+    after=detail(session,first)
+    assert after["can_resolve"] and after["revision"] != before["revision"]
+    assert resolve(session,case,first)["restored"]
+
+
+def test_fenced_pending_binding_does_not_block_a_postcutoff_source_resolution(session,stacking):
+    case=stacking;held=pending_subscription_checkout(session,case,"paid")
+    billing.revoke_membership(session,user_id=case["user"].id,mode="now",reason="Withdraw existing binding",actor_id=case["actor"].id)
+    assert c._checkout_pending(session,held)
+    case["clock"]["now"]+=timedelta(minutes=1)  # New payment is after the real administrative audit.
+    billing.get_billing_settings(session).billing_mode="one_time";session.commit()
+    fresh=checkout(session,case,"postcutoff-paid");pay(session,fresh)
+    case["first"]=fresh
+    second=collision(session,case)
+    case["clock"]["now"]=c.aware(grant(session,second).ends_at)
+    assert detail(session,fresh)["can_resolve"]
+    assert resolve(session,case,fresh)["restored"]

@@ -828,6 +828,13 @@ def _membership_resolution_blockers(db,order,refund):
             if known and refund is not None and other_refund.id>refund.id:continue
             reasons.append('其它会员退款来源尚未结案（订单 '+owner.order_no+'）；请先确认或处理前序退款')
         facts.append(dict(order_id=owner.id,grant_id=other.id,status=other.status,starts_at=_iso(other.starts_at),ends_at=_iso(other.ends_at),consumed=other.access_consumed))
+    # An already-open subscription Checkout can still settle its first invoice.
+    # It has no Subscription/grant row yet, but must reserve the fixed period.
+    for owner in db.scalars(select(Order).where(Order.user_id==order.user_id,Order.id!=order.id,Order.product_type=='membership',Order.billing_mode=='subscription').order_by(Order.id)):
+        if not _checkout_pending(db,owner) or _administratively_revoked_membership(db,owner):continue
+        context=owner.checkout_context or {}
+        reasons.append('订阅首张发票或Checkout结果尚未确认（订单 '+owner.order_no+'）；请先确认该Checkout已过期或完成其结算')
+        facts.append(dict(pending_subscription_order_id=owner.id,status=owner.status,subscription_ref=owner.subscription_ref,session_complete=bool(context.get('session_complete')),session_expired=bool(context.get('session_expired')),payment_status=context.get('payment_status')))
     for row in db.scalars(select(Subscription).where(Subscription.user_id==order.user_id,Subscription.status=='active').order_by(Subscription.id)):
         ends=[aware(row.pass_end)]
         if not row.managed_commerce:ends.append(aware(row.current_period_end))
