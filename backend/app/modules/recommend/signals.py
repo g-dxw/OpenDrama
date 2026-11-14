@@ -15,6 +15,7 @@ Two rules shape this file:
 """
 
 from __future__ import annotations
+from app.modules.content.pricing import episode_access
 
 import datetime
 import math
@@ -390,9 +391,7 @@ def pick_entry_episode(
     watchable = [
         episode
         for episode in episodes
-        if episode.episode_number <= drama.free_episode_count
-        or member
-        or episode.id in unlocked
+        if episode_access(drama,episode,member=member,unlocked=episode.id in unlocked)['allowed']
     ]
     if not watchable:
         return None, 0, False

@@ -15,7 +15,6 @@ from app.modules.ops.service import hash_password,verify_password
 from app.modules.ops.api_keys import generate_key
 from app.modules.account.models import User
 from app.modules.wallet.models import WalletAccount
-from app.modules.content.models import Drama
 
 BACKEND=Path(__file__).resolve().parents[1]
 
@@ -72,8 +71,8 @@ def test_real_migration_preserves_actors_business_data_and_effective_grants(engi
                 db.add(consumer);db.flush()
                 viewer_id=consumer.id
                 db.add(WalletAccount(user_id=viewer_id,balance=123))
-                drama=Drama(tenant_id='jjtv',title='Preserved migration content',status='draft')
-                db.add(drama);db.flush();drama_id=drama.id
+                # Seed the actual historical projection, before desktop columns exist.
+                drama_id=db.execute(sa.text("INSERT INTO dramas(tenant_id,title,status,synopsis,cover_url,free_episode_count,coin_price_per_episode,country_allowlist,play_count,review_state) VALUES ('jjtv','Preserved migration content','draft','','',0,0,'',0,'none') RETURNING id")).scalar_one()
                 db.commit()
             command.upgrade(cfg,'head')
             with target.connect() as db:
@@ -116,7 +115,10 @@ def test_real_migration_preserves_actors_business_data_and_effective_grants(engi
                 assert db.execute(sa.text('SELECT balance FROM wallet_accounts WHERE user_id=:id'),dict(id=viewer_id)).scalar_one()==123
                 assert db.execute(sa.text('SELECT email FROM users WHERE id=:id'),dict(id=viewer_id)).scalar_one()=='migration-consumer@example.com'
                 assert db.execute(sa.text('SELECT tenant_id FROM dramas WHERE id=:id'),dict(id=drama_id)).scalar_one()=='jjtv'
-                assert db.execute(sa.text("SELECT count(*) FROM legacy_business_bindings WHERE tenant_id='jjtv'")).scalar_one()==10
+                original_modules={'dashboard','users','rewards','comments','moderation','finance','settlements','plans','suppliers','home_ops'}
+                bindings=set(db.execute(sa.text("SELECT module_key FROM legacy_business_bindings WHERE tenant_id='jjtv'")).scalars())
+                assert original_modules <= bindings
+                assert bindings-original_modules=={'login_settings','stripe','coin_packs','coins','attribution','support'}
                 assert db.execute(sa.text("SELECT count(*) FROM legacy_business_bindings WHERE tenant_id<>'jjtv'")).scalar_one()==0
             with pytest.raises(RuntimeError,match='cannot be recombined'):
                 command.downgrade(cfg,'b2e6c9148a70')

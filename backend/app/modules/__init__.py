@@ -21,3 +21,8 @@ from app.modules.social import models as _social_models  # noqa: F401
 
 from app.modules.tenancy import models as _tenant_models  # noqa: F401
 from app.modules.tenancy import scope as _tenant_scope  # noqa: F401
+
+from app.modules.ops import managed_settings as _managed_settings  # noqa: F401
+from app.modules.billing import commerce_models as _commerce_models  # noqa: F401
+from app.modules.support import models as _support_models  # noqa: F401
+from app.modules.attribution import models as _attribution_models  # noqa: F401

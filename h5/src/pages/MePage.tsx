@@ -37,6 +37,7 @@ import { Sheet } from "../ui/Sheet";
 import { PremiumSheet } from "../ui/PremiumSheet";
 import { OrdersSheet } from "../ui/OrdersSheet";
 import { toast } from "../ui/toast";
+import { replaceMobileHash } from "../routes";
 
 type MeTab = "history" | "favorites" | "likes";
 type SheetId = "edit" | "ledger" | "messages" | "settings" | "premium" | "orders" | "signout";
@@ -59,14 +60,18 @@ export function MePage({
   locale,
   onLocale,
   onOpen,
+  initialTab = "history",
+  initialSheet = null,
 }: {
   locale: Locale;
   onLocale: (locale: Locale) => void;
   onOpen: (id: number) => void;
+  initialTab?: MeTab;
+  initialSheet?: SheetId | null;
 }) {
   const { status, user, openLogin, requireAuth, refresh, logout } = useAuth();
-  const [tab, setTab] = useState<MeTab>("history");
-  const [sheet, setSheet] = useState<SheetId | null>(null);
+  const [tab, setTab] = useState<MeTab>(initialTab);
+  const [sheet, setSheetState] = useState<SheetId | null>(initialSheet);
   const [history, setHistory] = useState<HistoryItem[] | null>(null);
   const [favorites, setFavorites] = useState<FavoritesPayload | null>(null);
   const [likes, setLikes] = useState<DramaLite[] | null>(null);
@@ -78,6 +83,22 @@ export function MePage({
   const [unread, setUnread] = useState(0);
   const [checkedToday, setCheckedToday] = useState(() => localStorage.getItem(CHECKIN_KEY) === localDay());
   const contentRef = useRef<HTMLDivElement | null>(null);
+  const mounted = useRef(true);
+  useEffect(() => {mounted.current=true;return()=>{mounted.current=false;};}, []);
+  useEffect(() => {setTab(initialTab);setSheetState(initialSheet);}, [initialTab,initialSheet]);
+  const syncRoute = (nextTab:MeTab,nextSheet:SheetId|null) => {
+    const params = new URLSearchParams(window.location.hash.split("?")[1] || "");
+    const base = /^#\/?me(?:\/|\?|$)/.test(window.location.hash) ? "me" : "account";
+    let path = base + "/" + nextTab;
+    const back = params.get("return");
+    params.delete("sheet");params.delete("return");params.delete("library");
+    if (nextSheet === "premium") {path="price";params.set("return",base+"/"+nextTab);}
+    else if(nextSheet){path=base+"/"+(nextSheet==="edit"?"profile":nextSheet==="signout"?"settings":nextSheet);if(nextTab!=="history")params.set("library",nextTab);if(nextSheet==="signout")params.set("sheet","signout");}
+    else if(back && /^(me|account)\/(history|favorites|likes)$/.test(back))path=back;
+    replaceMobileHash(path+(params.size?"?"+params.toString():""));
+  };
+  const setSheet = (next:SheetId|null) => {if(!mounted.current)return;setSheetState(next);syncRoute(tab,next);};
+
 
   const setTabState = useCallback((target: MeTab, value: LoadState) => {
     setStates((prev) => ({ ...prev, [target]: value }));
@@ -145,7 +166,9 @@ export function MePage({
   }, [status, tab, states.likes, loadLikes]);
 
   const jumpTo = (next: MeTab) => {
+    if (!mounted.current) return;
     setTab(next);
+    syncRoute(next,null);
     contentRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 

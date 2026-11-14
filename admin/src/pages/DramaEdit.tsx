@@ -14,6 +14,7 @@ import {
   Select,
   Space,
   Spin,
+  Switch,
   Steps,
   Tabs,
   Tag,
@@ -45,6 +46,10 @@ type Drama = {
   status: string;
   free_episode_count: number;
   coin_price_per_episode: number;
+  access_mode: string;
+  member_pays_coins: boolean;
+  non_member_free_episodes: number | null;
+  language: string;
   tags: { id: number; name_en: string; name_zh: string }[];
   episode_count: number;
 };
@@ -102,6 +107,10 @@ export default function DramaEdit() {
       cover_url: d.cover_url,
       free_episode_count: d.free_episode_count,
       coin_price_per_episode: d.coin_price_per_episode,
+      access_mode:d.access_mode,
+      member_pays_coins:d.member_pays_coins,
+      non_member_free_episodes:d.non_member_free_episodes,
+      language:d.language,
       tag_ids: d.tags.map((x) => x.id),
     });
     setDirty(false);
@@ -143,9 +152,9 @@ export default function DramaEdit() {
   const onSave = async (values: any) => {
     if (!(canWrite || canPricing || canUpload)) return;
     const payload: Record<string, unknown> = {};
-    if (canWrite) for (const key of ["title", "synopsis"]) payload[key] = values[key];
+    if (canWrite) for (const key of ["title", "synopsis", "language"]) payload[key] = values[key];
     if (canWrite && canViewTags) payload.tag_ids = values.tag_ids;
-    if (canPricing) for (const key of ["free_episode_count", "coin_price_per_episode"]) payload[key] = values[key];
+    if (canPricing) for (const key of ["free_episode_count", "coin_price_per_episode", "access_mode", "member_pays_coins", "non_member_free_episodes"]) payload[key] = values[key];
     if (canUpload) payload.cover_url = values.cover_url;
     setSaving(true);
     try {
@@ -422,6 +431,7 @@ export default function DramaEdit() {
               <Input maxLength={200} showCount placeholder="请输入剧名" />
             </Form.Item>
 
+            <Form.Item label="内容语言" name="language" extra="用于 PC 片库语言筛选，如 en、hi、zh。"><Input disabled={!canWrite} maxLength={16}/></Form.Item>
             <Form.Item label="简介" name="synopsis">
               <Input.TextArea rows={6} maxLength={20000} showCount placeholder="请输入剧情简介" />
             </Form.Item>
@@ -439,26 +449,16 @@ export default function DramaEdit() {
               />
             </Form.Item>}
 
-            <Row gutter={24} style={{ maxWidth: 640 }}>
-              <Col span={12}>
-                <Form.Item
-                  label="免费集数"
-                  name="free_episode_count"
-                  tooltip="用户可直接观看的集数，超出的集数需要金币解锁"
-                >
-                  <InputNumber disabled={!canPricing} min={0} style={{ width: "100%" }} />
-                </Form.Item>
-              </Col>
-              <Col span={12}>
-                <Form.Item
-                  label="单集金币"
-                  name="coin_price_per_episode"
-                  tooltip="解锁单集所需金币"
-                >
-                  <InputNumber disabled={!canPricing} min={0} style={{ width: "100%" }} />
-                </Form.Item>
-              </Col>
-            </Row>
+            <Card size="small" title="观看与付费规则" style={{marginBottom:24}}>
+              <Typography.Paragraph type="secondary">先设置观看范围和试看集数，再决定会员是否需要金币解锁。单集页面可以覆盖下方统一金币价。</Typography.Paragraph>
+              <Row gutter={20}>
+                <Col xs={24} md={12}><Form.Item label="观看范围" name="access_mode" extra="会员专享剧在试看范围外要求有效会员。"><Select disabled={!canPricing} options={[{value:'public',label:'所有用户可试看与解锁'},{value:'members',label:'会员专享，游客仅可试看'}]}/></Form.Item></Col>
+                <Col xs={24} md={12}><Form.Item label="会员在付费集仍需金币" name="member_pays_coins" valuePropName="checked" extra="关闭后，有效会员可以直接观看付费集。"><Switch disabled={!canPricing}/></Form.Item></Col>
+                <Col xs={24} md={12}><Form.Item label="默认免费集数" name="free_episode_count" extra="未单独覆盖非会员试看时，沿用此集数。"><InputNumber disabled={!canPricing} min={0} precision={0} style={{width:'100%'}} addonAfter="集"/></Form.Item></Col>
+                <Col xs={24} md={12}><Form.Item label="非会员试看集数覆盖" name="non_member_free_episodes" extra="留空沿用默认免费集数；0 表示不提供试看。"><InputNumber disabled={!canPricing} min={0} precision={0} placeholder="沿用默认免费集数" style={{width:'100%'}} addonAfter="集"/></Form.Item></Col>
+                <Col xs={24} md={12}><Form.Item label="统一单集金币价" name="coin_price_per_episode" extra="适用于未单独定价的分集。0 表示不提供金币购买，仍按会员及试看规则判断观看资格。"><InputNumber disabled={!canPricing} min={0} precision={0} style={{width:'100%'}} addonAfter="金币"/></Form.Item></Col>
+              </Row>
+            </Card>
 
             <Divider style={{ margin: "8px 0 16px" }} />
 
@@ -485,6 +485,9 @@ export default function DramaEdit() {
     { key: "synopsis", label: "简介", children: drama.synopsis || "—", span: 2 },
     { key: "free", label: "免费集数", children: drama.free_episode_count },
     { key: "coins", label: "单集金币", children: drama.coin_price_per_episode },
+    { key: "access", label: "观看范围", children: drama.access_mode==='members'?'会员专享，游客仅可试看':'所有用户可试看与解锁' },
+    { key: "memberCoins", label: "会员付费集仍需金币", children: drama.member_pays_coins?'是':'否' },
+    { key: "preview", label: "非会员试看集数", children: drama.non_member_free_episodes==null?'沿用默认免费集数':drama.non_member_free_episodes },
     { key: "tags", label: "标签", children: drama.tags.map(tag => tag.name_zh || tag.name_en).join("、") || "—" },
   ]} /><Typography.Text type="secondary">当前租户角色仅可查看内容。</Typography.Text></Card>;
 

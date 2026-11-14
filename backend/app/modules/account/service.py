@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from app.modules.account.facebook import FacebookAuthError, verify as verify_facebook
 from app.modules.account.google import GoogleAuthError, GoogleIdentity, verify_id_token
 from app.modules.account.mail import MailError, send_email
+from app.modules.ops.managed_settings import managed_provider
 from app.modules.account.models import ThirdPartyIdentity, User, VerificationCode
 from app.modules.common.models import AuditLog
 from app.modules.ops.config_models import AdClaim, Checkin, RewardConfig
@@ -170,6 +171,7 @@ def _consume_code(session: Session, *, email: str, purpose: str, code: str) -> N
     session.delete(row)
 
 
+@managed_provider('email')
 def issue_code(session: Session, *, email: str, purpose: str) -> str:
     purpose = normalize_purpose(purpose)
     email = _normalize_email(email)
@@ -214,22 +216,17 @@ def send_verification_code(*, to: str, code: str, purpose: str) -> str:
 
 
 def _credit(session: Session, user_id: int, amount: int, biz_type: str, biz_key: str) -> int:
-    wallet = session.get(WalletAccount, user_id, with_for_update=True)
-    if wallet is None:
-        wallet = WalletAccount(user_id=user_id, balance=0)
-        session.add(wallet)
-        session.flush()
-    wallet.balance += amount
-    session.add(
-        CoinLedgerEntry(
-            user_id=user_id,
-            amount=amount,
-            balance_after=wallet.balance,
-            biz_type=biz_type,
-            biz_key=biz_key,
-        )
-    )
-    return wallet.balance
+    from app.modules.billing.commerce import wallet_lock, ensure_sources, allocate_spend
+    from app.modules.billing.commerce_models import CoinSource
+    wallet=wallet_lock(session,user_id)
+    ensure_sources(session,wallet)
+    after=wallet.balance+amount
+    ledger=CoinLedgerEntry(user_id=user_id,amount=amount,balance_after=after,biz_type=biz_type,biz_key=biz_key)
+    session.add(ledger);session.flush()
+    if amount<0:allocate_spend(session,wallet,ledger,-amount)
+    elif amount>0:session.add(CoinSource(user_id=user_id,original=amount,remaining=amount,reserved=0))
+    wallet.balance=after
+    return after
 
 
 def _active_amount(session: Session, code: str, today: date | None = None) -> int:
@@ -243,6 +240,7 @@ def _active_amount(session: Session, code: str, today: date | None = None) -> in
     return int(amounts[0])
 
 
+@managed_provider('email')
 def register(session: Session, *, email: str, code: str) -> tuple[User, str]:
     email = _normalize_email(email)
     _consume_code(session, email=email, purpose="register", code=code)
@@ -279,6 +277,7 @@ def _new_user(session: Session, *, email: str | None, display_name: str, avatar_
     return user
 
 
+@managed_provider('email')
 def login_with_code(session: Session, *, email: str, code: str) -> tuple[User, str]:
     """Sign in an existing user. A missing account is a registration, not a login."""
     email = _normalize_email(email)
@@ -291,6 +290,7 @@ def login_with_code(session: Session, *, email: str, code: str) -> tuple[User, s
     return user, token
 
 
+@managed_provider('email')
 def login_or_register_with_code(session: Session, *, email: str, code: str) -> tuple[User, str, bool]:
     """One door for the client: the same code signs in, or signs up.
 
@@ -310,6 +310,7 @@ def login_or_register_with_code(session: Session, *, email: str, code: str) -> t
     return user, token, created
 
 
+@managed_provider('google')
 def login_with_google(session: Session, *, id_token: str) -> tuple[User, str, bool]:
     """Sign in with Google and merge onto the same user when the email matches.
 
@@ -334,6 +335,7 @@ def link_google_identity(session: Session, identity: GoogleIdentity) -> tuple[Us
     )
 
 
+@managed_provider('facebook')
 def login_with_facebook(
     session: Session, *, access_token: str | None = None, id_token: str | None = None
 ) -> tuple[User, str, bool]:

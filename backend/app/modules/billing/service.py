@@ -19,13 +19,26 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
+from contextlib import contextmanager
+from contextvars import ContextVar
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.modules.billing.models import BillingSettings, Order, Plan, PlanVersion, Subscription
 from app.modules.common.models import AuditLog
 from app.modules.content.models import Drama
+
+_stripe_credentials = ContextVar('jjtv_stripe_credentials', default=None)
+
+@contextmanager
+def managed_stripe_runtime(session, code='env'):
+    from app.modules.billing.commerce import account_config
+    token=_stripe_credentials.set(account_config(session,code))
+    try:
+        yield
+    finally:
+        _stripe_credentials.reset(token)
 
 DEFAULT_PLANS = [
     ("weekly", "Weekly", "周卡", 999, False, ["Unlock all", "No ads", "1080p"]),
@@ -87,6 +100,10 @@ def list_current_plans(session: Session) -> list[dict]:
                 "version": version.version,
                 "version_id": version.id,
                 "benefits": version.benefits,
+                "base_coins": version.base_coins,
+                "bonus_coins": version.bonus_coins,
+                "duration_days": PLAN_DAYS.get(plan.code, 30) if mode == "one_time" else None,
+                "recurring_interval": INTERVAL_OF.get(plan.code, "month") if mode == "subscription" else None,
                 "billing_mode": mode,
             }
         )
@@ -400,8 +417,8 @@ def membership_detail(session: Session, user_id: int) -> dict:
     """What the admin modal shows: identical numbers to `/v1/me.membership`."""
     membership = active_membership(session, user_id)
     row = active_subscription(session, user_id)
-    plan = session.get(Plan, row.plan_id) if row is not None else None
-    membership["source"] = None if row is None else ("subscription" if row.stripe_subscription_id else "one_time")
+    plan = session.get(Plan, row.plan_id) if row is not None else session.scalar(select(Plan).where(Plan.code==membership.get("plan_code")))
+    membership["source"] = ("one_time" if membership.get("active") else None) if row is None else ("subscription" if row.stripe_subscription_id else "one_time")
     membership["plan_name"] = (plan.name_zh or plan.name_en) if plan is not None else None
     if membership.get("plan_code") is None and plan is not None:
         # Expired window: still useful for support to see the last plan bought.
@@ -463,12 +480,38 @@ def grant_membership(
     if not reason:
         raise BillingError(422, "请填写调整原因")
 
+    # Checkout settlement and refunds use the wallet as the per-user entitlement
+    # mutex. Read source facts only after acquiring the same lock.
+    from app.modules.billing.commerce import wallet_lock
+    from app.modules.billing.commerce_models import MembershipGrant
+
+    wallet_lock(session, user_id)
     before_until = access_until(session, user_id)
     row = active_subscription(session, user_id, for_update=True)
     if mode == "restart" and row is not None and row.stripe_subscription_id:
         # We cannot move Stripe's billing period, so "restart" would silently
         # leave the subscription window in place.
         raise BillingError(409, "该用户有自动续费订阅，请改用「顺延」")
+    if mode == "restart":
+        protected_source = session.scalar(
+            select(MembershipGrant.id)
+            .where(
+                MembershipGrant.user_id == user_id,
+                or_(
+                    MembershipGrant.status.in_(("refund_pending", "pending_refund")),
+                    (MembershipGrant.status == "active") & (MembershipGrant.ends_at > _now()),
+                ),
+            )
+            .limit(1)
+            .with_for_update()
+        )
+        if protected_source is not None:
+            # Rewriting a legacy pass does not overwrite paid/frozen order grants.
+            # Preserve those source facts instead of auditing a fictitious end date.
+            raise BillingError(
+                409,
+                "该用户存在未到期的订单会员权益或退款冻结权益，不能「从今天重算」，请改用「顺延」",
+            )
 
     if row is None:
         row = Subscription(
@@ -483,7 +526,7 @@ def grant_membership(
         session.add(row)
         session.flush()
 
-    base = _window_base(row) if mode == "extend" else _now()
+    base = max(_window_base(row), before_until or _now()) if mode == "extend" else _now()
     row.pass_end = base + timedelta(days=length)
     if not row.stripe_subscription_id:
         # Stripe-owned rows keep their plan: the webhook re-derives it from the
@@ -496,6 +539,7 @@ def grant_membership(
             actor_type="admin",
             actor_id=actor_id,
             action="membership_grant",
+            created_at=_now(),
             target_type="user",
             target_id=user_id,
             payload={
@@ -552,6 +596,7 @@ def revoke_membership(
                 actor_type="admin",
                 actor_id=actor_id,
                 action="membership_revoke",
+                created_at=_now(),
                 target_type="user",
                 target_id=user_id,
                 payload={
@@ -583,6 +628,7 @@ def revoke_membership(
             actor_type="admin",
             actor_id=actor_id,
             action="membership_revoke",
+            created_at=_now(),
             target_type="user",
             target_id=user_id,
             payload={
@@ -626,7 +672,8 @@ PLAN_BY_PRICE: dict[str, str] = {}
 
 
 def stripe_secret() -> str:
-    key = os.environ.get("STRIPE_SECRET_KEY", "").strip()
+    credentials=_stripe_credentials.get()
+    key = (credentials.get("secret_key", "") if credentials is not None else os.environ.get("STRIPE_SECRET_KEY", "")).strip()
     if not key:
         raise BillingError(503, "stripe is not configured")
     return key
@@ -771,6 +818,9 @@ def create_checkout_session(
     mode = billing_mode(session)
     ensure_chargeable(mode, version.price_cents, version.currency)
     base = os.environ.get("H5_PUBLIC_BASE_URL", "https://jjtv-h5.8jj.net").rstrip("/")
+    from app.modules.billing.commerce import return_url
+    success_url = return_url(success_url, "success")
+    cancel_url = return_url(cancel_url, "cancel")
     data = {
         "mode": "payment" if mode == "one_time" else "subscription",
         "line_items[0][price]": ensure_stripe_price(session, plan, version, mode),
@@ -834,7 +884,8 @@ def create_checkout_session(
 
 def verify_stripe_signature(body: bytes, header: str) -> None:
     """Stripe-Signature: t=...,v1=...,v1=... signed over "<t>.<body>"."""
-    secret = os.environ.get("STRIPE_WEBHOOK_SECRET", "").strip()
+    credentials=_stripe_credentials.get()
+    secret = (credentials.get("webhook_secret", "") if credentials is not None else os.environ.get("STRIPE_WEBHOOK_SECRET", "")).strip()
     if not secret:
         raise BillingError(503, "stripe webhook is not configured")
     stamps: list[int] = []
@@ -1024,7 +1075,7 @@ def _activate_pass(session: Session, checkout: dict) -> dict:
     plan = session.scalar(select(Plan).where(Plan.code == plan_code))
     if plan is None or plan.status != "active":
         raise BillingError(404, "plan not found")
-    version = _latest_version(session, plan)
+    version = session.get(PlanVersion, order.plan_version_id) if order is not None else _latest_version(session, plan)
     if order is None:
         order = Order(
             order_no=secrets.token_hex(8),
@@ -1133,8 +1184,9 @@ def _sync_from_subscription(session: Session, remote: dict) -> dict:
     return {"user_id": user_id, "status": local_status}
 
 
-def apply_stripe_event(session: Session, *, body: bytes, signature: str, payload: dict) -> dict:
-    verify_stripe_signature(body, signature)
+def apply_stripe_event(session: Session, *, body: bytes, signature: str, payload: dict, signature_verified: bool = False) -> dict:
+    if not signature_verified:
+        verify_stripe_signature(body, signature)
     event_type = payload.get("type") or ""
     obj = (payload.get("data") or {}).get("object") or {}
     if event_type in {"checkout.session.completed", "checkout.session.async_payment_succeeded"}:
@@ -1159,3 +1211,165 @@ def apply_stripe_event(session: Session, *, body: bytes, signature: str, payload
         result = {"ignored": event_type}
     return {"received": True, "type": event_type, **result}
 
+
+
+# Commercial grants coexist with immutable historical subscription windows.
+_legacy_active_membership = active_membership
+_legacy_apply_stripe_event = apply_stripe_event
+_legacy_cancel_subscription = cancel_subscription
+
+def access_until(session: Session, user_id: int) -> datetime | None:
+    from app.modules.billing.commerce import grant_access_until
+    return grant_access_until(session,user_id)
+
+def active_membership(session: Session, user_id: int) -> dict:
+    from app.modules.billing.commerce import grant_access_until,aware
+    from app.modules.billing.commerce_models import MembershipGrant
+    result=_legacy_active_membership(session,user_id)
+    end=grant_access_until(session,user_id)
+    result['active']=end is not None
+    result['until']=end.isoformat() if end else None
+    grant=session.scalar(select(MembershipGrant).where(MembershipGrant.user_id==user_id,MembershipGrant.status=='active',MembershipGrant.starts_at<=datetime.now(timezone.utc),MembershipGrant.ends_at>datetime.now(timezone.utc)).order_by(MembershipGrant.ends_at.desc()).limit(1))
+    if grant is not None:
+        order=session.get(Order,grant.order_id);snapshot=order.product_snapshot
+        result.update(plan_code=snapshot.get('code'),billing_mode=order.billing_mode,pass_until=grant.ends_at.isoformat() if order.billing_mode=='one_time' else result.get('pass_until'))
+    return result
+
+def list_user_orders(session: Session,user_id:int,limit:int=20,offset:int=0)->dict:
+    from app.modules.billing.commerce import list_orders
+    return list_orders(session,user_id,limit,offset)
+
+def apply_stripe_event(session:Session,*,body:bytes,signature:str,payload:dict)->dict:
+    from app.modules.billing.commerce import process_event,signature as verify_managed
+    verify_managed(session,'env',body,signature)
+    result=process_event(session,'env',payload)
+    if result is not None:return {'received':True,'type':payload.get('type'),**result}
+    with managed_stripe_runtime(session):
+        return _legacy_apply_stripe_event(session,body=body,signature=signature,payload=payload,signature_verified=True)
+
+def _prepare_managed_cancellation(session:Session,row:Subscription)->Subscription:
+    """Commit the intent before network I/O, then restore wallet/subscription locks."""
+    from app.modules.billing.commerce import wallet_lock
+    from app.modules.billing.commerce_models import StripeSubscriptionLifecycle
+    identity=(row.id,row.user_id,row.account_code,row.stripe_subscription_id)
+    while not (row.cancellation_context or {}).get('key'):
+        fact=session.get(StripeSubscriptionLifecycle,(row.account_code,row.stripe_subscription_id),populate_existing=True)
+        row.cancellation_context=dict(key='cancel:'+secrets.token_hex(24),requested_at=int(time.time()),lifecycle_event_created=fact.last_event_created if fact else 0)
+        session.commit()
+        wallet_lock(session,identity[1])
+        row=session.get(Subscription,identity[0],with_for_update=True,populate_existing=True)
+        if row is None or not row.managed_commerce or row.status!='active' or (row.id,row.user_id,row.account_code,row.stripe_subscription_id)!=identity:
+            raise BillingError(409,'Subscription changed while preparing cancellation; retry')
+        # An accepted resume may have retired this intent during the commit gap.
+    return row
+
+
+def _cancel_managed_renewal(session:Session,row:Subscription)->None:
+    from app.modules.billing.commerce import stripe_request
+    context=row.cancellation_context
+    path='/subscriptions/'+urllib.parse.quote(row.stripe_subscription_id,safe='')
+    response=stripe_request(session,row.account_code,path,
+        {'cancel_at_period_end':'true'},idempotency_key=context['key'])
+    # A successful POST may be an old idempotency-cache response. Confirm current
+    # merchant state before telling a user/admin that future renewal is stopped.
+    remote=stripe_request(session,row.account_code,path,method='GET')
+    if not isinstance(remote,dict) or remote.get('id')!=row.stripe_subscription_id:
+        raise BillingError(502,'Could not verify the original subscription cancellation')
+    live={'active','trialing','past_due','unpaid','incomplete','paused'}
+    terminal=remote.get('status') in {'canceled','incomplete_expired'}
+    if not terminal:
+        if remote.get('status') not in live or type(remote.get('cancel_at_period_end')) is not bool:
+            raise BillingError(409,'Original subscription cancellation is not confirmed; retry or contact support')
+        if not remote['cancel_at_period_end']:
+            if not isinstance(response,dict) or response.get('id')!=row.stripe_subscription_id or response.get('status') not in live or response.get('cancel_at_period_end') is not True:
+                raise BillingError(409,'Cancellation response could not be reconciled with current provider state; contact support')
+            # The original operation did succeed, but a later resume superseded
+            # it. Retire its key durably; a caller retry is a new logical intent.
+            row.cancellation_context={};row.canceled_at=None;session.commit()
+            raise BillingError(409,dict(code='subscription_resumed_retry',message='This subscription resumed after the previous cancellation. Retry to stop renewal.',action='retry'))
+    from app.modules.billing.commerce_models import StripeSubscriptionLifecycle
+    fact=session.get(StripeSubscriptionLifecycle,(row.account_code,row.stripe_subscription_id),populate_existing=True)
+    stamp=int(time.time())
+    row.cancellation_context={**context,'confirmed_at':context.get('confirmed_at') or stamp,'verified_at':stamp,'lifecycle_event_created':max(context.get('lifecycle_event_created',0),fact.last_event_created if fact else 0)}
+
+
+def cancel_subscription(session:Session,user_id:int)->None:
+    from app.modules.billing.commerce import wallet_lock
+    wallet_lock(session,user_id)
+    row=active_subscription(session,user_id,for_update=True)
+    if row is not None and row.managed_commerce and row.stripe_subscription_id:
+        row=_prepare_managed_cancellation(session,row)
+        _cancel_managed_renewal(session,row)
+        row.canceled_at=datetime.now(timezone.utc);session.commit();return
+    with managed_stripe_runtime(session,row.account_code if row else "env"):
+        return _legacy_cancel_subscription(session,user_id)
+
+
+_legacy_revoke_membership = revoke_membership
+
+def _existing_managed_subscription_bindings(session:Session,user_id:int)->list[dict]:
+    bindings=set(session.execute(select(Subscription.account_code,Subscription.stripe_subscription_id).where(Subscription.user_id==user_id,Subscription.managed_commerce.is_(True),Subscription.stripe_subscription_id.is_not(None))).all())
+    bindings.update(session.execute(select(Order.account_code,Order.subscription_ref).where(Order.user_id==user_id,Order.product_type=='membership',Order.billing_mode=='subscription',Order.checkout_key.is_not(None),Order.subscription_ref.is_not(None))).all())
+    return [dict(account_code=account,stripe_subscription_id=subscription) for account,subscription in sorted(bindings)]
+
+
+def _existing_membership_sources(session:Session,user_id:int)->list[dict]:
+    from app.modules.billing.commerce_models import MembershipGrant
+    stmt=select(MembershipGrant.order_id,MembershipGrant.id).join(Order,Order.id==MembershipGrant.order_id).where(MembershipGrant.user_id==user_id,Order.user_id==user_id,Order.product_type=='membership',MembershipGrant.status.in_(('active','refund_pending','pending_refund'))).order_by(MembershipGrant.id).with_for_update()
+    return [dict(order_id=order_id,grant_id=grant_id) for order_id,grant_id in session.execute(stmt)]
+
+
+def revoke_membership(session:Session,*,user_id:int,mode:str,reason:str,actor_id:int)->dict:
+    from app.modules.billing import commerce
+    from app.modules.billing.commerce_models import MembershipGrant
+    if mode not in REVOKE_MODES:raise BillingError(422,'unknown revoke mode')
+    if not reason.strip():raise BillingError(422,'请填写取消原因')
+    commerce.wallet_lock(session,user_id)
+    grants=list(session.scalars(select(MembershipGrant).where(MembershipGrant.user_id==user_id,MembershipGrant.status=='active',MembershipGrant.ends_at>_now()).with_for_update()))
+    row=active_subscription(session,user_id,for_update=True)
+    revoked_bindings=_existing_managed_subscription_bindings(session,user_id) if mode=='now' else []
+    revoked_sources=_existing_membership_sources(session,user_id) if mode=='now' else []
+    if not grants and (row is None or not row.managed_commerce) and not revoked_bindings and not revoked_sources:
+        with managed_stripe_runtime(session,row.account_code if row else "env"):
+            return _legacy_revoke_membership(session,user_id=user_id,mode=mode,reason=reason,actor_id=actor_id)
+    before=access_until(session,user_id)
+    if before is None:raise BillingError(409,'该用户当前没有有效会员')
+    stripe_id=row.stripe_subscription_id if row else None
+    if mode=='period_end' and not stripe_id:raise BillingError(409,'时长包没有续费概念，请选择「立即收回」')
+    if stripe_id:
+        if row.managed_commerce:
+            if mode=='period_end':
+                row=_prepare_managed_cancellation(session,row)
+                # The durable intent commit releases locks. Refresh paid access
+                # before applying an admin action in the reacquired transaction.
+                grants=list(session.scalars(select(MembershipGrant).where(MembershipGrant.user_id==user_id,MembershipGrant.status=='active',MembershipGrant.ends_at>_now()).with_for_update().execution_options(populate_existing=True)))
+                before=access_until(session,user_id)
+                if before is None:raise BillingError(409,'该用户当前没有有效会员')
+                _cancel_managed_renewal(session,row)
+            else:
+                commerce.stripe_request(session,row.account_code,'/subscriptions/'+stripe_id,None,method='DELETE',idempotency_key='admin-revoke:'+mode+':'+stripe_id)
+        else:
+            with managed_stripe_runtime(session,row.account_code):
+                _stripe_request('/subscriptions/'+stripe_id,{'cancel_at_period_end':'true'} if mode=='period_end' else None,method='POST' if mode=='period_end' else 'DELETE')
+    moment=_now()
+    if row:row.canceled_at=moment
+    if mode=='now':
+        for grant in grants:grant.status='revoked'
+        if row:row.pass_end=moment;row.current_period_end=moment;row.status='canceled'
+    payload=dict(mode=mode,reason=reason,before_until=before.isoformat(),after_until=before.isoformat() if mode=='period_end' else moment.isoformat(),stripe_canceled=bool(stripe_id))
+    if mode=='now':
+        # Freeze known bindings and sources without disturbing refund reservations.
+        # Original managed orders retain historical identities if a row was replaced.
+        payload.update(cutoff_at=moment.isoformat(),revoked_subscription_bindings=revoked_bindings,revoked_membership_sources=revoked_sources)
+    session.add(AuditLog(actor_type='admin',actor_id=actor_id,action='membership_revoke',target_type='user',target_id=user_id,payload=payload,created_at=_now()))
+    session.commit()
+    return dict(mode=mode,before_until=before.isoformat(),after_until=before.isoformat() if mode=='period_end' else moment.isoformat(),stripe_canceled=bool(stripe_id))
+
+
+# Compatibility service callers still use the configured original merchant.
+# ContextVar isolates credentials per request without mutating process env.
+_legacy_ensure_stripe_price = ensure_stripe_price
+
+def ensure_stripe_price(session:Session,plan:Plan,version:PlanVersion,mode:str="subscription")->str:
+    with managed_stripe_runtime(session):
+        return _legacy_ensure_stripe_price(session,plan,version,mode)

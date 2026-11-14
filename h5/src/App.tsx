@@ -10,6 +10,7 @@ import { PlayPage } from "./pages/PlayPage";
 import { RewardsPage } from "./pages/RewardsPage";
 import { SearchPage } from "./pages/SearchPage";
 import { toast, ToastHost } from "./ui/toast";
+import { readMobileRoute } from "./routes";
 
 type Tab = "home" | "foryou" | "rewards" | "me";
 
@@ -20,10 +21,26 @@ interface TabItem {
 }
 
 const TABS: TabItem[] = [
-  { id: "home", key: "nav.home", renderIcon: (active) => <IconHome active={active} /> },
-  { id: "foryou", key: "nav.foryou", renderIcon: (active) => <IconForYou active={active} /> },
-  { id: "rewards", key: "nav.rewards", renderIcon: (active) => <IconRewards active={active} /> },
-  { id: "me", key: "nav.me", renderIcon: (active) => <IconMe active={active} /> },
+  {
+    id: "home",
+    key: "nav.home",
+    renderIcon: (active) => <IconHome active={active} />,
+  },
+  {
+    id: "foryou",
+    key: "nav.foryou",
+    renderIcon: (active) => <IconForYou active={active} />,
+  },
+  {
+    id: "rewards",
+    key: "nav.rewards",
+    renderIcon: (active) => <IconRewards active={active} />,
+  },
+  {
+    id: "me",
+    key: "nav.me",
+    renderIcon: (active) => <IconMe active={active} />,
+  },
 ];
 
 export function App() {
@@ -35,11 +52,27 @@ export function App() {
 }
 
 function AppShell() {
-  const { loginOpen, refresh } = useAuth();
+  const { loginOpen, refresh, authError } = useAuth();
   const [locale, setLocale] = useState<Locale>(loadLocale);
-  const [tab, setTab] = useState<Tab>("home");
-  const [dramaId, setDramaId] = useState<number | null>(null);
-  const [searching, setSearching] = useState(false);
+  const [route, setRoute] = useState(readMobileRoute);
+  const { tab, dramaId, searching } = route;
+  const setTab = (next: Tab) => {
+    window.location.hash = next;
+  };
+  const setDramaId = (id: number | null) => {
+    window.location.hash = id == null ? "home" : "watch/" + id;
+  };
+  const setSearching = (active: boolean) => {
+    window.location.hash = active ? "search" : "home";
+  };
+  useEffect(() => {
+    const update = () => setRoute(readMobileRoute());
+    window.addEventListener("hashchange", update);
+    return () => window.removeEventListener("hashchange", update);
+  }, []);
+  useEffect(() => {
+    document.documentElement.lang = locale;
+  }, [locale]);
 
   // Stripe sends the browser back here after Checkout. Clean the flag out of the
   // URL and re-read /v1/me so the "Premium active" strip appears immediately.
@@ -47,13 +80,23 @@ function AppShell() {
     const params = new URLSearchParams(window.location.search);
     const result = params.get("checkout");
     if (!result) return;
+    // A return query is not payment evidence; retain every uncertain checkout intent.
+    // A confirmed paid order can be retired only by its explicit new-purchase action.
     params.delete("checkout");
     const query = params.toString();
-    window.history.replaceState({}, "", `${window.location.pathname}${query ? `?${query}` : ""}`);
+    window.history.replaceState(
+      {},
+      "",
+      `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`,
+    );
     if (result === "success") {
-      setTab("me");
+      if (!window.location.hash) setTab("me");
       void refresh();
-      toast(t(locale, "premium_paid"));
+      toast(
+        locale === "zh"
+          ? "支付已返回，请在订单中查看确认结果。"
+          : "Checkout returned. Check your orders for confirmation.",
+      );
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -69,6 +112,12 @@ function AppShell() {
 
   return (
     <div className="app" id="app">
+      {authError && (
+        <div className="auth-connection-error" role="alert">
+          <span>{authError}</span>
+          <button onClick={() => void refresh()}>Retry</button>
+        </div>
+      )}
       {!playing && tab !== "me" && (
         <header className="topbar">
           {searching ? null : tab === "home" ? (
@@ -80,32 +129,89 @@ function AppShell() {
             <h1>{t(locale, TABS.find((item) => item.id === tab)!.key)}</h1>
           )}
           <span style={{ flex: 1 }} />
-          <button className="icon-btn" onClick={switchLocale}>{locale === "zh" ? "EN" : "中"}</button>
+          <button className="icon-btn" onClick={switchLocale}>
+            {locale === "zh" ? "EN" : "中"}
+          </button>
           {!searching && (
-            <button className="icon-btn search-btn" onClick={() => setSearching(true)} aria-label={t(locale, "search")}>
+            <button
+              className="icon-btn search-btn"
+              onClick={() => setSearching(true)}
+              aria-label={t(locale, "search")}
+            >
               <IconSearch />
             </button>
           )}
         </header>
       )}
       <main className={playing || tab === "foryou" ? "stage bleed" : "stage"}>
-        {playing ? (
+        {!route.supported ? (
+          <div className="center">
+            <h2>
+              {locale === "zh" ? "在桌面版中继续" : "Continue in desktop view"}
+            </h2>
+            <a
+              href={
+                (import.meta.env.VITE_DESKTOP_URL ||
+                  (import.meta.env.DEV
+                    ? window.location.protocol +
+                      "//" +
+                      window.location.hostname +
+                      ":5174"
+                    : "https://jjtv.8jj.net")) +
+                "/" +
+                window.location.hash
+              }
+            >
+              {locale === "zh" ? "打开此页面" : "Open this page"}
+            </a>
+            <a href="#home">{t(locale, "nav.home")}</a>
+          </div>
+        ) : playing ? (
           <PlayPage
+            key={dramaId}
             dramaId={dramaId}
+            episodeId={route.episodeId}
             locale={locale}
             onBack={() => setDramaId(null)}
-            onOpenRewards={() => { setDramaId(null); setTab("rewards"); }}
+            onOpenRewards={() => {
+              setTab("rewards");
+            }}
           />
         ) : searching ? (
-          <SearchPage locale={locale} onBack={() => setSearching(false)} onOpen={(id) => { setSearching(false); setDramaId(id); }} />
+          <SearchPage
+            key={route.query}
+            locale={locale}
+            initialQuery={route.query}
+            onQuery={(query) => {
+              window.location.hash = "search?q=" + encodeURIComponent(query);
+            }}
+            onBack={() => setSearching(false)}
+            onOpen={(id) => {
+              setDramaId(id);
+            }}
+          />
         ) : tab === "home" ? (
           <HomePage locale={locale} onOpen={setDramaId} />
         ) : tab === "foryou" ? (
           <ForYouPage locale={locale} onOpenDrama={setDramaId} />
         ) : tab === "me" ? (
-          <MePage locale={locale} onLocale={changeLocale} onOpen={setDramaId} />
+          <MePage
+            locale={locale}
+            initialTab={route.meTab}
+            initialSheet={route.meSheet}
+            onLocale={changeLocale}
+            onOpen={setDramaId}
+          />
         ) : (
           <RewardsPage locale={locale} onExplore={(target) => setTab(target)} />
+        )}
+        {!playing && !searching && tab === "me" && (
+          <div className="mobile-desktop-links">
+            <a href="#coins">{locale === "zh" ? "购买金币" : "Buy coins"}</a>
+            <a href="#support">
+              {locale === "zh" ? "帮助与客服" : "Help & support"}
+            </a>
+          </div>
         )}
       </main>
       {!playing && !searching && !loginOpen && (

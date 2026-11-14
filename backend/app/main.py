@@ -6,6 +6,7 @@ import logging
 import os
 import time
 from pathlib import Path
+from contextlib import asynccontextmanager
 
 import psycopg
 import redis
@@ -29,7 +30,16 @@ def load_env() -> None:
 
 
 load_env()
-app = FastAPI(title="JJTV API", version="0.0.0")
+@asynccontextmanager
+async def lifespan(application):
+    from app.modules.attribution.worker import start_worker,stop_worker
+    start_worker()
+    try:
+        yield
+    finally:
+        stop_worker()
+
+app = FastAPI(title="JJTV API", version="0.0.0", lifespan=lifespan)
 
 _DEFAULT_ORIGINS = [
     "http://localhost:5173",
@@ -103,6 +113,13 @@ def _register_routers() -> None:
     app.include_router(india_router)
     app.include_router(admin_router)
     app.include_router(admin_api_key_router)
+    from app.modules.content.enhancements import admin_router as content_admin, public_router as catalog_router
+    from app.modules.ops.login_router import router as login_settings_router
+    from app.modules.billing.commerce_router import admin_router as commerce_admin, public_router as commerce_public
+    from app.modules.support.router import admin_router as support_admin, public_router as support_public
+    from app.modules.attribution.router import admin_router as attr_admin, public_router as attr_public
+    for router in (content_admin,catalog_router,login_settings_router,commerce_admin,commerce_public,support_admin,support_public,attr_admin,attr_public):
+        app.include_router(router)
     app.include_router(admin_flow_router)
     app.include_router(partner_router)
     app.include_router(review_router)

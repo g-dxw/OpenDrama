@@ -13,7 +13,7 @@ from app.modules.wallet.service import InsufficientCoinsError
 
 
 def _published_priced_episode(make, price: int = 60):
-    drama = make.drama(status="published", price=price)
+    drama = make.drama(status="published", price=price, free=0)
     episode = make.episode(drama, number=1, status="published")
     return episode
 
@@ -250,3 +250,13 @@ def test_same_key_from_two_users_is_isolated(make, session):
     assert session.get(WalletAccount, second_user.id).balance == 40
     assert session.query(CoinLedgerEntry).count() == 2
     assert session.query(Entitlement).count() == 2
+
+
+def test_free_episode_unlock_never_debits_wallet(make,session):
+    user=make.user(coins=100)
+    drama=make.drama(status="published",price=60,free=3)
+    episode=make.episode(drama,number=1,status="published")
+    result=wallet_service.unlock_episode(session,user_id=user.id,episode_id=episode.id,idempotency_key="free-episode")
+    assert result.status=="free"
+    assert session.get(WalletAccount,user.id).balance==100
+    assert session.query(CoinLedgerEntry).count()==0

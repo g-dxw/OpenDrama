@@ -2,13 +2,12 @@
  * Me page acceptance: profile header, quick actions, library tabs and sheets.
  * Every /v1 call is mocked so the check is about layout + wiring, not the API.
  */
-import { createRequire } from "node:module";
-
-const require = createRequire("/opt/homebrew/lib/node_modules/");
-const { chromium } = require("playwright");
+import {chromium} from "playwright-core";
+import os from "node:os";
+import path from "node:path";
 
 const APP_URL = process.env.BASE_URL || "https://jjtv-h5.8jj.net/";
-const OUT = "/tmp/h5me";
+const OUT = process.env.OUT_DIR || path.join(os.tmpdir(), "h5me");
 const TOKEN = "test-token-42";
 
 const covers = {
@@ -98,6 +97,8 @@ function json(route, status, body) {
 }
 
 const calls = { patch: [], read: 0, checkin: 0 };
+let releaseProfileRefresh;
+const profileRefreshGate = new Promise(resolve => { releaseProfileRefresh = resolve; });
 
 async function buildRoutes(route) {
   const request = route.request();
@@ -113,7 +114,10 @@ async function buildRoutes(route) {
     return json(route, 200, { session_id: "s", page_size: 5, items: [], next_cursor: null, has_more: false, preload: { fetch_when_remaining: 2 } });
   }
   if (path === "/v1/auth/providers") return json(route, 200, { email: { enabled: true }, google: { enabled: false, client_id: null } });
-  if (path === "/v1/me" && method === "GET") return authed ? json(route, 200, me) : json(route, 401, { detail: "login required" });
+  if (path === "/v1/me" && method === "GET") {
+    if (calls.patch.length > 0) await profileRefreshGate;
+    return authed ? json(route, 200, me) : json(route, 401, { detail: "login required" });
+  }
   if (path === "/v1/me" && method === "PATCH") {
     if (!authed) return json(route, 401, { detail: "login required" });
     const body = JSON.parse(request.postData() || "{}");
@@ -146,7 +150,7 @@ function check(ok, label) {
   console.log(`${ok ? "PASS" : "FAIL"}  ${label}`);
 }
 
-const browser = await chromium.launch({ channel: "chrome" });
+const browser = await chromium.launch(process.env.CHROME_PATH ? {executablePath: process.env.CHROME_PATH} : {channel: "chrome"});
 const context = await browser.newContext({
   viewport: { width: 390, height: 844 },
   deviceScaleFactor: 2,
@@ -214,10 +218,18 @@ await page.locator(".me-edit").click();
 await page.waitForSelector('[data-testid="edit-profile-sheet"]', { timeout: 5000 });
 await page.locator('[data-testid="edit-profile-sheet"] input').fill("追剧的橘子");
 await page.locator('[data-testid="edit-profile-sheet"] textarea').fill("每天两集，周末通宵");
+// The sheet closes when PATCH succeeds; AuthProvider refreshes /v1/me separately.
+// Hold that GET so closing the editor cannot accidentally satisfy the name check.
+const savedProfileRequest = page.waitForRequest(request => new URL(request.url()).pathname === "/v1/me" && request.method() === "GET", { timeout: 5000 });
+const savedProfileResponse = page.waitForResponse(response => new URL(response.url()).pathname === "/v1/me" && response.request().method() === "GET" && response.status() === 200, { timeout: 5000 });
 await page.locator('[data-testid="edit-profile-sheet"]').getByRole("button", { name: "Save" }).click();
 await page.waitForSelector('[data-testid="edit-profile-sheet"]', { state: "detached", timeout: 5000 });
 check(calls.patch.length === 1 && calls.patch[0].display_name === "追剧的橘子", "profile save patches the name");
-check((await page.locator(".me-hero h2").innerText()).trim() === "追剧的橘子", "saved name shows immediately");
+await savedProfileRequest;
+releaseProfileRefresh();
+await savedProfileResponse;
+await page.waitForFunction(() => document.querySelector(".me-hero h2")?.textContent.trim() === "追剧的橘子", null, { timeout: 5000 });
+check((await page.locator(".me-hero h2").innerText()).trim() === "追剧的橘子", "saved name shows after profile refresh");
 await page.screenshot({ path: `${OUT}-edited.png` });
 
 await page.locator('[data-testid="me-checkin"]').click();

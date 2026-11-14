@@ -156,7 +156,6 @@ def test_home_migration_preserves_existing_ids_configuration_and_owner(engine,mo
     from alembic import command
     from alembic.config import Config
     import sqlalchemy as sa
-    from sqlalchemy.orm import Session
 
     source=engine.url.database
     assert source and re.fullmatch(r'[a-z][a-z0-9_]{0,40}',source)
@@ -174,9 +173,9 @@ def test_home_migration_preserves_existing_ids_configuration_and_owner(engine,mo
             local.setenv('ALEMBIC_DATABASE_URL',target_url.render_as_string(hide_password=False))
             command.upgrade(cfg,'c4d8e0a1b295')
             target=sa.create_engine(target_url)
-            with Session(target) as db:
-                drama=Drama(tenant_id='jjtv',title='Retained home migration drama',status='draft')
-                db.add(drama);db.commit();drama_id=drama.id
+            with target.begin() as db:
+                # c4 has no desktop pricing/language columns; use its real shape.
+                drama_id=db.execute(sa.text("INSERT INTO dramas(tenant_id,title,status,synopsis,cover_url,free_episode_count,coin_price_per_episode,country_allowlist,play_count,review_state) VALUES ('jjtv','Retained home migration drama','draft','','',0,0,'',0,'none') RETURNING id")).scalar_one()
             with target.begin() as db:
                 group_id=db.execute(sa.text("INSERT INTO home_groups(tenant_id,name,position,status,style,badge) VALUES ('jjtv','Operator group',77,'inactive','grid2','label') RETURNING id")).scalar_one()
                 tag_id=db.execute(sa.text("INSERT INTO tags(tenant_id,name_en,name_zh,category,status) VALUES ('jjtv','Operator tag','人工标签','custom','disabled') RETURNING id")).scalar_one()

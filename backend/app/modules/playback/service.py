@@ -17,7 +17,8 @@ from sqlalchemy.orm import Session
 
 from app.modules.billing import service as billing
 from app.modules.common import bunny
-from app.modules.content.models import Drama, Episode
+from app.modules.content.models import Drama, Episode, EpisodeSubtitle
+from app.modules.content.pricing import episode_access
 from app.modules.ops.service import get_redis
 from app.modules.playback.models import PlaybackEvent, PlaybackProgress
 from app.modules.wallet.models import ENTITLEMENT_TYPE_COIN, Entitlement
@@ -146,19 +147,33 @@ def authorize(
         if country.upper() not in allowed_countries:
             return {"allowed": False, "reason": "region_blocked"}
 
-    free = episode.episode_number <= drama.free_episode_count
     member = _active_subscription(session, user_id)
     unlocked = _has_unlock(session, user_id, episode.id)
-    if not (free or member or unlocked):
+    policy = episode_access(drama, episode, member=member, unlocked=unlocked)
+    if not policy['allowed']:
         return {
             "allowed": False,
-            "reason": "locked",
+            "reason": "membership_required" if policy['membership_required'] else "locked",
             "unlock": {
-                "coin_price": drama.coin_price_per_episode,
+                "coin_price": policy['coin_price'],
                 "membership_available": True,
             },
         }
 
+    # A coin unlock can coexist with a required membership gate. Consume the
+    # membership whenever the same viewer could not play without it, even when
+    # they also own the episode. Keep this decision on the shared access policy.
+    membership_needed = member and not episode_access(
+        drama, episode, member=False, unlocked=unlocked
+    )["allowed"]
+    if membership_needed and user_id is not None:
+        from app.modules.billing.commerce import mark_membership_consumed
+        try:
+            mark_membership_consumed(session, user_id, episode.id)
+            session.commit()
+        except billing.BillingError:
+            session.rollback()
+            return {'allowed': False, 'reason': 'locked', 'unlock': {'coin_price': policy['coin_price'], 'membership_available': True}}
     video_id = episode.bunny_video_id or str(episode.id)
     if bunny.live():
         signed = bunny.sign_stream_playback(video_id, ttl=TOKEN_TTL_SECONDS)
@@ -172,7 +187,14 @@ def authorize(
             subtitle = bunny.sign_image_url(episode.subtitle_url, ttl=TOKEN_TTL_SECONDS)
         else:
             subtitle = sign_path(f"{IMAGE_PREFIX}subs/{episode.id}/", image_secret(), gen=0)
+    tracks = []
+    for track in session.scalars(select(EpisodeSubtitle).where(EpisodeSubtitle.episode_id == episode.id).order_by(EpisodeSubtitle.language)):
+        signed_track = bunny.sign_image_url(track.url, ttl=TOKEN_TTL_SECONDS) if bunny.live() else sign_path(f"{IMAGE_PREFIX}subs/{episode.id}/{track.language}/", image_secret())
+        tracks.append(dict(language=track.language,label=track.label,url=signed_track['url'],is_default=track.is_default))
+    if not tracks and subtitle:
+        tracks.append(dict(language='und',label='Default',url=subtitle['url'],is_default=True))
     return {
+        "subtitles": tracks,
         "allowed": True,
         "expires_at": signed["expires_at"],
         "url": signed["url"],

@@ -47,6 +47,7 @@ def test_providers_serves_the_public_app_id(client, monkeypatch):
 
 
 def test_access_token_signs_up_then_signs_in(client, session, monkeypatch):
+    monkeypatch.setenv("FACEBOOK_APP_ID", "1234567890")
     monkeypatch.setattr(accounts, "verify_facebook", lambda **_: _identity())
 
     first = client.post("/v1/auth/facebook", json={"access_token": "opaque-token"})
@@ -69,6 +70,7 @@ def test_access_token_signs_up_then_signs_in(client, session, monkeypatch):
 
 
 def test_limited_login_id_token_is_accepted(client, monkeypatch):
+    monkeypatch.setenv("FACEBOOK_APP_ID", "1234567890")
     seen: dict[str, str | None] = {}
 
     def verify(*, access_token=None, id_token=None):
@@ -89,6 +91,7 @@ def test_a_missing_token_is_rejected_before_any_work(client):
 
 
 def test_a_refused_token_is_a_401(client, monkeypatch):
+    monkeypatch.setenv("FACEBOOK_APP_ID", "1234567890")
     def refuse(**_):
         raise FacebookAuthError("facebook access token is invalid")
 
@@ -99,6 +102,7 @@ def test_a_refused_token_is_a_401(client, monkeypatch):
 
 
 def test_confirmed_email_lands_on_the_existing_account(client, session, make, monkeypatch):
+    monkeypatch.setenv("FACEBOOK_APP_ID", "1234567890")
     existing = make.user(email="fb.user@example.com", coins=20)
     monkeypatch.setattr(accounts, "verify_facebook", lambda **_: _identity())
 
@@ -111,6 +115,7 @@ def test_confirmed_email_lands_on_the_existing_account(client, session, make, mo
 
 
 def test_merging_can_be_switched_off(client, make, monkeypatch):
+    monkeypatch.setenv("FACEBOOK_APP_ID", "1234567890")
     existing = make.user(email="fb.user@example.com")
     monkeypatch.setenv("FACEBOOK_LINK_BY_EMAIL", "0")
     monkeypatch.setattr(accounts, "verify_facebook", lambda **_: _identity())

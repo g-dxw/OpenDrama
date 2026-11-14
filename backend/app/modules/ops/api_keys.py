@@ -65,7 +65,8 @@ _PARTNER_UPLOAD_PATH = re.compile(
 )
 _SELF_CREDENTIAL = re.compile(r"^/admin/v1/auth/password$")
 _BILLING_PATH = re.compile(
-    r"^/admin/v1/(?:finance|plans|rewards|coins|membership|billing)(?:/|$)"
+    r"^/admin/v1/(?:finance|plans|rewards|coins|membership|billing"
+    r"|commerce|stripe|coin-packs)(?:/|$)"
 )
 _DELETE_DRAMA = re.compile(r"^/admin/v1/dramas/\d+/delete$")
 _DELETE_EPISODE = re.compile(r"^/admin/v1/episodes/\d+$")

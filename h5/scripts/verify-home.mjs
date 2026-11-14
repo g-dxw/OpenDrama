@@ -1,11 +1,11 @@
-import { createRequire } from "node:module";
-const require = createRequire("/opt/homebrew/lib/node_modules/");
-const { chromium } = require("playwright");
+import {chromium} from "playwright-core";
+import os from "node:os";
+import path from "node:path";
 
 const URL = process.env.BASE_URL || "https://jjtv-h5.8jj.net/";
-const OUT = "/tmp/h5v";
+const OUT = process.env.OUT_DIR || path.join(os.tmpdir(), "h5v");
 
-const browser = await chromium.launch({ channel: "chrome" });
+const browser = await chromium.launch(process.env.CHROME_PATH ? {executablePath: process.env.CHROME_PATH} : {channel: "chrome"});
 const page = await browser.newPage({
   viewport: { width: 390, height: 844 },
   deviceScaleFactor: 3,

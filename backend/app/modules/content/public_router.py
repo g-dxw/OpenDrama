@@ -14,11 +14,12 @@ episodes when the caller is a guest.
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
+from sqlalchemy import func, select, or_
 from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.modules.content import service as content
+from app.modules.content.pricing import episode_access
 from app.modules.content.models import Drama, Episode, Tag
 
 router = APIRouter(prefix="/v1", tags=["public"])
@@ -35,7 +36,7 @@ def _drama_out(drama: Drama) -> dict:
         "synopsis": drama.synopsis,
         "cover_url": drama.cover_url,
         "status": drama.status,
-        "free_episode_count": drama.free_episode_count,
+        "free_episode_count": drama.non_member_free_episodes if drama.non_member_free_episodes is not None else drama.free_episode_count,
         "coin_price_per_episode": drama.coin_price_per_episode,
         "updated_at": drama.updated_at.isoformat() if drama.updated_at else None,
     }
@@ -79,7 +80,7 @@ def _episode_counters(db: Session) -> dict[int, dict]:
         select(
             Episode.drama_id,
             func.count().label("episode_count"),
-            func.count().filter(Episode.episode_number <= Drama.free_episode_count).label("free_count"),
+            func.count().filter(or_(Episode.episode_number <= func.coalesce(Drama.non_member_free_episodes,Drama.free_episode_count),Episode.coin_price==0)).label("free_count"),
         )
         .join(Drama, Drama.id == Episode.drama_id)
         .where(Episode.status == "published", Episode.bunny_video_id != "")
@@ -101,7 +102,7 @@ def _preview_drama_out(drama: Drama, counters: dict, tags: list[Tag]) -> dict:
         "synopsis": drama.synopsis,
         "cover_url": drama.cover_url,
         "play_count": drama.play_count,
-        "free_episode_count": drama.free_episode_count,
+        "free_episode_count": drama.non_member_free_episodes if drama.non_member_free_episodes is not None else drama.free_episode_count,
         "coin_price_per_episode": drama.coin_price_per_episode,
         "episode_count": counters.get("episode_count", 0),
         "free_playable_count": counters.get("free_playable_count", 0),
@@ -178,7 +179,7 @@ def preview_drama(drama_id: int, db: Session = Depends(get_db)):
 
     counters = {
         "episode_count": len(episodes),
-        "free_playable_count": sum(1 for ep in episodes if ep.episode_number <= drama.free_episode_count),
+        "free_playable_count": sum(1 for ep in episodes if episode_access(drama,ep)['free']),
     }
     if counters["free_playable_count"] == 0:
         raise HTTPException(status_code=404, detail="no free episodes")
@@ -194,7 +195,7 @@ def preview_drama(drama_id: int, db: Session = Depends(get_db)):
                 "episode_number": ep.episode_number,
                 "title": ep.title,
                 "duration_seconds": ep.duration_seconds,
-                "free": ep.episode_number <= drama.free_episode_count,
+                "free": episode_access(drama,ep)['free'],
             }
             for ep in episodes
         ],

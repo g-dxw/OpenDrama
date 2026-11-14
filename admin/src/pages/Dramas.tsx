@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
   Alert,
@@ -38,6 +38,9 @@ type DramaRow = {
   tags: { id: number; name_en: string; name_zh: string }[];
   free_episode_count: number;
   coin_price_per_episode: number;
+  access_mode: "public" | "members";
+  member_pays_coins: boolean;
+  non_member_free_episodes: number | null;
   episode_count: number;
   play_count: number;
   updated_at: string | null;
@@ -178,6 +181,10 @@ export default function Dramas() {
   const [pageSize, setPageSize] = useState(20);
   const [status, setStatus] = useState<string | undefined>(undefined);
   const [q, setQ] = useState("");
+  const [accessMode, setAccessMode] = useState<string | undefined>();
+  const [memberPricing, setMemberPricing] = useState<string | undefined>();
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const loadSequence = useRef(0);
   const [loading, setLoading] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   // 正在切换上下架的那一行；同一时间只允许一个在途请求
@@ -189,21 +196,30 @@ export default function Dramas() {
   const { confirm, confirmModal } = useConfirm();
 
   const load = useCallback(async () => {
+    const requestId = ++loadSequence.current;
     setLoading(true);
+    setLoadError(null);
     try {
       const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
       if (status) params.set("status", status);
+      if (accessMode) params.set("access_mode", accessMode);
+      if (memberPricing) params.set("member_pays_coins", String(memberPricing === "coins"));
       if (q.trim()) params.set("q", q.trim());
       const res = await api<{ total: number; items: DramaRow[]; status_counts?: StatusCounts }>(
         `/admin/v1/dramas?${params.toString()}`
       );
+      if (requestId !== loadSequence.current) return;
       setRows(res.items);
       setTotal(res.total);
       if (res.status_counts) setCounts(res.status_counts);
+    } catch (e) {
+      if (requestId !== loadSequence.current) return;
+      setRows([]); setTotal(0); setCounts(EMPTY_COUNTS);
+      setLoadError(errorText(e));
     } finally {
-      setLoading(false);
+      if (requestId === loadSequence.current) setLoading(false);
     }
-  }, [page, pageSize, status, q]);
+  }, [page, pageSize, status, q, accessMode, memberPricing]);
 
   useEffect(() => {
     load();
@@ -312,6 +328,8 @@ export default function Dramas() {
           })}
         </div>
 
+        {loadError && <Alert type="error" showIcon message="剧集加载失败" description={loadError} action={<Button onClick={() => void load()}>重试</Button>} />}
+
         {/* 表格主卡片容器 */}
         <Card
           bordered
@@ -359,8 +377,10 @@ export default function Dramas() {
                 }}
                 options={Object.entries(STATUS_LABELS).map(([value, { text }]) => ({ value, label: text }))}
               />
+              <Select aria-label="剧集付费类型" allowClear placeholder="全部付费类型" style={{ width: 150 }} value={accessMode} onChange={value => { setPage(1); setAccessMode(value); }} options={[{ value: "public", label: "公开剧" }, { value: "members", label: "会员剧" }]} />
+              <Select aria-label="会员付费规则" allowClear placeholder="全部会员规则" style={{ width: 170 }} value={memberPricing} onChange={value => { setPage(1); setMemberPricing(value); }} options={[{ value: "included", label: "会员免金币" }, { value: "coins", label: "会员仍需金币" }]} />
               <Input.Search
-                placeholder="搜索剧名 / 剧集ID..."
+                placeholder="搜索剧名..."
                 style={{ width: 260 }}
                 onSearch={(v) => {
                   setPage(1);
@@ -555,12 +575,16 @@ export default function Dramas() {
                 },
               },
               {
-                title: "免费集数",
+                title: "付费类型", key: "payment", width: 180,
+                render: (_, r) => <Space direction="vertical" size={4}><Tag color={r.access_mode === "members" ? "purple" : "blue"}>{r.access_mode === "members" ? "会员剧" : "公开剧"}</Tag><Typography.Text type="secondary">{r.member_pays_coins ? "会员仍需金币" : "会员免金币"}</Typography.Text></Space>,
+              },
+              {
+                title: "非会员试看",
                 dataIndex: "free_episode_count",
                 width: 96,
-                render: (v: number) => (
+                render: (v: number, r: DramaRow) => (
                   <span style={{ fontVariantNumeric: "tabular-nums", color: "#344054", fontWeight: 500 }}>
-                    {v} <span style={{ fontSize: 12, color: "#98a2b3" }}>集</span>
+                    {r.non_member_free_episodes ?? v} <span style={{ fontSize: 12, color: "#98a2b3" }}>集</span>
                   </span>
                 ),
               },
@@ -571,7 +595,7 @@ export default function Dramas() {
                 render: (v: number) =>
                   v === 0 ? (
                     <Tag bordered={false} style={{ background: "#ecfdf3", color: "#027a48", borderRadius: 4, margin: 0 }}>
-                      免费
+                      未设金币价
                     </Tag>
                   ) : (
                     <span style={{ fontVariantNumeric: "tabular-nums", color: "#d97706", fontWeight: 600 }}>

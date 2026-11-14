@@ -10,6 +10,7 @@ import pytest
 import sqlalchemy as sa
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 
 from app.deploy_tenant_upgrade import run_upgrade, verify_preserved, BOOTSTRAP_ACTION
 from app.modules.ops.service import hash_password, verify_password
@@ -54,7 +55,7 @@ def test_f9_upgrade_preserves_real_accounts_and_bootstraps_only_new_accounts(eng
             first.mkdir()
             receipt = run_upgrade(target,first,lambda: command.upgrade(config,'head'))
             assert receipt['before_revisions'] == ['f9c2a71d8b30']
-            assert receipt['after_revisions'] == ['e6a1c3d9b742']
+            assert receipt['after_revisions'] == [ScriptDirectory.from_config(config).get_current_head()]
             assert receipt['original_accounts_preserved'] == 4
             # Three tenant administrators plus two independent clones.
             assert receipt['initialized_accounts'] == 5

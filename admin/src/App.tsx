@@ -34,7 +34,12 @@ import PartnerDramaEdit from './pages/PartnerDramaEdit';
 import PartnerApiKeys from './pages/PartnerApiKeys';
 import PartnerStats from './pages/PartnerStats';
 import PartnerSettlements from './pages/PartnerSettlements';
-import { CommentsPage, DashboardPage, FinancePage, PlansPage, UsersPage } from './pages/StagePages';
+import { CommentsPage, DashboardPage, UsersPage } from './pages/StagePages';
+
+import LoginSettings from './pages/LoginSettings';
+import {CoinPacksPage,CoinLedgerPage,StripeAccountsPage,CommercePlansPage,CommerceFinancePage} from './pages/CommercePages';
+import {SupportWorkbenchPage,SupportQueuePage,SupportReportsPage,SupportSettingsPage} from './pages/SupportPages';
+import AttributionPage from './pages/AttributionPage';
 
 const PLATFORM_NAV: NavigationNode[] = [{ key: '/tenants', label: '业务租户' }, { key: '/audit', label: '平台审计' }];
 function identityMe(value: Identity): Me {
@@ -110,10 +115,10 @@ function TenantApplication({ identity, refresh, onLogout, loggingOut, onPassword
 function BusinessRoutes({ first, systemAdmin }: { first: string; systemAdmin: boolean }) {
   return <Routes>
     <Route path="/" element={<Navigate to={first} replace />} />
-    <Route path="/dashboard" element={<DashboardPage />} /><Route path="/dramas" element={<Dramas />} /><Route path="/dramas/:id" element={<DramaEdit />} /><Route path="/reviews" element={<Reviews />} />
+    <Route path="/login-settings" element={<LoginSettings/>}/><Route path="/stripe-accounts" element={<StripeAccountsPage/>}/><Route path="/coin-packs" element={<CoinPacksPage/>}/><Route path="/coin-ledger" element={<CoinLedgerPage/>}/><Route path="/attribution" element={<AttributionPage/>}/><Route path="/support/workbench" element={<SupportWorkbenchPage/>}/><Route path="/support/queue" element={<SupportQueuePage/>}/><Route path="/support/reports" element={<SupportReportsPage/>}/><Route path="/support/settings" element={<SupportSettingsPage/>}/><Route path="/dashboard" element={<DashboardPage />} /><Route path="/dramas" element={<Dramas />} /><Route path="/dramas/:id" element={<DramaEdit />} /><Route path="/reviews" element={<Reviews />} />
     <Route path="/groups" element={<GroupsPage />} /><Route path="/groups/:id" element={<GroupDetailPage />} /><Route path="/home-ops" element={<HomeOpsPage />} /><Route path="/tags" element={<Tags />} />
     <Route path="/users" element={<UsersPage />} /><Route path="/rewards" element={<Rewards />} /><Route path="/comments" element={<CommentsPage />} /><Route path="/moderation" element={<Moderation />} />
-    <Route path="/plans" element={<PlansPage />} /><Route path="/finance" element={<FinancePage />} /><Route path="/suppliers" element={<Suppliers />} /><Route path="/settlements" element={<Settlements />} />
+    <Route path="/plans" element={<CommercePlansPage />} /><Route path="/finance" element={<CommerceFinancePage />} /><Route path="/suppliers" element={<Suppliers />} /><Route path="/settlements" element={<Settlements />} />
     <Route path="/staff" element={systemAdmin ? <TenantStaff /> : <Navigate to={first} replace />} /><Route path="/roles" element={systemAdmin ? <TenantRolesPage /> : <Navigate to={first} replace />} /><Route path="/api-keys" element={systemAdmin ? <ApiKeys /> : <Navigate to={first} replace />} />
     <Route path="/india-content" element={<IndiaContent />} />
     <Route path="/partner/dramas" element={<PartnerDramas />} /><Route path="/partner/dramas/:id" element={<PartnerDramaEdit />} /><Route path="/partner/stats" element={<PartnerStats />} /><Route path="/partner/settlements" element={<PartnerSettlements />} /><Route path="/partner/api-keys" element={<PartnerApiKeys />} />

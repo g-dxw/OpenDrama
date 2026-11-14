@@ -2,13 +2,12 @@
  * Rewards tab acceptance: daily task list, progress, claim and check-in.
  * Every /v1 call is mocked, so the check is about wiring and state, not the API.
  */
-import { createRequire } from "node:module";
-
-const require = createRequire("/opt/homebrew/lib/node_modules/");
-const { chromium } = require("playwright");
+import {chromium} from "playwright-core";
+import os from "node:os";
+import path from "node:path";
 
 const APP_URL = process.env.BASE_URL || "https://jjtv-h5.8jj.net/";
-const OUT = "/tmp/h5rewards";
+const OUT = process.env.OUT_DIR || path.join(os.tmpdir(), "h5rewards");
 const TOKEN = "test-token-42";
 
 const me = {
@@ -152,7 +151,7 @@ function check(ok, label) {
   console.log(`${ok ? "PASS" : "FAIL"}  ${label}`);
 }
 
-const browser = await chromium.launch({ channel: "chrome" });
+const browser = await chromium.launch(process.env.CHROME_PATH ? {executablePath: process.env.CHROME_PATH} : {channel: "chrome"});
 const context = await browser.newContext({
   viewport: { width: 390, height: 844 },
   deviceScaleFactor: 2,

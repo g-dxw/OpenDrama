@@ -1,0 +1,37 @@
+.management-page { width: 100%; min-width: 0; }
+.management-page-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; margin-bottom: 0; }
+.management-page-heading { min-width: 0; }
+.management-page-heading .ant-typography { margin: 0; }
+.management-page-heading h4.ant-typography { margin-bottom: 8px; font-size: 22px; }
+.management-page-heading .ant-typography-secondary { line-height: 1.7; max-width: 900px; }
+.management-page-actions { flex-shrink: 0; justify-content: flex-end; }
+.management-metric-hint { display: block; margin-top: 8px; font-size: 12px; }
+.management-metrics .ant-card { height: 100%; }
+.management-filter-bar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 18px; }
+.management-filter-bar .ant-form-item { margin-bottom: 0; }
+.management-table .ant-table-cell { vertical-align: top; }
+.management-table .ant-table-cell .ant-btn-link { padding-inline: 0; }
+.management-form-section + .management-form-section { border-top: 1px solid var(--ant-color-border-secondary, #f0f0f0); padding-top: 20px; margin-top: 4px; }
+.management-form-section h5.ant-typography { margin: 0 0 12px; }
+.management-form-section > .ant-typography-secondary { font-size: 13px; }
+.management-detail-value { overflow-wrap: anywhere; white-space: pre-wrap; }
+.management-row-secondary { display: block; margin-top: 4px; color: var(--ant-color-text-secondary, #8c8c8c); font-size: 12px; }
+.management-inline-result { margin-top: 14px; }
+.management-filter-summary { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 14px; }
+.management-state-stack { display: flex; flex-direction: column; gap: 5px; }
+@media (max-width: 1100px) { .management-page-header { flex-direction: column; gap: 12px; } .management-page-actions { justify-content: flex-start; } }
+
+.support-workbench-layout { display: grid; grid-template-columns: 350px minmax(0,1fr); align-items: start; gap: 20px; }
+.support-workbench-list, .support-workbench-detail { min-width: 0; }
+.support-workbench-list .ant-segmented-item-label { padding-inline: 8px; }
+.support-workbench-ticket-list { display: flex; flex-direction: column; gap: 10px; min-height: 300px; max-height: calc(100vh - 350px); overflow-y: auto; }
+.support-ticket-card { display: flex; flex-direction: column; gap: 8px; padding: 14px; width: 100%; text-align: left; border: 1px solid #e8ebef; border-radius: 8px; background: white; cursor: pointer; transition: border-color 150ms, background-color 150ms; }
+.support-ticket-card:hover, .support-ticket-card:focus-visible { border-color: #f23c4b; background: #fffafa; }
+.support-ticket-card.is-active { border-color: #f23c4b; background: #fff3f3; }
+.support-ticket-card-top, .support-ticket-card-bottom { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.support-ticket-card-top .ant-tag, .support-ticket-card-bottom .ant-tag { margin: 0; }
+.support-ticket-card-bottom > span:last-child { color: #8c8c8c; font-size: 11px; margin-left: auto; }
+.support-ticket-subject { overflow-wrap: anywhere; }
+.support-workbench-empty { min-height: 480px; display: grid; align-content: center; }
+@media (max-width: 1200px) { .support-workbench-layout { grid-template-columns: 300px minmax(0,1fr); gap: 16px; } }
+@media (max-width: 850px) { .support-workbench-layout { grid-template-columns: 1fr; } .support-workbench-ticket-list { max-height: 360px; } }

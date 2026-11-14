@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   ApiError,
   authenticateEmail,
@@ -158,6 +158,12 @@ function LoginForm({
 
   const focusBox = (index: number) => boxes.current[index]?.focus();
 
+  // Focus the new code form before the browser accepts keystrokes. A delayed
+  // callback can otherwise steal focus from a viewer already entering digits.
+  useLayoutEffect(() => {
+    if (step === "code") boxes.current[0]?.focus();
+  }, [step]);
+
   const setDigit = (index: number, raw: string) => {
     const clean = raw.replace(/\D/g, "");
     if (clean.length === 0) {
@@ -186,9 +192,9 @@ function LoginForm({
       .then(() => {
         setEmail(value);
         setDigits(Array.from({ length: CODE_LENGTH }, () => ""));
+        setBusy("idle");
         setStep("code");
         setCooldown(RESEND_SECONDS);
-        window.setTimeout(() => focusBox(0), 60);
       })
       .catch((err) => setError(messageFor(err, locale)))
       .finally(() => setBusy("idle"));

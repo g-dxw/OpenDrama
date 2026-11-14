@@ -7,7 +7,13 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "accept:preview": "node scripts/preview-acceptance.mjs"
+    "accept:preview": "node scripts/preview-acceptance.mjs",
+    "accept:consumer": "node scripts/consumer-acceptance.mjs",
+    "accept:subtitles": "node --experimental-strip-types scripts/subtitle-acceptance.mjs",
+    "accept:client": "node scripts/client-acceptance.mjs",
+    "accept:visual": "node scripts/visual-parity.mjs",
+    "accept:locales": "node scripts/locale-acceptance.mjs",
+    "accept:surface": "node scripts/surface-acceptance.mjs"
   },
   "dependencies": {
     "hls.js": "^1.7.3",
