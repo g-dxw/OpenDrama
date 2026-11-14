@@ -182,10 +182,13 @@ def clear_api_key(settings: ModerationSettings) -> None:
 
 def get_settings(db: Session) -> ModerationSettings:
     """Return the singleton row, creating defaults on first read."""
-    row = db.get(ModerationSettings, 1)
+    row = db.scalar(select(ModerationSettings))
     if row is None:
+        from sqlalchemy import func,text
+        db.execute(text("SELECT pg_advisory_xact_lock(hashtext('site-moderation-settings'))"))
+        identifier=(db.scalar(select(func.max(ModerationSettings.id)).execution_options(include_all_tenants=True)) or 0)+1
         row = ModerationSettings(
-            id=1,
+            id=identifier,
             enabled=False,
             base_url=default_base_url(),
             model=DEFAULT_MODEL,

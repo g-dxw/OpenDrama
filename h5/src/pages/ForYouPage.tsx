@@ -1,3 +1,4 @@
+import { siteFeature } from "../../../shared/site";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getJson, postJson } from "../api";
 import { useAuth } from "../auth/AuthProvider";
@@ -49,7 +50,10 @@ export function ForYouPage({ locale, onOpenDrama }: Props) {
       setItems((prev) => {
         const base = reset ? [] : prev;
         const known = new Set(base.map((item) => item.item_id));
-        return [...base, ...page.items.filter((item) => !known.has(item.item_id))];
+        return [
+          ...base,
+          ...page.items.filter((item) => !known.has(item.item_id)),
+        ];
       });
       if (reset) setIndex(0);
     } catch {
@@ -65,7 +69,8 @@ export function ForYouPage({ locale, onOpenDrama }: Props) {
   }, [loadMore]);
 
   useEffect(() => {
-    if (hasMore && items.length - index - 1 <= PRELOAD_REMAINING) loadMore(false);
+    if (hasMore && items.length - index - 1 <= PRELOAD_REMAINING)
+      loadMore(false);
   }, [index, items.length, hasMore, loadMore]);
 
   const go = (next: number) => {
@@ -74,14 +79,23 @@ export function ForYouPage({ locale, onOpenDrama }: Props) {
   };
 
   if (error && items.length === 0) {
-    return <div className="center"><button className="retry" onClick={() => loadMore(true)}>{t(locale, "retry")}</button></div>;
+    return (
+      <div className="center">
+        <button className="retry" onClick={() => loadMore(true)}>
+          {t(locale, "retry")}
+        </button>
+      </div>
+    );
   }
-  if (items.length === 0) return <div className="center">{loading ? "…" : t(locale, "empty")}</div>;
+  if (items.length === 0)
+    return <div className="center">{loading ? "…" : t(locale, "empty")}</div>;
 
   return (
     <div
       className="feed"
-      onTouchStart={(event) => { startY.current = event.touches[0].clientY; }}
+      onTouchStart={(event) => {
+        startY.current = event.touches[0].clientY;
+      }}
       onTouchEnd={(event) => {
         const delta = startY.current - event.changedTouches[0].clientY;
         if (Math.abs(delta) < 40) return;
@@ -92,7 +106,10 @@ export function ForYouPage({ locale, onOpenDrama }: Props) {
         go(event.deltaY > 0 ? index + 1 : index - 1);
       }}
     >
-      <div className="snap" style={{ transform: `translateY(-${index * 100}%)` }}>
+      <div
+        className="snap"
+        style={{ transform: `translateY(-${index * 100}%)` }}
+      >
         {items.map((item, position) => (
           <FeedSlot
             key={item.item_id}
@@ -108,7 +125,10 @@ export function ForYouPage({ locale, onOpenDrama }: Props) {
 }
 
 function FeedSlot({
-  item, active, locale, onOpenDrama,
+  item,
+  active,
+  locale,
+  onOpenDrama,
 }: {
   item: FeedItem;
   active: boolean;
@@ -119,7 +139,9 @@ function FeedSlot({
   const [liked, setLiked] = useState(item.drama.liked);
   const [likeCount, setLikeCount] = useState(item.drama.like_count);
   const [commentOpen, setCommentOpen] = useState(false);
-  const [commentCount, setCommentCount] = useState(item.episode.comment_count ?? 0);
+  const [commentCount, setCommentCount] = useState(
+    item.episode.comment_count ?? 0,
+  );
   const { requireAuth } = useAuth();
   const drama = item.drama;
   const episode = item.episode;
@@ -131,7 +153,12 @@ function FeedSlot({
     setLiked(item.drama.liked);
     setLikeCount(item.drama.like_count);
     setCommentCount(item.episode.comment_count ?? 0);
-  }, [item.item_id, item.drama.liked, item.drama.like_count, item.episode.comment_count]);
+  }, [
+    item.item_id,
+    item.drama.liked,
+    item.drama.like_count,
+    item.episode.comment_count,
+  ]);
 
   const toggleLike = () => {
     const next = !liked;
@@ -165,7 +192,12 @@ function FeedSlot({
       />
       <div className="scrim" />
       <div className="rail">
-        <div className="avatar" onClick={() => onOpenDrama(drama.id)} role="button" tabIndex={0}>
+        <div
+          className="avatar"
+          onClick={() => onOpenDrama(drama.id)}
+          role="button"
+          tabIndex={0}
+        >
           {drama.cover_url && (
             <img
               className="cover"
@@ -182,41 +214,61 @@ function FeedSlot({
           onClick={toggleLike}
           aria-label="Like"
         >
-          <span className="rail-icon"><IconHeart active={liked} size={30} /></span>
+          <span className="rail-icon">
+            <IconHeart active={liked} size={30} />
+          </span>
           <span className="rail-label">{formatCount(likeCount, locale)}</span>
         </button>
-        <button
-          type="button"
-          className="rail-btn"
-          onClick={() => setCommentOpen(true)}
-          aria-label={t(locale, "comments")}
-        >
-          <span className="rail-icon"><IconComment size={30} /></span>
-          <span className="rail-label">{commentCount > 0 ? formatCount(commentCount, locale) : t(locale, "comment")}</span>
-        </button>
+        {siteFeature("comments") && (
+          <button
+            type="button"
+            className="rail-btn"
+            onClick={() => setCommentOpen(true)}
+            aria-label={t(locale, "comments")}
+          >
+            <span className="rail-icon">
+              <IconComment size={30} />
+            </span>
+            <span className="rail-label">
+              {commentCount > 0
+                ? formatCount(commentCount, locale)
+                : t(locale, "comment")}
+            </span>
+          </button>
+        )}
         <button
           type="button"
           className="rail-btn"
           onClick={() => {
             if (navigator.share) {
-              navigator.share({ title: drama.title, url: window.location.href }).catch(() => undefined);
+              navigator
+                .share({ title: drama.title, url: window.location.href })
+                .catch(() => undefined);
             } else if (navigator.clipboard) {
-              navigator.clipboard.writeText(window.location.href).catch(() => undefined);
+              navigator.clipboard
+                .writeText(window.location.href)
+                .catch(() => undefined);
             }
           }}
           aria-label={t(locale, "share")}
         >
-          <span className="rail-icon"><IconShare size={30} /></span>
+          <span className="rail-icon">
+            <IconShare size={30} />
+          </span>
           <span className="rail-label">{t(locale, "share")}</span>
         </button>
       </div>
       {finished && (
         <button className="next-cta" onClick={() => onOpenDrama(drama.id)}>
           <IconEpisodes size={16} />
-          <span>{t(locale, "all_episodes", { count: drama.published_episode_count })}</span>
+          <span>
+            {t(locale, "all_episodes", {
+              count: drama.published_episode_count,
+            })}
+          </span>
         </button>
       )}
-      {commentOpen && (
+      {siteFeature("comments") && commentOpen && (
         <CommentSheet
           episodeId={episode.id}
           locale={locale}
@@ -229,7 +281,9 @@ function FeedSlot({
         <div className="meta">
           <h2>{drama.title}</h2>
           <div className="line">
-            <span className="ep-chip">{t(locale, "episode_chip", { number: episode.episode_number })}</span>
+            <span className="ep-chip">
+              {t(locale, "episode_chip", { number: episode.episode_number })}
+            </span>
             {tags && <span className="meta-tags">{tags}</span>}
           </div>
         </div>

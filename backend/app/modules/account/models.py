@@ -19,6 +19,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
+from sqlalchemy import String, ForeignKey
 from app.db import Base
 
 
@@ -26,6 +27,7 @@ class User(Base):
     """Registration is e-mail + verification code only; no password column."""
 
     __tablename__ = "users"
+    tenant_id: Mapped[str] = mapped_column(ForeignKey('tenants.id', ondelete='RESTRICT'), nullable=False, default='jjtv', server_default='jjtv', index=True)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     email: Mapped[str | None] = mapped_column(String(320), unique=True, nullable=True)
@@ -51,6 +53,7 @@ class User(Base):
 
 class ThirdPartyIdentity(Base):
     __tablename__ = "third_party_identities"
+    tenant_id: Mapped[str] = mapped_column(ForeignKey('tenants.id', ondelete='RESTRICT'), nullable=False, default='jjtv', server_default='jjtv', index=True)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
@@ -70,6 +73,7 @@ class VerificationCode(Base):
     """One-time e-mail codes. Only the hash is stored, never the plaintext."""
 
     __tablename__ = "verification_codes"
+    tenant_id: Mapped[str] = mapped_column(ForeignKey('tenants.id', ondelete='RESTRICT'), nullable=False, default='jjtv', server_default='jjtv', index=True)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     email: Mapped[str] = mapped_column(String(320), nullable=False)

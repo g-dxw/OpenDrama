@@ -1,3 +1,4 @@
+import { siteName, siteStorageKey, siteLocale } from "../../shared/site";
 const en: Record<string, string> = {
   "nav.home": "Home",
   "nav.foryou": "For You",
@@ -60,7 +61,7 @@ const en: Record<string, string> = {
   premium_popular: "Most popular",
   premium_cta: "Subscribe",
   premium_redirecting: "Opening…",
-  premium_note: "Secure checkout by Stripe. Prices in USD, billed automatically.",
+  premium_note: "Secure checkout by Stripe. Prices are shown in the checkout currency, billed automatically.",
   premium_need_sign_in: "Sign in first to subscribe.",
   premium_failed: "Could not start checkout. Please try again.",
   premium_min_price: "This plan is below Stripe's $0.50 minimum, so it cannot be charged yet.",
@@ -108,7 +109,7 @@ const en: Record<string, string> = {
   premium_lede_onetime: "Buy a pass — no auto-renewal. Buying again adds days on top.",
   premium_note_onetime: "Secure checkout by Stripe. One-time payment, nothing recurring.",
   unlock_title: "Unlock EP {number}",
-  unlock_sub: "Unlocked episodes stay yours, even after a pass ends.",
+  unlock_sub: "Unlocked episodes remain available during the title’s authorized viewing period.",
   unlock_price: "{price} coins",
   unlock_per_episode: "/ episode",
   unlock_balance: "Balance {balance} coins",
@@ -120,7 +121,7 @@ const en: Record<string, string> = {
   unlock_row_price: "Episode price",
   unlock_row_balance: "Current balance",
   unlock_row_after: "Balance after",
-  unlock_note: "Unlocked episodes remain in your account. Membership access follows each drama’s settings.",
+  unlock_note: "Unlocked episodes follow the title’s viewing period. Membership access follows each drama’s settings.",
   unlock_confirm: "Confirm · {price} coins",
   unlock_confirming: "Unlocking…",
   unlock_success: "Unlocked · {balance} coins left",
@@ -359,7 +360,7 @@ const zh: Record<string, string> = {
   premium_lede_onetime: "按时长购买，不会自动续费；再次购买会在剩余时长上叠加。",
   premium_note_onetime: "由 Stripe 安全收款，一次性付款，不会产生自动扣费。",
   unlock_title: "解锁第 {number} 集",
-  unlock_sub: "解锁后可永久观看，会员到期也不受影响",
+  unlock_sub: "解锁后可在本剧授权播放期限内观看",
   unlock_price: "{price} 金币",
   unlock_per_episode: "/ 集",
   unlock_balance: "当前余额 {balance} 金币",
@@ -522,15 +523,15 @@ export function t(locale: Locale, key: string, vars: Record<string, string | num
   for (const [name, value] of Object.entries(vars)) {
     text = text.replaceAll(`{${name}}`, String(value));
   }
-  return text;
+  return text.replaceAll("JJTV",siteName());
 }
 
 const KEY = "minitv_h5_locale";
 
 export function loadLocale(): Locale {
-  return localStorage.getItem(KEY) === "zh" ? "zh" : "en";
+  const saved=localStorage.getItem(siteStorageKey(KEY));return (saved=== "zh" || (!saved && siteLocale()==="zh")) ? "zh" : "en";
 }
 
 export function saveLocale(locale: Locale) {
-  localStorage.setItem(KEY, locale);
+  localStorage.setItem(siteStorageKey(KEY), locale);
 }

@@ -21,6 +21,9 @@ for key,label,menu,permissions in [
  ('support','客服工单','/support/workbench',['support.view','support.queue','support.manage','support.reports','support.settings']),
 ]: MODULES.append(dict(key=key,label=label,menu_key=menu,permissions=permissions,backend='legacy_jjtv'))
 next(item for item in MODULES if item['key']=='finance')['permissions'].append('finance.refund')
+NATIVE_BUSINESS = {'dashboard','users','rewards','comments','finance','plans','login_settings','coin_packs','coins','stripe'}
+for item in MODULES:
+    if item['key'] in NATIVE_BUSINESS:item['backend']='native'
 BY_KEY = {item['key']:item for item in MODULES}
 LEGACY_MODULE_KEYS = tuple(item['key'] for item in MODULES if item['backend']=='legacy_jjtv')
 # Native home_ops opens only channels/banners; its older global config routes
@@ -38,7 +41,7 @@ def seed_legacy_bindings(db, tenant_id='jjtv'):
 
 def supported_keys(db, tenant):
     if tenant.kind == 'india_legacy': return {'dramas','reviews'}
-    result = {'dramas','reviews','tags','groups','home_ops'}
+    result = {'dramas','reviews','tags','groups','home_ops'} | NATIVE_BUSINESS
     result |= set(db.scalars(select(LegacyBusinessBinding.module_key).where(LegacyBusinessBinding.tenant_id==tenant.id))) & set(LEGACY_MODULE_KEYS)
     return result
 

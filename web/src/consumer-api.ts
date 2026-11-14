@@ -1,26 +1,26 @@
+import { getSite, siteStorageKey } from "../../shared/site";
 import { createConsumerClient } from "../../shared/consumer/client";
 export { ApiError } from "../../shared/consumer/client";
 export type * from "../../shared/consumer/types";
 export const API_BASE = (
-  import.meta.env.VITE_API_BASE ??
-  (import.meta.env.PROD ? "https://jjtv-api.8jj.net" : "")
+  import.meta.env.VITE_API_BASE ?? ""
 ).replace(/\/$/, "");
 const client = createConsumerClient({
   apiBase: API_BASE,
-  attributionPid: () => localStorage.getItem("jjtv_attribution_pid"),
+  attributionPid: () => localStorage.getItem(siteStorageKey("jjtv_attribution_pid")),
   deviceId: () => {
-    let id = localStorage.getItem("jjtv_pc_device");
+    let id = localStorage.getItem(siteStorageKey("jjtv_pc_device"));
     if (!id) {
       id = "pc-" + crypto.randomUUID();
-      localStorage.setItem("jjtv_pc_device", id);
+      localStorage.setItem(siteStorageKey("jjtv_pc_device"), id);
     }
     return id;
   },
   tokenStore: {
-    get: () => localStorage.getItem("jjtv_pc_token"),
+    get: () => localStorage.getItem(siteStorageKey("jjtv_pc_token")),
     set: (value) => {
-      if (value) localStorage.setItem("jjtv_pc_token", value);
-      else localStorage.removeItem("jjtv_pc_token");
+      if (value) localStorage.setItem(siteStorageKey("jjtv_pc_token"), value);
+      else localStorage.removeItem(siteStorageKey("jjtv_pc_token"));
     },
   },
 });
@@ -102,9 +102,9 @@ export interface Order {
   coins: number;
   billing_mode: string;
 }
-export const money = (cents: number, currency = "USD") =>
+export const money = (cents: number, currency = getSite().tenant.currency) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency }).format(
-    cents / 100,
+    cents / 10 ** (new Intl.NumberFormat("en-US", {style:"currency",currency}).resolvedOptions().maximumFractionDigits ?? 2),
   );
 export const errorMessage = (error: unknown) =>
   error instanceof Error

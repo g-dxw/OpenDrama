@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from fastapi import HTTPException
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
@@ -130,6 +131,12 @@ def apply_due_schedules(session: Session, now: datetime | None = None) -> int:
     ).all()
     count = 0
     for drama in due:
+        if drama.library_title_id is not None:
+            from app.modules.library.service import assert_distribution_allowed
+            try:
+                assert_distribution_allowed(session, drama, purpose='publish', now=now)
+            except HTTPException:
+                continue
         # Scheduling cannot bypass the same supplier approval gate as manual publication.
         # Keep the plan pending so approval can make it eligible on a later run.
         if drama.supplier_id is not None and drama.review_state != 'approved':

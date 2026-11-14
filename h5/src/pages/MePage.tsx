@@ -1,3 +1,4 @@
+import { getSite, siteName, siteFeature } from "../../../shared/site";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   checkin as postCheckin,
@@ -299,7 +300,7 @@ export function MePage({
         </div>
       )}
 
-      {user?.membership?.active ? (
+      {(siteFeature("membership") || user?.membership?.active) && (user?.membership?.active ? (
         <button
           type="button"
           className="me-premium active"
@@ -312,7 +313,7 @@ export function MePage({
             <i>
               {t(locale, user.membership.canceling ? "premium_ends_on" : "premium_active_until", {
                 date: user.membership.until
-                  ? new Date(user.membership.until).toLocaleDateString(locale === "zh" ? "zh-CN" : "en-US", {
+                  ? new Date(user.membership.until).toLocaleDateString(locale === "zh" ? "zh-CN" : "en-US", { timeZone:getSite().tenant.timezone,
                       month: "short",
                       day: "numeric",
                       year: "numeric",
@@ -336,7 +337,7 @@ export function MePage({
           </span>
           <span className="me-premium-go">{t(locale, "premium_strip_cta")}</span>
         </button>
-      )}
+      ))}
 
       <div className="me-quick">
         <button type="button" className="me-quick-item" onClick={() => openTab("history")}>
@@ -465,14 +466,14 @@ export function MePage({
           onSaved={() => void refresh()}
         />
       )}
-      {sheet === "ledger" && (
+      {siteFeature("coins") && sheet === "ledger" && (
         <LedgerSheet locale={locale} balance={user?.coins ?? 0} onClose={() => setSheet(null)} />
       )}
       {sheet === "messages" && (
         <MessagesSheet locale={locale} onClose={() => setSheet(null)} onRead={handleRead} />
       )}
       {sheet === "orders" && <OrdersSheet locale={locale} onClose={() => setSheet(null)} />}
-      {sheet === "premium" && (
+      {sheet === "premium" && (siteFeature("membership") || user?.membership?.active) && (
         <PremiumSheet
           locale={locale}
           membership={user?.membership}
@@ -862,7 +863,7 @@ function LedgerSheet({
 function formatWhen(value: string, locale: Locale): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleString(locale === "zh" ? "zh-CN" : "en-US", {
+  return date.toLocaleString(locale === "zh" ? "zh-CN" : "en-US", { timeZone:getSite().tenant.timezone,
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
@@ -1009,7 +1010,7 @@ function SettingsSheet({
         <div className="me-set-list">
           <div className="me-set-item">
             <span className="me-set-label">{t(locale, "me_set_version")}</span>
-            <span className="me-set-value">JJTV · H5</span>
+            <span className="me-set-value">{siteName()} · H5</span>
           </div>
         </div>
       </section>

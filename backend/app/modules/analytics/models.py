@@ -13,11 +13,13 @@ import datetime
 from sqlalchemy import BigInteger, Date, DateTime, Integer, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
+from sqlalchemy import String, ForeignKey
 from app.db import Base
 
 
 class DailyMetric(Base):
     __tablename__ = "daily_metrics"
+    tenant_id: Mapped[str] = mapped_column(ForeignKey('tenants.id', ondelete='RESTRICT'), nullable=False, default='jjtv', server_default='jjtv', index=True)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     business_day: Mapped[datetime.date] = mapped_column(Date, nullable=False)

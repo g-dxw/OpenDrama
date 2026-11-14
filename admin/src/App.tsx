@@ -1,3 +1,6 @@
+import { setOperatorSite } from './site-format';
+import { SiteSettingsPage, BrandPage, MerchantBindingPage } from './pages/SiteSettings';
+import LibraryPage from './pages/Library';
 import { useCallback, useEffect, useState } from 'react';
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { Alert, Button, Card, Space, Spin, Typography } from 'antd';
@@ -41,7 +44,7 @@ import {CoinPacksPage,CoinLedgerPage,StripeAccountsPage,CommercePlansPage,Commer
 import {SupportWorkbenchPage,SupportQueuePage,SupportReportsPage,SupportSettingsPage} from './pages/SupportPages';
 import AttributionPage from './pages/AttributionPage';
 
-const PLATFORM_NAV: NavigationNode[] = [{ key: '/tenants', label: '业务租户' }, { key: '/audit', label: '平台审计' }];
+const PLATFORM_NAV: NavigationNode[] = [{ key: '/tenants', label: '站点管理' }, { key: '/library', label: '公司内容库' }, { key: '/stripe-accounts', label: '公司收款账号' }, { key: '/audit', label: '平台审计' }];
 function identityMe(value: Identity): Me {
   return { ...value.user, account_scope: value.account_scope, session_kind: value.session_kind, is_platform_admin: value.is_platform_admin, is_tenant_admin: value.is_tenant_admin,
     permissions: value.permissions, menu_keys: value.menu_keys, enabled_modules: value.enabled_modules, tenant_role_name: value.role_name };
@@ -83,13 +86,14 @@ export default function App() {
 }
 function PlatformApplication({ identity, onLogout, loggingOut, onPassword }: { identity: Identity; onLogout: () => void; loggingOut: boolean; onPassword: () => void }) {
   const location = useLocation(); const navigate = useNavigate(); const notice = new URLSearchParams(location.search).get('notice');
-  return <BackOfficeShell brand="JJTV 平台管理" items={PLATFORM_NAV} route={location.pathname} scope="platform" onNavigate={key => navigate(key)} accountName={identity.user.display_name || identity.user.username} accountLabel="平台管理员" onLogout={onLogout} loadingLogout={loggingOut} onPassword={onPassword}>
+  return <BackOfficeShell brand="MiniTV 公司总控" items={PLATFORM_NAV} route={location.pathname} scope="platform" onNavigate={key => navigate(key)} accountName={identity.user.display_name || identity.user.username} accountLabel="平台管理员" onLogout={onLogout} loadingLogout={loggingOut} onPassword={onPassword}>
     {notice === 'support-ended' && <Alert showIcon type="info" message="临时租户访问已结束，已返回平台管理。" style={{ marginBottom: 16 }} />}
-    <Routes><Route path="/tenants" element={<Tenants />} /><Route path="/audit" element={<PlatformAudit />} /><Route path="*" element={<Navigate to="/tenants" replace />} /></Routes>
+    <Routes><Route path="/tenants" element={<Tenants />} /><Route path="/library" element={<LibraryPage platform />} /><Route path="/stripe-accounts" element={<StripeAccountsPage platform />} /><Route path="/audit" element={<PlatformAudit />} /><Route path="*" element={<Navigate to="/tenants" replace />} /></Routes>
   </BackOfficeShell>;
 }
 function TenantApplication({ identity, refresh, onLogout, loggingOut, onPassword }: { identity: Identity; refresh: () => Promise<void>; onLogout: () => void; loggingOut: boolean; onPassword?: () => void }) {
   const location = useLocation(); const navigate = useNavigate(); const [refreshing, setRefreshing] = useState(false); const [error, setError] = useState('');
+  useEffect(()=>{let active=true;void api<{timezone:string;currency:string}>('/tenant/v1/site').then(value=>{if(active)setOperatorSite(value);}).catch(()=>{});return()=>{active=false;};},[identity.tenant?.id]);
   const tenant = identity.tenant!; const support = identity.session_kind === 'support'; const systemAdmin = identity.is_tenant_admin || support; const partner = identity.user.role === 'partner';
   const current: Tenant = { ...tenant, permissions: identity.permissions, menu_keys: identity.menu_keys, role_name: identity.role_name };
   const refreshPermissions = useCallback(async () => { setRefreshing(true); try { await refresh(); setError(''); } catch (e) { setError(errorText(e)); } finally { setRefreshing(false); } }, [refresh]);
@@ -115,7 +119,7 @@ function TenantApplication({ identity, refresh, onLogout, loggingOut, onPassword
 function BusinessRoutes({ first, systemAdmin }: { first: string; systemAdmin: boolean }) {
   return <Routes>
     <Route path="/" element={<Navigate to={first} replace />} />
-    <Route path="/login-settings" element={<LoginSettings/>}/><Route path="/stripe-accounts" element={<StripeAccountsPage/>}/><Route path="/coin-packs" element={<CoinPacksPage/>}/><Route path="/coin-ledger" element={<CoinLedgerPage/>}/><Route path="/attribution" element={<AttributionPage/>}/><Route path="/support/workbench" element={<SupportWorkbenchPage/>}/><Route path="/support/queue" element={<SupportQueuePage/>}/><Route path="/support/reports" element={<SupportReportsPage/>}/><Route path="/support/settings" element={<SupportSettingsPage/>}/><Route path="/dashboard" element={<DashboardPage />} /><Route path="/dramas" element={<Dramas />} /><Route path="/dramas/:id" element={<DramaEdit />} /><Route path="/reviews" element={<Reviews />} />
+    <Route path="/site-settings" element={systemAdmin ? <SiteSettingsPage /> : <Navigate to={first} replace />} /><Route path="/brand" element={systemAdmin ? <BrandPage /> : <Navigate to={first} replace />} /><Route path="/merchant-binding" element={systemAdmin ? <MerchantBindingPage /> : <Navigate to={first} replace />} /><Route path="/library" element={<LibraryPage />} /><Route path="/login-settings" element={<LoginSettings/>}/><Route path="/stripe-accounts" element={<StripeAccountsPage/>}/><Route path="/coin-packs" element={<CoinPacksPage/>}/><Route path="/coin-ledger" element={<CoinLedgerPage/>}/><Route path="/attribution" element={<AttributionPage/>}/><Route path="/support/workbench" element={<SupportWorkbenchPage/>}/><Route path="/support/queue" element={<SupportQueuePage/>}/><Route path="/support/reports" element={<SupportReportsPage/>}/><Route path="/support/settings" element={<SupportSettingsPage/>}/><Route path="/dashboard" element={<DashboardPage />} /><Route path="/dramas" element={<Dramas />} /><Route path="/dramas/:id" element={<DramaEdit />} /><Route path="/reviews" element={<Reviews />} />
     <Route path="/groups" element={<GroupsPage />} /><Route path="/groups/:id" element={<GroupDetailPage />} /><Route path="/home-ops" element={<HomeOpsPage />} /><Route path="/tags" element={<Tags />} />
     <Route path="/users" element={<UsersPage />} /><Route path="/rewards" element={<Rewards />} /><Route path="/comments" element={<CommentsPage />} /><Route path="/moderation" element={<Moderation />} />
     <Route path="/plans" element={<CommercePlansPage />} /><Route path="/finance" element={<CommerceFinancePage />} /><Route path="/suppliers" element={<Suppliers />} /><Route path="/settlements" element={<Settlements />} />

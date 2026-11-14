@@ -20,7 +20,7 @@ export default function Login({ onLogin }: { onLogin: (context: Identity) => voi
     } catch (e: any) { setError(e?.status === 401 ? '账号或密码不正确' : errorText(e)); }
     finally { setLoading(false); }
   };
-  return <div className="entry-page"><Card className="entry-card" title={platform ? 'JJTV 平台管理登录' : '租户业务后台登录'}>
+  return <div className="entry-page"><Card className="entry-card" title={platform ? '公司总控登录' : '租户业务后台登录'}>
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
       {REASON && <Alert showIcon type="info" message="登录状态已失效，请重新登录当前入口。" />}
       {error && <Alert showIcon type="error" message={error} />}

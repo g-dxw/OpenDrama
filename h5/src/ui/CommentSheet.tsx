@@ -1,3 +1,4 @@
+import { siteDate } from "../../../shared/site";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { createComment, listComments, postJson } from "../api";
@@ -28,7 +29,7 @@ function timeAgo(iso: string | null, locale: Locale): string {
   if (seconds < 3600) return t(locale, "minutes_ago", { n: Math.floor(seconds / 60) });
   if (seconds < 86400) return t(locale, "hours_ago", { n: Math.floor(seconds / 3600) });
   if (seconds < 604800) return t(locale, "days_ago", { n: Math.floor(seconds / 86400) });
-  return new Date(iso).toLocaleDateString();
+  return siteDate(iso,undefined,{dateStyle:"medium"});
 }
 
 /** One thread per episode: opening a different episode remounts the sheet. */

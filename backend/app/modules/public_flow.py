@@ -25,6 +25,7 @@ from app.modules.common.models import AuditLog
 from app.modules.content import service as content
 from app.modules.content.models import Drama, Episode, Tag
 from app.modules.content.pricing import episode_access
+from app.modules.content.public_terms import public_watch_terms
 from app.modules.content.upload_service import UploadRejected, apply_callback
 from app.modules.ops.config_models import (
     Banner,
@@ -83,6 +84,7 @@ def _episode_counts(db: Session, drama_ids: list[int]) -> dict[int, int]:
 
 def _drama_card(drama: Drama, totals: dict[int, int]) -> dict:
     return {
+        **public_watch_terms(drama),
         "id": drama.id,
         "title": drama.title,
         "cover_url": drama.cover_url,
@@ -502,7 +504,7 @@ def marketing(db: Session = Depends(get_db)):
 
 @router.get("/legal/{slug}")
 def legal(slug: str, db: Session = Depends(get_db)):
-    page = db.get(LegalPage, slug)
+    page = db.scalar(select(LegalPage).where(LegalPage.slug == slug))
     if page is None:
         raise HTTPException(status_code=404, detail="not found")
     return {"slug": page.slug, "title": page.title, "body": page.body}
@@ -772,6 +774,9 @@ def delete_comment(comment_id: int, user: User = Depends(_require_user), db: Ses
 def react(body: ReactionIn, user: User = Depends(_require_user), db: Session = Depends(get_db)):
     if body.target_type not in {"drama", "episode", "comment"}:
         raise HTTPException(status_code=422, detail="bad target_type")
+    from app.modules.tenancy.consumer_scope import require_owned
+    target_model = {"drama":Drama,"episode":Episode,"comment":Comment}[body.target_type]
+    require_owned(db,target_model,body.target_id)
     if body.target_type == "comment":
         target = db.get(Comment, body.target_id)
         if target is None or target.status != "approved":
@@ -877,6 +882,8 @@ def drama_play(drama_id: int, user: User | None = Depends(_optional_user), db: S
     if drama is None:
         raise HTTPException(status_code=404, detail="drama not found")
 
+    from app.modules.library.service import assert_distribution_allowed
+    assert_distribution_allowed(db,drama,purpose='play',country=db.info.get('viewer_country'))
     uid = None if user is None else user.id
     member = playback.subscription_active(db, uid)
     progress_rows = (
@@ -1003,6 +1010,7 @@ def drama_play(drama_id: int, user: User | None = Depends(_optional_user), db: S
         )
     return {
         "drama": {
+            **public_watch_terms(drama),
             "id": drama.id,
             "title": drama.title,
             "synopsis": drama.synopsis,

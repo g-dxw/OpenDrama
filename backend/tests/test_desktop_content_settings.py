@@ -87,10 +87,28 @@ def test_subtitle_languages_default_and_pricing_permissions(session,make,monkeyp
  assert client.patch('/admin/v1/episodes/'+str(episode.id)+'/pricing',headers=headers,json={'coin_price':3}).status_code==200
 
 def test_native_tenant_cannot_access_jjtv_settings(session,make):
+ from app.modules.wallet.models import CoinLedgerEntry
  other=Tenant(id='other',code='other',name='Other',kind='native',status='active');session.add(other);session.flush();seed_tenant_defaults(session,other);session.commit()
+ # The adapted settings and coin pages are available, with independent data.
+ save_config(session,'login',{'email_from':'jjtv-sender@example.test','google_enabled':True,'google_client_ids':['original.apps.googleusercontent.com']})
+ legacy=make.user('jjtv-settings@example.test',coins=5)
+ session.add(CoinLedgerEntry(user_id=legacy.id,amount=5,balance_after=5,biz_type='adjustment',biz_key='jjtv-settings-isolation'));session.commit()
  staff=make.admin(role='admin',tenant_id='other');client=TestClient(app);headers=login(client,staff)
- for path in ['/admin/v1/login/settings','/admin/v1/stripe/accounts','/admin/v1/coins/records','/admin/v1/support/tickets','/admin/v1/attr/pixels']:
+ response=client.get('/admin/v1/login/settings',headers=headers)
+ assert response.status_code==200,response.text
+ assert response.json()['email_from']=='' and response.json()['google_client_ids']==[]
+ assert response.json()['google_enabled'] is False
+ saved=client.post('/admin/v1/login/settings',headers=headers,json={'email_from':'other-sender@example.test'})
+ assert saved.status_code==200,saved.text
+ assert client.get('/admin/v1/login/settings',headers=headers).json()['email_from']=='other-sender@example.test'
+ assert get_config(session,'login')['email_from']=='jjtv-sender@example.test'
+ coins=client.get('/admin/v1/coins/records',headers=headers)
+ assert coins.status_code==200,coins.text
+ assert coins.json()['items']==[]
+ # Global credentials and still-unadapted legacy modules remain inaccessible.
+ for path in ['/admin/v1/stripe/accounts','/admin/v1/support/tickets','/admin/v1/attr/pixels']:
   assert client.get(path,headers=headers).status_code==403,path
+
 
 def test_null_metadata_rejected_and_legacy_subtitle_updates_default(session,make,monkeypatch):
     from app.modules.common import bunny

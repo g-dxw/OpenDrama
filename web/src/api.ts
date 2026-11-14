@@ -75,17 +75,9 @@ export type PlaybackAuth = {
   renditions?: string[];
 };
 
-/**
- * Production builds set VITE_API_BASE (see web/.env.production); local Vite dev
- * leaves it empty and uses the proxy.
- *
- * The marketing frontend and API use separate public hosts:
- * a production build that somehow lacks the env var would request /v1/... on
- * jjtv.8jj.net itself, receive an HTML page instead of API data and render "Could not load JJTV".
- * Fall back to the public API host instead of shipping a dead page.
- */
+/** Use the same origin unless a separate public API is explicitly configured. */
 export const API_BASE = (
-  import.meta.env.VITE_API_BASE ?? (import.meta.env.PROD ? "https://jjtv-api.8jj.net" : "")
+  import.meta.env.VITE_API_BASE ?? ""
 ).replace(/\/$/, "");
 
 function apiUrl(path: string): string {

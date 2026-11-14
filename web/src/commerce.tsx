@@ -1,3 +1,6 @@
+import {RightsNotice} from "./rights-notice";
+import type {ContentRights} from "../../shared/consumer/types";
+import { siteFeature } from "../../shared/site";
 import { planPriceDisplay } from "./plan-display";
 import { useLocale } from "./locale";
 import { setDesktopCheckoutActive } from "./surface";
@@ -81,6 +84,8 @@ export function Store({
 }) {
   const { locale, t, number, date, money } = useLocale();
   const { user, requireAuth, refresh } = useAuth();
+  const [sourceRights,setSourceRights]=useState<ContentRights|null>(null),[rightsError,setRightsError]=useState("");
+  useEffect(()=>{let active=true;setSourceRights(null);setRightsError("");if(sourceDramaId)void get<{drama:ContentRights}>("/v1/dramas/"+sourceDramaId+"/play").then(value=>{if(active)setSourceRights(value.drama);}).catch(()=>{if(active)setRightsError("Could not load content availability.");});return()=>{active=false;};},[sourceDramaId]);
   const [plans, setPlans] = useState<Plan[]>([]),
     [packs, setPacks] = useState<Pack[]>([]),
     [mode, setMode] = useState("one_time"),
@@ -121,8 +126,8 @@ export function Store({
     setLoading(true);
     setError("");
     Promise.allSettled([
-      get<{ items: Plan[]; billing_mode?: string }>("/v1/plans"),
-      get<{ items: Pack[] }>("/v1/coin-packs"),
+      siteFeature("membership") ? get<{ items: Plan[]; billing_mode?: string }>("/v1/plans") : Promise.resolve({items:[] as Plan[],billing_mode:"one_time"}),
+      siteFeature("coins") ? get<{ items: Pack[] }>("/v1/coin-packs") : Promise.resolve({items:[] as Pack[]}),
       get<{ items: Array<{ code: string; name: string; enabled: boolean }> }>(
         "/v1/billing/channels",
       ),
@@ -353,6 +358,7 @@ export function Store({
     .reduce((lowest, p) => Math.min(lowest, p.price_cents), Infinity);
   return (
     <div className="page-content price-page">
+      <RightsNotice rights={sourceRights}/>{rightsError&&<Failure message={t(rightsError)}/>}
       <div className="price-heading">
         <div>
           <h1>{t("Price")}</h1>
@@ -366,16 +372,16 @@ export function Store({
         )}
       </div>
       <div className="segmented price-tabs" aria-label={t("Store category")}>
-        <button
+        {siteFeature("membership")&&<button
           aria-pressed={kind === "membership"}
           onClick={() => selectTab("membership")}
         >
-          {t("Premium")}</button>
-        <button
+          {t("Premium")}</button>}
+        {siteFeature("coins")&&<button
           aria-pressed={kind === "coin_pack"}
           onClick={() => selectTab("coin_pack")}
         >
-          {t("Coins")}</button>
+          {t("Coins")}</button>}
       </div>
       {user?.membership?.active && (
         <div className="membership-banner">
@@ -483,7 +489,7 @@ export function Store({
         <Loading />
       ) : (
         <>
-          <section className="price-section" id="membership-plans">
+          {siteFeature("membership")&&<section className="price-section" id="membership-plans">
             <div className="price-section-heading">
               <h2>{t("Membership plans")}</h2>
               <p className="muted">
@@ -529,7 +535,7 @@ export function Store({
                   </ul>
                   <button
                     className={"button secondary full-width" + (plan.benefits?.best ? " plan-gold-button" : "")}
-                    disabled={!!busy || !!activeRecovery || !channels.length}
+                    disabled={!!busy || !!activeRecovery || !channels.length || !!(sourceDramaId&&!sourceRights)}
                     onClick={() =>
                       requireAuth(() => {
                         void purchase("membership", plan.code);
@@ -551,8 +557,8 @@ export function Store({
             )}
             <p className="section-footnote">
               {t("Episode access and any coin charges follow the rules shown on each drama.")}</p>
-          </section>
-          <section className="price-section" id="coin-packs">
+          </section>}
+          {siteFeature("coins")&&<section className="price-section" id="coin-packs">
             <div className="price-section-heading">
               <h2>{t("Coin packs")}</h2>
               <p className="muted">
@@ -589,7 +595,7 @@ export function Store({
                     <strong>{money(pack.price_cents, pack.currency)}</strong>
                     <button
                       className="button secondary"
-                      disabled={!!busy || !!activeRecovery || !channels.length}
+                      disabled={!!busy || !!activeRecovery || !channels.length || !!(sourceDramaId&&!sourceRights)}
                       onClick={() =>
                         requireAuth(() => {
                           void purchase("coin_pack", pack.code);
@@ -614,7 +620,7 @@ export function Store({
               </span>
               <span>{t("Go to Rewards →")}</span>
             </a>
-          </section>
+          </section>}
           {channels.length > 1 && (
             <label className="payment-channel">
               {t("Payment option")}<select

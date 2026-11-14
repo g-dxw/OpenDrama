@@ -1,3 +1,5 @@
+import { RightsNotice } from "../ui/RightsNotice";
+import { siteFeature } from "../../../shared/site";
 import { useEffect, useRef, useState } from "react";
 import { authToken, getJson, postJson, type UnlockResult } from "../api";
 import { useAuth } from "../auth/AuthProvider";
@@ -406,21 +408,23 @@ export function PlayPage({
           <span className="rail-label">{formatCount(likeCount, locale)}</span>
         </button>
 
-        <button
-          type="button"
-          className="rail-btn"
-          onClick={() => setSheet("comments")}
-          aria-label={t(locale, "comments")}
-        >
-          <span className="rail-icon">
-            <IconComment size={30} />
-          </span>
-          <span className="rail-label">
-            {commentCount > 0
-              ? formatCount(commentCount, locale)
-              : t(locale, "comment")}
-          </span>
-        </button>
+        {siteFeature("comments") && (
+          <button
+            type="button"
+            className="rail-btn"
+            onClick={() => setSheet("comments")}
+            aria-label={t(locale, "comments")}
+          >
+            <span className="rail-icon">
+              <IconComment size={30} />
+            </span>
+            <span className="rail-label">
+              {commentCount > 0
+                ? formatCount(commentCount, locale)
+                : t(locale, "comment")}
+            </span>
+          </button>
+        )}
 
         <button
           type="button"
@@ -461,6 +465,7 @@ export function PlayPage({
       </div>
       <div className="meta">
         <h2>{payload.drama.title}</h2>
+        <RightsNotice rights={payload.drama} locale={locale} />
         {payload.drama.synopsis && (
           <p
             className={expanded ? "syn open" : "syn"}
@@ -499,7 +504,7 @@ export function PlayPage({
           />
         </>
       )}
-      {sheet === "comments" && (
+      {siteFeature("comments") && sheet === "comments" && (
         <>
           <button className="sheet-mask" onClick={() => setSheet(null)} />
           <CommentSheet
@@ -529,8 +534,9 @@ export function PlayPage({
           />
         </>
       )}
-      {unlockTarget && (
+      {siteFeature("coins") && unlockTarget && (
         <UnlockSheet
+          rights={payload.drama}
           locale={locale}
           episode={unlockTarget}
           price={unlockTarget.unlock?.coin_price ?? 0}
@@ -546,8 +552,9 @@ export function PlayPage({
           }}
         />
       )}
-      {premiumOpen && (
+      {siteFeature("membership") && premiumOpen && (
         <PremiumSheet
+          rights={payload.drama}
           locale={locale}
           membership={user?.membership}
           onChanged={() => {
@@ -689,7 +696,7 @@ function LockedEpisode({
         <h2>{t(locale, "unlock_title", { number: episode.episode_number })}</h2>
         <p className="lock-sub">{t(locale, "unlock_sub")}</p>
 
-        {coinOnly && (
+        {siteFeature("coins") && coinOnly && (
           <div className="lock-price">
             <b>{t(locale, "unlock_price", { price })}</b>
             <span>{t(locale, "unlock_per_episode")}</span>
@@ -731,16 +738,18 @@ function LockedEpisode({
             </button>
           ))}
 
-        <button
-          type="button"
-          className={coinOnly ? "lock-member" : "lock-cta"}
-          onClick={onMember}
-          data-testid="lock-member"
-        >
-          {coinOnly
-            ? t(locale, "unlock_member_cta")
-            : t(locale, "premium_strip_cta")}
-        </button>
+        {siteFeature("membership") && (
+          <button
+            type="button"
+            className={coinOnly ? "lock-member" : "lock-cta"}
+            onClick={onMember}
+            data-testid="lock-member"
+          >
+            {coinOnly
+              ? t(locale, "unlock_member_cta")
+              : t(locale, "premium_strip_cta")}
+          </button>
+        )}
       </div>
     </div>
   );

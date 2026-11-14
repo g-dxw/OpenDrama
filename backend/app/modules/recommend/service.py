@@ -274,7 +274,9 @@ def _label(candidates: list[signals.Candidate], source: str) -> None:
 
 
 def _drama_payload(db: Session, drama: Drama, tags: list[Tag], counts: dict, *, like_count: int = 0, liked: bool = False) -> dict:
+    from app.modules.content.public_terms import public_watch_terms
     return {
+        **public_watch_terms(drama),
         "id": drama.id,
         "title": drama.title,
         "synopsis": drama.synopsis,

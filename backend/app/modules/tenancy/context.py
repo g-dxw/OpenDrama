@@ -8,7 +8,12 @@ def user_info(user):
     return dict(id=user.id,username=user.username,display_name=user.display_name,role=user.role,account_scope=user.account_scope,tenant_id=user.tenant_id,must_change_password=user.must_change_password)
 
 def tenant_info(tenant):
-    return dict(id=tenant.id,code=tenant.code,name=tenant.name,kind=tenant.kind,status=tenant.status,version=tenant.version)
+    from sqlalchemy.orm import object_session
+    from app.modules.sites.models import SiteSettings
+    db=object_session(tenant)
+    settings=db.get(SiteSettings,tenant.id) if db else None
+    config={key:getattr(settings,key) for key in ('target_markets','default_locale','locales','currency','timezone','web_url','h5_url','features')} if settings else {}
+    return dict(id=tenant.id,code=tenant.code,name=tenant.name,kind=tenant.kind,status=tenant.status,version=tenant.version,**config)
 
 def build_context(db,principal):
     user=principal.user
@@ -27,5 +32,7 @@ def build_context(db,principal):
         result.update(menu_keys=menus,role_name='上剧方')
         return result
     grants=effective_grants(db,user,tenant,principal)
+    if tenant.kind=='native' and 'dramas' in result['enabled_modules'] and 'dramas.view' in grants['permissions']:
+        grants['menu_keys']=list(dict.fromkeys([*grants['menu_keys'],'/library']))
     result.update(permissions=grants['permissions'],menu_keys=grants['menu_keys'],is_tenant_admin=grants['is_tenant_admin'],role_name=grants['role_name'],role_id=grants['role_id'])
     return result

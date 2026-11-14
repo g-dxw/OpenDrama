@@ -18,6 +18,9 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
+from contextvars import ContextVar
+from functools import wraps
+from app.modules.tenancy.consumer_scope import site_timezone
 
 from sqlalchemy import Date, cast, func, select
 from sqlalchemy.orm import Session
@@ -32,6 +35,7 @@ from app.modules.wallet.models import CoinLedgerEntry, Entitlement
 
 LA = ZoneInfo("America/Los_Angeles")
 TZ_NAME = "America/Los_Angeles"
+_CLOCK = ContextVar("site_analytics_timezone", default=LA)
 
 METRIC_FIELDS = (
     "active_users",
@@ -52,12 +56,14 @@ _EPISODE_AWAITING_STATUSES = ("transcoding", "in_review")
 def business_day(moment: datetime) -> date:
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=timezone.utc)
-    return moment.astimezone(LA).date()
+    return moment.astimezone(_CLOCK.get()).date()
 
 
 def _day_bounds(day: date) -> tuple[datetime, datetime]:
-    start = datetime.combine(day, datetime.min.time(), LA).astimezone(timezone.utc)
-    return start, start + timedelta(days=1)
+    zone=_CLOCK.get()
+    start = datetime.combine(day, datetime.min.time(), zone).astimezone(timezone.utc)
+    end = datetime.combine(day+timedelta(days=1), datetime.min.time(), zone).astimezone(timezone.utc)
+    return start, end
 
 
 def _window_bounds(start_day: date, end_day: date) -> tuple[datetime, datetime]:
@@ -68,7 +74,7 @@ def _window_bounds(start_day: date, end_day: date) -> tuple[datetime, datetime]:
 
 def _local_day(column):
     """Postgres helper: a timestamptz column bucketed by the dashboard timezone."""
-    return cast(func.timezone(TZ_NAME, column), Date)
+    return cast(func.timezone(_CLOCK.get().key, column), Date)
 
 
 def collect(session: Session, start_day: date, end_day: date) -> dict[date, dict]:
@@ -153,9 +159,9 @@ def snapshot(session: Session, days: dict[date, dict]) -> None:
     for day, bucket in days.items():
         row = existing.get(day)
         if row is None:
-            row = DailyMetric(business_day=day, timezone=TZ_NAME)
+            row = DailyMetric(business_day=day, timezone=_CLOCK.get().key)
             session.add(row)
-        row.timezone = TZ_NAME
+        row.timezone = _CLOCK.get().key
         for field in METRIC_FIELDS:
             setattr(row, field, bucket[field])
     session.commit()
@@ -248,7 +254,7 @@ def dashboard(session: Session, day: date, days: int = 7) -> dict:
     selected = trend[-1]
     previous = trend[-2] if len(trend) > 1 else {field: 0 for field in METRIC_FIELDS}
     return {
-        "timezone": TZ_NAME,
+        "timezone": _CLOCK.get().key,
         "day": selected["day"],
         "window": {"start": start_day.isoformat(), "end": day.isoformat(), "days": days},
         "trend": trend,
@@ -257,3 +263,18 @@ def dashboard(session: Session, day: date, days: int = 7) -> dict:
         **{field: selected[field] for field in METRIC_FIELDS},
         "previous": {field: previous.get(field, 0) for field in METRIC_FIELDS},
     }
+
+
+def _site_clock(fn):
+    @wraps(fn)
+    def wrapped(session,*args,**kwargs):
+        token=_CLOCK.set(site_timezone(session))
+        try:return fn(session,*args,**kwargs)
+        finally:_CLOCK.reset(token)
+    return wrapped
+
+collect=_site_clock(collect)
+snapshot=_site_clock(snapshot)
+aggregate_day=_site_clock(aggregate_day)
+top_dramas=_site_clock(top_dramas)
+dashboard=_site_clock(dashboard)

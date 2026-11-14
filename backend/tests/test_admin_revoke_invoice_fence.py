@@ -129,6 +129,8 @@ def test_late_old_invoice_cannot_override_a_new_subscription_binding(
     if account != "env":
         c.save_account(session, account, dict(name="Other", status="active", secret_key="sk_test_other",
             webhook_secret="whsec_other"), actor.id)
+        from app.modules.billing.site_merchants import bind_merchant
+        bind_merchant(session,account,False,actor.id)
     result = c.checkout(session, user_id=user.id, email=user.email, product_type="membership",
         code="monthly", account_code=account, idempotency_key="post-revoke-subscription")
     new_order = session.scalar(select(Order).where(Order.order_no == result["order_no"]))

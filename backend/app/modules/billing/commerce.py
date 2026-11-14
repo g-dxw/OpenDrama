@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from app.modules.billing.models import Order, Plan, PlanVersion, Subscription
 from app.modules.billing.commerce_models import (CoinPack,CoinPackVersion,StripeAccount,StripePriceBinding,CoinSource,CoinAllocation,MembershipGrant,CommerceSettlement,CommerceRefund,StripeSubscriptionLifecycle)
 from app.modules.wallet.models import WalletAccount,CoinLedgerEntry
+from app.modules.account.models import User
 from app.modules.common.models import AuditLog
 from app.modules.billing.service import BillingError
 from app.modules.ops.managed_settings import get_config,save_config,public_config
@@ -31,6 +32,8 @@ def audit(db,actor,action,target_id=None,payload=None):
     db.add(AuditLog(actor_type='admin',actor_id=actor,action=action,target_type='commerce',target_id=target_id,payload=payload or {}))
 
 def wallet_lock(db,user_id):
+    from app.modules.tenancy.consumer_scope import require_owned
+    require_owned(db,User,user_id)
     row=db.get(WalletAccount,user_id,with_for_update=True,populate_existing=True)
     if row is None:
         # Accounts normally provision a wallet at registration. An advisory lock
@@ -106,9 +109,11 @@ def save_pack(db,code,data,actor):
         if key in data and data[key] is not None:setattr(pack,key,data[key])
     latest=db.scalar(select(CoinPackVersion).where(CoinPackVersion.pack_id==pack.id).order_by(CoinPackVersion.version.desc()).limit(1))
     values={key:data.get(key,getattr(latest,key,None)) for key in ('price_cents','currency','base_coins','bonus_coins')}
-    values['currency']=(values['currency'] or 'USD').upper();values['bonus_coins']=values['bonus_coins'] or 0
+    from app.modules.billing.site_merchants import site_currency,assert_site_currency
+    values['currency']=(values['currency'] or site_currency(db)).upper();values['bonus_coins']=values['bonus_coins'] or 0
+    assert_site_currency(db,values['currency'])
     if values['price_cents'] is None or values['price_cents']<50 or values['base_coins'] is None or values['base_coins']<1 or values['bonus_coins']<0:raise BillingError(422,'invalid price or coin amount')
-    if values['currency']!='USD':raise BillingError(422,'only USD products are supported')
+    if not __import__('re').fullmatch('[A-Z]{3}',values['currency']):raise BillingError(422,'currency must be a three-letter code')
     if latest is None or any(getattr(latest,key)!=value for key,value in values.items()):
         latest=CoinPackVersion(pack_id=pack.id,version=latest.version+1 if latest else 1,**values);db.add(latest);db.flush()
     audit(db,actor,'coin_pack.save',pack.id,dict(code=code,version_id=latest.id,note=data.get('note','')));db.commit()
@@ -138,6 +143,10 @@ def account_list(db):
     return [dict(code=x.code,name=x.name,status=x.status,is_default=x.is_default,provider='stripe',livemode=x.livemode,remote_id=x.remote_id,**public_config(db,'stripe:'+x.code,env_defaults() if x.code=='env' else {},secret_fields=('secret_key','webhook_secret'))) for x in rows]
 
 def select_account(db,user_id,code=None):
+    from app.modules.billing.site_merchants import purchase_account
+    return purchase_account(db,code)
+
+def _legacy_select_account(db,user_id,code=None):
     if code:return get_account(db,code,True)
     configured=account_list(db)
     enabled=[x for x in configured if x['status']=='active' and x.get('secret_key_configured')]
@@ -179,7 +188,7 @@ def _account_lock(db,code):
     db.execute(text('SELECT pg_advisory_xact_lock(:key)'),{'key':key})
 
 def _account_has_history(db,code):
-    return any(db.scalar(select(model).where(field==code).limit(1)) is not None for model,field in ((Order,Order.account_code),(Subscription,Subscription.account_code),(StripePriceBinding,StripePriceBinding.account_code)))
+    return any(db.scalar(select(model).where(field==code).limit(1).execution_options(include_all_tenants=True)) is not None for model,field in ((Order,Order.account_code),(Subscription,Subscription.account_code),(StripePriceBinding,StripePriceBinding.account_code)))
 
 def _identity_conflict():
     return BillingError(409,dict(code='stripe_merchant_mismatch',message='This channel is bound to a different Stripe merchant or mode. Create a new channel instead.'))
@@ -225,6 +234,17 @@ def save_account(db,code,data,actor):
     save_config(db,'stripe:'+code,changes,secret_fields=('secret_key','webhook_secret','webhook_secrets_history'))
     if row.is_default:
         for other in db.scalars(select(StripeAccount).where(StripeAccount.code!=code)):other.is_default=False
+        # The old default switch continues to select JJTV's merchant only.
+        # Other sites always retain their own explicit binding.
+        from app.modules.billing.commerce_models import SiteMerchantBinding
+        from app.modules.billing.site_merchants import require_known_bound_merchants,merchant_alias_codes
+        require_known_bound_merchants(db,code,'jjtv')
+        aliases=merchant_alias_codes(db,code)
+        other_binding=db.scalar(select(SiteMerchantBinding).where(SiteMerchantBinding.account_code.in_(aliases),SiteMerchantBinding.tenant_id!='jjtv'))
+        jjtv_binding=db.get(SiteMerchantBinding,'jjtv')
+        if other_binding is not None and (jjtv_binding is None or jjtv_binding.account_code!=code):raise BillingError(409,'Bind this shared merchant to JJTV explicitly before choosing it as the legacy default')
+        if jjtv_binding is None:jjtv_binding=SiteMerchantBinding(tenant_id='jjtv',account_code=code,explicit_reuse=False);db.add(jjtv_binding)
+        jjtv_binding.account_code=code
     audit(db,actor,'stripe_account.save',payload=dict(code=code,status=row.status,remote_id=row.remote_id,livemode=row.livemode));db.commit()
     return next(x for x in account_list(db) if x['code']==code)
 
@@ -238,15 +258,24 @@ def test_account(db,code):
     row.remote_id=remote_id;row.livemode=live;db.commit()
     return dict(ok=True,account_id=remote_id,country=result.get('country'),livemode=live)
 
-def return_url(value,kind):
-    base=os.environ.get('H5_PUBLIC_BASE_URL','https://jjtv-h5.8jj.net').rstrip('/')
+def return_url(value,kind,db=None):
+    from app.modules.tenancy.consumer_scope import current_site
+    site=current_site(db) if db is not None else 'jjtv'
+    settings=None
+    if db is not None:
+        from app.modules.sites.models import SiteSettings
+        settings=db.get(SiteSettings,site)
+    configured=[x for x in ((settings.web_url if settings else ''),(settings.h5_url if settings else '')) if x]
+    if site!='jjtv' and not configured:raise BillingError(503,'Configure this site storefront URL before accepting payments')
+    base=(configured[-1] if configured else os.environ.get('H5_PUBLIC_BASE_URL','https://jjtv-h5.8jj.net')).rstrip('/')
     if value is None:return base+'/?checkout='+kind
-    origins={'https://jjtv.8jj.net','https://jjtv-h5.8jj.net'}
-    for entry in [base,os.environ.get('WEB_PUBLIC_BASE_URL','')]+os.environ.get('CHECKOUT_RETURN_ORIGINS','').split(','):
+    origins={'https://jjtv.8jj.net','https://jjtv-h5.8jj.net'} if site=='jjtv' else set()
+    entries=configured+([base,os.environ.get('WEB_PUBLIC_BASE_URL','')]+os.environ.get('CHECKOUT_RETURN_ORIGINS','').split(',') if site=='jjtv' else [])
+    for entry in entries:
         if entry:
             parsed=urllib.parse.urlsplit(entry.strip());origins.add(parsed.scheme+'://'+parsed.netloc)
     parsed=urllib.parse.urlsplit(value)
-    if parsed.username or parsed.password or parsed.scheme not in {'https','http'} or parsed.scheme+'://'+parsed.netloc not in origins:raise BillingError(422,'checkout return URL must use an allowed JJTV origin')
+    if parsed.username or parsed.password or parsed.scheme not in {'https','http'} or parsed.scheme+'://'+parsed.netloc not in origins:raise BillingError(422,'checkout return URL must use an allowed site origin')
     return value
 
 def product_snapshot(db,kind,code):
@@ -339,7 +368,9 @@ def assert_no_renewing_subscription(db,user_id):
         if not remote['cancel_at_period_end']:raise BillingError(409,'an active renewing subscription already exists; manage it before starting another')
 
 def checkout(db,*,user_id,email,product_type,code,idempotency_key,account_code=None,success_url=None,cancel_url=None,source_drama_id=None,attribution_pid=None):
-    success=return_url(success_url,'success');cancel=return_url(cancel_url,'cancel')
+    from app.modules.tenancy.consumer_scope import require_owned,current_site
+    require_owned(db,User,user_id)
+    success=return_url(success_url,'success',db);cancel=return_url(cancel_url,'cancel',db)
     key='checkout:'+str(user_id)+':'+hashlib.sha256(idempotency_key.encode()).hexdigest()
     wallet_lock(db,user_id)
     order=db.scalar(select(Order).where(Order.checkout_key==key))
@@ -361,6 +392,8 @@ def checkout(db,*,user_id,email,product_type,code,idempotency_key,account_code=N
     else:
         if product_type=='membership':_membership_refund_checkout_guard(db,user_id)
         snapshot=product_snapshot(db,product_type,code)
+        from app.modules.billing.site_merchants import assert_site_currency
+        assert_site_currency(db,snapshot['currency'])
         if snapshot['billing_mode']=='subscription':
             # Persisted orders reserve the right to create ONE subscription even
             # while a remote response or its first invoice has not arrived.
@@ -378,11 +411,13 @@ def checkout(db,*,user_id,email,product_type,code,idempotency_key,account_code=N
                 assert_no_renewing_subscription(db,user_id)
         if order is None:
             account=select_account(db,user_id,account_code)
-            if snapshot['price_cents']<50:raise BillingError(422,'Stripe price must be at least USD 0.50')
+            if snapshot['currency']=='USD' and snapshot['price_cents']<50:raise BillingError(422,'Stripe price must be at least USD 0.50')
             if source_drama_id is not None:
                 from app.modules.content.models import Drama
                 drama=db.get(Drama,source_drama_id)
-                if drama is None or drama.tenant_id!='jjtv' or drama.status!='published':raise BillingError(404,'source drama not found')
+                if drama is None or drama.tenant_id!=current_site(db) or drama.status!='published':raise BillingError(404,'source drama not found')
+                from app.modules.library.service import assert_distribution_allowed
+                assert_distribution_allowed(db,drama,purpose='sale',country=db.info.get('viewer_country'))
             order=Order(order_no=secrets.token_hex(12),user_id=user_id,plan_version_id=snapshot['version_id'] if product_type=='membership' else None,product_type=product_type,product_snapshot=snapshot,amount_cents=snapshot['price_cents'],currency=snapshot['currency'],billing_mode=snapshot['billing_mode'],status='created',account_code=account['code'],checkout_key=key,source_drama_id=source_drama_id,attribution_pid=attribution_pid,checkout_context={'request':dict(success_url=success,cancel_url=cancel,email=email)})
             db.add(order);db.commit()
     price=ensure_price(db,account['code'],snapshot)
@@ -1055,7 +1090,7 @@ def list_orders(db,user_id=None,limit=50,offset=0):
     rows=list(db.scalars(stmt.offset(offset).limit(limit+1)))
     return dict(items=[order_out(db,row) for row in rows[:limit]],has_more=len(rows)>limit)
 
-def filtered_admin_orders(q=None,status=None,date_from=None,date_to=None,product_type=None,account_code=None,billing_mode=None):
+def filtered_admin_orders(q=None,status=None,date_from=None,date_to=None,product_type=None,account_code=None,billing_mode=None,timezone_name="America/Los_Angeles"):
     from app.modules.account.models import User
     from sqlalchemy import or_
     from zoneinfo import ZoneInfo
@@ -1070,13 +1105,15 @@ def filtered_admin_orders(q=None,status=None,date_from=None,date_to=None,product
     if account_code:stmt=stmt.where(Order.account_code==account_code)
     if billing_mode:stmt=stmt.where(Order.billing_mode==billing_mode)
     if date_from and date_to and date_from>date_to:raise BillingError(422,'date_from must not be after date_to')
-    zone=ZoneInfo('America/Los_Angeles')
+    zone=ZoneInfo(timezone_name)
     if date_from:stmt=stmt.where(Order.created_at>=datetime.combine(date_from,datetime.min.time(),zone))
     if date_to:stmt=stmt.where(Order.created_at<datetime.combine(date_to+timedelta(days=1),datetime.min.time(),zone))
     return stmt
 
 def admin_orders(db,limit=50,offset=0,**filters):
-    stmt=filtered_admin_orders(**filters)
+    from app.modules.tenancy.consumer_scope import site_timezone
+    from app.modules.billing.site_merchants import site_currency
+    stmt=filtered_admin_orders(timezone_name=site_timezone(db).key,**filters)
     selected=stmt.subquery()
     grouped=list(db.execute(select(selected.c.currency,selected.c.status,func.count().label('orders'),func.sum(selected.c.amount_cents).label('cents')).group_by(selected.c.currency,selected.c.status)))
     currencies={}
@@ -1091,7 +1128,8 @@ def admin_orders(db,limit=50,offset=0,**filters):
     for bucket in currencies.values():
         bucket['paid_cents']=bucket['gross_cents']
         bucket['net_cents']=bucket['gross_cents']-bucket['refunded_cents']
-    usd=currencies.get('USD',dict(currency='USD',gross_cents=0,paid_cents=0,refunded_cents=0,net_cents=0,pending_cents=0,review_cents=0))
+    currency=site_currency(db)
+    usd=currencies.get(currency,dict(currency=currency,gross_cents=0,paid_cents=0,refunded_cents=0,net_cents=0,pending_cents=0,review_cents=0))
     summary=dict(**usd,orders=sum(counts.values()),paid_orders=sum(counts.get(s,0) for s in ('paid','refund_pending','refunded','refund_review')),refunded_orders=counts.get('refunded',0),pending_orders=counts.get('created',0),pending_refund_orders=counts.get('refund_pending',0),review_orders=counts.get('refund_review',0),failed_orders=counts.get('failed',0),currencies=list(currencies.values()))
     rows=list(db.scalars(stmt.order_by(Order.created_at.desc(),Order.id.desc()).offset(offset).limit(limit+1)))
     return dict(items=[order_out(db,row,True) for row in rows[:limit]],has_more=len(rows)>limit,total=summary['orders'],summary=summary)

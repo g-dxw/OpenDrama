@@ -101,17 +101,54 @@ def test_missing_revision_never_reaches_core(boundary, session, make):
 
 
 @pytest.mark.parametrize("tenant_id", ["other-resolution", "india-short-drama"])
-def test_other_tenants_cannot_resolve_jjtv_sources(boundary, session, make, tenant_id):
+def test_resolution_boundary_uses_native_site_and_keeps_india_closed(boundary, session, make, monkeypatch, tenant_id):
     client, calls = boundary
     if tenant_id != "india-short-drama":
         tenant = Tenant(id=tenant_id, code=tenant_id, name="Other native", kind="native", status="active")
         session.add(tenant)
         seed_tenant_defaults(session, tenant)
         session.commit()
+    scopes=[]
+    def core(db,*args):
+        scopes.append(db.info.get('content_tenant_id'))
+        return RESULT
+    monkeypatch.setattr(commerce,'resolve_membership_refund',core)
     actor = make.admin(role="admin", tenant_id=tenant_id)
     response = client.post(PATH, headers=login(client, actor), json=BODY)
-    assert response.status_code == (409 if tenant_id == "india-short-drama" else 403), response.text
+    if tenant_id == "india-short-drama":
+        assert response.status_code==409,response.text
+        assert not scopes
+    else:
+        assert response.status_code==200,response.text
+        assert scopes==[tenant_id]
     assert not calls
+
+
+def test_native_finance_cannot_resolve_a_real_jjtv_source_or_change_its_state(session,commercial,make):
+    user,_original_actor,_calls=commercial
+    original=membership_order(session,user,'jjtv-cross-site-resolution-source')
+    pay(session,original)
+    tenant=Tenant(id='native-resolution',code='native-resolution',name='Native finance',kind='native',status='active')
+    session.add(tenant);seed_tenant_defaults(session,tenant);session.commit()
+    actor=make.admin(role='admin',tenant_id=tenant.id)
+    client=TestClient(app);headers=login(client,actor)
+    def state():
+        session.expire_all()
+        order=session.get(Order,original.id)
+        source=session.scalar(select(CoinSource).where(CoinSource.order_id==original.id))
+        grant=session.scalar(select(MembershipGrant).where(MembershipGrant.order_id==original.id))
+        return (order.status,deepcopy(order.checkout_context),deepcopy(order.product_snapshot),
+                source.original,source.remaining,source.reserved,
+                grant.status,grant.starts_at,grant.ends_at,grant.access_consumed,
+                session.get(WalletAccount,user.id).balance,
+                session.scalar(select(func.count()).select_from(CoinLedgerEntry)),
+                session.scalar(select(func.count()).select_from(AuditLog)))
+    before=state()
+    path='/admin/v1/finance/orders/'+original.order_no+'/membership-refund-resolution'
+    response=client.post(path,headers=headers,json=BODY)
+    assert response.status_code==404,response.text
+    assert state()==before
+    assert client.get('/admin/v1/commerce/orders/'+original.order_no,headers=headers).status_code==404
 
 
 def test_disabled_finance_module_stays_closed_to_tenant_admin(boundary, session, make):

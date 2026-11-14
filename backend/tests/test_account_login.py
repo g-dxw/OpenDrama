@@ -281,6 +281,8 @@ def test_history_returns_drama_cards(client, outbox, make, session):
         "title": "Watched Drama",
         "cover_url": "",
         "episode_count": 1,
+        "watch_until": None,
+        "sales_until": None,
     }
 
 
@@ -312,6 +314,8 @@ def test_liked_dramas_come_back_as_cards(client, outbox, make):
                 "title": "Liked Drama",
                 "cover_url": "",
                 "episode_count": 2,
+                "watch_until": None,
+                "sales_until": None,
             },
         }
     ]

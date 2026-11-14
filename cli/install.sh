@@ -1,14 +1,14 @@
 #!/bin/sh
-# JJTV CLI installer.
+# MiniTV CLI installer.
 #
-#   curl -fsSL https://jjtv.8jj.net/cli/install.sh | sh
-#   curl -fsSL https://jjtv.8jj.net/cli/install.sh | MINITV_API_KEY='mk_live_...' sh
+#   curl -fsSL https://YOUR_INSTANCE/cli/install.sh | MINITV_CLI_BASE=https://YOUR_INSTANCE/cli MINITV_API_BASE=https://YOUR_INSTANCE sh
+#   curl -fsSL https://YOUR_INSTANCE/cli/install.sh | MINITV_API_KEY='mk_live_...' sh
 #
 # 行为：校验 python3 → 下载单文件到 ~/.local/bin/minitv → 可选写入 API Key →
 # 自检。幂等：重复执行是覆盖升级，没给 MINITV_API_KEY 时不动已保存的密钥。
 set -eu
 
-BASE="${MINITV_CLI_BASE:-https://jjtv.8jj.net/cli}"
+BASE="${MINITV_CLI_BASE:-}"
 PREFIX="${MINITV_BIN_DIR:-$HOME/.local/bin}"
 DO_DOCTOR=1
 MIN_PY="3.8"
@@ -27,11 +27,13 @@ minitv install.sh
 用法: sh install.sh [--prefix DIR] [--base URL] [--no-doctor]
 
   --prefix DIR   安装目录（默认 ~/.local/bin）
-  --base URL     下载基址（默认 https://jjtv.8jj.net/cli）
+  --base URL     下载基址（需指定自己的实例 /cli 地址）
   --no-doctor    装完不跑 minitv doctor
   -h, --help     显示本说明
 
 环境变量:
+  MINITV_CLI_BASE 本实例的 /cli 下载地址。
+  MINITV_API_BASE 本实例 API 地址；随密钥一并保存。
   MINITV_API_KEY 提供时自动写入（经 stdin，不进进程参数）；缺省则只安装。
 USAGE
       exit 0
@@ -42,6 +44,7 @@ done
 
 say() { printf '%s\n' "$*"; }
 fail() { printf '[err] %s\n' "$*" >&2; exit 1; }
+[ -n "$BASE" ] || fail "请通过 --base 或 MINITV_CLI_BASE 指定自己的实例 /cli 地址"
 
 # ---- 1. python3 ----
 PY=$(command -v python3 || true)
@@ -82,7 +85,14 @@ MINITV="$PREFIX/minitv"
 # ---- 3. key ----
 if [ -n "${MINITV_API_KEY:-}" ]; then
   # stdin, not argv: the key must never show up in `ps`.
-  if printf '%s' "$MINITV_API_KEY" | "$MINITV" config set-key --stdin; then
+  configure_key() {
+    if [ -n "${MINITV_API_BASE:-}" ]; then
+      "$MINITV" config set-key --stdin --base-url "$MINITV_API_BASE"
+    else
+      "$MINITV" config set-key --stdin
+    fi
+  }
+  if printf '%s' "$MINITV_API_KEY" | configure_key; then
     say "密钥      已写入本地凭据文件"
   else
     fail "密钥校验失败，未写入（磁盘上的旧密钥保持不变）"

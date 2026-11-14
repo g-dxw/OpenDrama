@@ -147,3 +147,52 @@ def test_original_webhook_aliases_settle_managed_invoice_once_without_legacy_acc
     assert session.scalar(select(func.count()).select_from(CommerceSettlement)) == 1
     assert session.scalar(select(func.count()).select_from(MembershipGrant)) == 1
     assert session.scalar(select(Subscription)).managed_commerce is True
+
+
+@pytest.mark.parametrize('path',[OLD_WEBHOOK,ENV_WEBHOOK])
+def test_migrated_unverified_env_live_key_accepts_signed_live_payments(session,commercial,monkeypatch,path):
+    from app.modules.billing.commerce_models import StripeAccount
+    user,_actor,_calls=commercial
+    monkeypatch.setenv('STRIPE_SECRET_KEY','sk_live_historical_fixture')
+    # Match a1114commerce's original seed, including its placeholder false mode.
+    account=StripeAccount(code='env',name='Migrated original merchant',status='active',is_default=True,remote_id=None,livemode=False)
+    session.add(account);session.commit()
+    order=membership_order(session,user,'migrated-live-merchant')
+    payload={'id':'evt_historical_live','livemode':True,'type':'checkout.session.completed','data':{'object':{
+        'id':order.external_txn_id,'mode':'payment','payment_status':'paid',
+        'amount_total':order.amount_cents,'currency':order.currency.lower(),
+        'payment_intent':'pi_historical_live','metadata':{'commerce_order_no':order.order_no}}}}
+    client=TestClient(app)
+    first=post_event(client,payload,path)
+    assert first.status_code==200,first.text
+    session.expire_all()
+    assert session.get(Order,order.id).status=='paid'
+    assert session.scalar(select(MembershipGrant).where(MembershipGrant.order_id==order.id)).status=='active'
+    balance=session.get(WalletAccount,user.id).balance
+    assert balance==25
+    repeat=post_event(client,payload,path)
+    assert repeat.status_code==200,repeat.text
+    assert repeat.json()['replayed'] is True
+    session.expire_all()
+    assert session.get(WalletAccount,user.id).balance==balance
+    assert session.scalar(select(func.count()).select_from(CommerceSettlement).where(CommerceSettlement.order_id==order.id))==1
+
+
+def test_verified_merchant_mode_remains_authoritative_over_live_key_prefix(session,commercial,monkeypatch):
+    from app.modules.billing.commerce_models import StripeAccount
+    user,_actor,_calls=commercial
+    monkeypatch.setenv('STRIPE_SECRET_KEY','sk_live_historical_fixture')
+    session.add(StripeAccount(code='env',name='Verified test merchant',status='active',is_default=True,remote_id='acct_verified_test',livemode=False));session.commit()
+    order=membership_order(session,user,'verified-merchant-mode-fence')
+    payload={'id':'evt_wrong_verified_mode','account':'acct_verified_test','livemode':True,'type':'checkout.session.completed','data':{'object':{
+        'id':order.external_txn_id,'mode':'payment','payment_status':'paid',
+        'amount_total':order.amount_cents,'currency':order.currency.lower(),
+        'payment_intent':'pi_verified_mode','metadata':{'commerce_order_no':order.order_no}}}}
+    before=session.get(WalletAccount,user.id).balance
+    response=post_event(TestClient(app),payload)
+    assert response.status_code==401,response.text
+    session.expire_all()
+    assert session.get(Order,order.id).status=='created'
+    assert session.get(WalletAccount,user.id).balance==before
+    assert session.scalar(select(func.count()).select_from(CommerceSettlement).where(CommerceSettlement.order_id==order.id))==0
+    assert session.scalar(select(func.count()).select_from(MembershipGrant).where(MembershipGrant.order_id==order.id))==0

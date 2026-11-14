@@ -18,6 +18,7 @@ export const NAVIGATION: NavigationNode[] = [
   {
     key: "nav:content", label: "内容", children: [
       { key: "/dramas", label: "剧集管理" },
+      { key: "/library", label: "选剧与授权" },
       { key: "/reviews", label: "剧集审核" },
       { key: "/groups", label: "首页分组" },
       { key: "/home-ops", label: "首页运营" },
@@ -63,6 +64,9 @@ export const NAVIGATION: NavigationNode[] = [
   {
     key: "nav:system", label: "系统", children: [
       { key: "/tenants", label: "租户管理", platformAdminOnly: true },
+      { key: "/site-settings", label: "站点设置" },
+      { key: "/brand", label: "品牌与样式" },
+      { key: "/merchant-binding", label: "本站收款账号" },
       { key: "/staff", label: "员工账号" },
       { key: "/roles", label: "角色与权限" },
       { key: "/api-keys", label: "API 密钥" },
@@ -92,7 +96,7 @@ export function visibleNavigation({
     if (partner) return leaf.audience === "partner" && allowed.has(leaf.key);
     if (leaf.audience === "partner") return false;
     if (leaf.platformAdminOnly) return platformAdmin;
-    if (["/staff", "/roles", "/api-keys"].includes(leaf.key)) return tenantAdmin;
+    if (["/staff", "/roles", "/api-keys", "/site-settings", "/brand", "/merchant-binding"].includes(leaf.key)) return tenantAdmin;
     if (india && leaf.key !== "/india-content") return false;
     if (!india && leaf.key === "/india-content") return false;
     return allowed.has(leaf.key);

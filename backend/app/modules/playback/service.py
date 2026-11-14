@@ -11,6 +11,7 @@ import hmac
 import os
 import time
 from datetime import datetime, timezone
+from fastapi import HTTPException
 
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
@@ -19,6 +20,7 @@ from app.modules.billing import service as billing
 from app.modules.common import bunny
 from app.modules.content.models import Drama, Episode, EpisodeSubtitle
 from app.modules.content.pricing import episode_access
+from app.modules.content.public_terms import public_watch_terms
 from app.modules.ops.service import get_redis
 from app.modules.playback.models import PlaybackEvent, PlaybackProgress
 from app.modules.wallet.models import ENTITLEMENT_TYPE_COIN, Entitlement
@@ -132,8 +134,12 @@ def authorize(
     user_id: int | None,
     country: str | None = None,
 ) -> dict:
-    drama = session.get(Drama, drama_id)
-    episode = session.get(Episode, episode_id)
+    from app.modules.tenancy.consumer_scope import require_owned
+    from app.modules.account.models import User
+    drama = require_owned(session, Drama, drama_id, missing_ok=True)
+    episode = require_owned(session, Episode, episode_id, missing_ok=True)
+    if user_id is not None and require_owned(session, User, user_id, missing_ok=True) is None:
+        return {'allowed': False, 'reason': 'not_available'}
     if (
         drama is None
         or episode is None
@@ -142,6 +148,15 @@ def authorize(
         or episode.status != "published"
     ):
         return {"allowed": False, "reason": "not_available"}
+    from app.modules.library.service import assert_distribution_allowed, playback_ttl
+    try:
+        grant = assert_distribution_allowed(session, drama, purpose='play', country=country, episode=episode)
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        return {'allowed': False, 'reason': detail.get('code', 'not_available')}
+    ttl = playback_ttl(grant, maximum=TOKEN_TTL_SECONDS)
+    if ttl <= 0:
+        return {'allowed': False, 'reason': 'distribution_expired'}
     if drama.country_allowlist and country:
         allowed_countries = {c.strip().upper() for c in drama.country_allowlist.split(",") if c.strip()}
         if country.upper() not in allowed_countries:
@@ -152,6 +167,7 @@ def authorize(
     policy = episode_access(drama, episode, member=member, unlocked=unlocked)
     if not policy['allowed']:
         return {
+            **public_watch_terms(drama),
             "allowed": False,
             "reason": "membership_required" if policy['membership_required'] else "locked",
             "unlock": {
@@ -176,24 +192,42 @@ def authorize(
             return {'allowed': False, 'reason': 'locked', 'unlock': {'coin_price': policy['coin_price'], 'membership_available': True}}
     video_id = episode.bunny_video_id or str(episode.id)
     if bunny.live():
-        signed = bunny.sign_stream_playback(video_id, ttl=TOKEN_TTL_SECONDS)
+        signed = bunny.sign_stream_playback(video_id, ttl=ttl)
     else:
         video_path = f"{VIDEO_PREFIX}{video_id}/"
-        signed = sign_path(video_path, video_secret(), gen=generation(episode.id))
+        signed = sign_path(video_path, video_secret(), ttl=ttl, gen=generation(episode.id))
     renditions = renditions_for(episode.width or 0, episode.height or 0, member=member)
+    all_subtitle_tracks = list(session.scalars(select(EpisodeSubtitle).where(EpisodeSubtitle.episode_id == episode.id).order_by(EpisodeSubtitle.language)))
+    subtitle_languages = grant.languages if grant is not None else []
+    permitted_tracks = [track for track in all_subtitle_tracks if not subtitle_languages or track.language.lower() in subtitle_languages]
     subtitle = None
-    if episode.subtitle_url:
-        if bunny.live():
-            subtitle = bunny.sign_image_url(episode.subtitle_url, ttl=TOKEN_TTL_SECONDS)
+    primary_subtitle_permitted = not subtitle_languages or any(track.url == episode.subtitle_url for track in permitted_tracks)
+    if episode.subtitle_url and primary_subtitle_permitted:
+        if episode.library_episode_id is not None and episode.subtitle_url.lower().startswith(('https://', '/')):
+            # Central subtitle references are already validated HTTPS/same-origin
+            # URLs, rather than Storage Zone keys. Do not rewrite their host or
+            # duplicate files; disclose them only after the playback gate above.
+            subtitle = {'url': episode.subtitle_url}
+        elif bunny.live():
+            subtitle = bunny.sign_image_url(episode.subtitle_url, ttl=ttl)
         else:
-            subtitle = sign_path(f"{IMAGE_PREFIX}subs/{episode.id}/", image_secret(), gen=0)
+            subtitle = sign_path(f"{IMAGE_PREFIX}subs/{episode.id}/", image_secret(), ttl=ttl, gen=0)
     tracks = []
-    for track in session.scalars(select(EpisodeSubtitle).where(EpisodeSubtitle.episode_id == episode.id).order_by(EpisodeSubtitle.language)):
-        signed_track = bunny.sign_image_url(track.url, ttl=TOKEN_TTL_SECONDS) if bunny.live() else sign_path(f"{IMAGE_PREFIX}subs/{episode.id}/{track.language}/", image_secret())
+    for track in permitted_tracks:
+        if episode.library_episode_id is not None and track.url.lower().startswith(('https://', '/')):
+            signed_track = {'url': track.url}
+        else:
+            signed_track = bunny.sign_image_url(track.url, ttl=ttl) if bunny.live() else sign_path(f"{IMAGE_PREFIX}subs/{episode.id}/{track.language}/", image_secret(), ttl=ttl)
         tracks.append(dict(language=track.language,label=track.label,url=signed_track['url'],is_default=track.is_default))
+    if tracks and grant is not None:
+        if not any(track['is_default'] for track in tracks):
+            tracks[0]['is_default'] = True
+        default_track = next(track for track in tracks if track['is_default'])
+        subtitle = {'url': default_track['url']}
     if not tracks and subtitle:
         tracks.append(dict(language='und',label='Default',url=subtitle['url'],is_default=True))
     return {
+        **public_watch_terms(drama),
         "subtitles": tracks,
         "allowed": True,
         "expires_at": signed["expires_at"],
@@ -223,6 +257,11 @@ def record_event(
     """
     if kind not in EVENT_KINDS:
         raise ValueError(f"unknown playback event kind: {kind}")
+    from app.modules.tenancy.consumer_scope import require_owned
+    from app.modules.account.models import User
+    require_owned(session, Episode, episode_id)
+    if user_id is not None:
+        require_owned(session, User, user_id)
     session.add(
         PlaybackEvent(
             user_id=user_id,

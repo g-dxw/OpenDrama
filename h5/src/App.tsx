@@ -1,3 +1,4 @@
+import { getSite, siteName, siteLink, siteFeature } from "../../shared/site";
 import { useEffect, useState, type ReactNode } from "react";
 import { AuthProvider, useAuth } from "./auth/AuthProvider";
 import { LoginSheet } from "./auth/LoginSheet";
@@ -112,6 +113,7 @@ function AppShell() {
 
   return (
     <div className="app" id="app">
+      {new URLSearchParams(window.location.search).has("preview_token") && <div className="site-preview-banner" role="status">{locale==="zh"?"品牌草稿预览 · 尚未发布":"Brand draft preview · not published"}</div>}
       {authError && (
         <div className="auth-connection-error" role="alert">
           <span>{authError}</span>
@@ -122,14 +124,13 @@ function AppShell() {
         <header className="topbar">
           {searching ? null : tab === "home" ? (
             <div className="brand" role="heading" aria-level={1}>
-              <span className="brand-m">JJ</span>
-              <span className="brand-rest">TV</span>
+              {getSite().brand.logo_url && <img src={getSite().brand.logo_url} alt="" style={{width:30,height:30,objectFit:"contain",marginRight:8}}/>}{siteName()}
             </div>
           ) : (
             <h1>{t(locale, TABS.find((item) => item.id === tab)!.key)}</h1>
           )}
           <span style={{ flex: 1 }} />
-          <button className="icon-btn" onClick={switchLocale}>
+          <button className="icon-btn" onClick={switchLocale} disabled={getSite().tenant.locales.length<2}>
             {locale === "zh" ? "EN" : "中"}
           </button>
           {!searching && (
@@ -144,7 +145,7 @@ function AppShell() {
         </header>
       )}
       <main className={playing || tab === "foryou" ? "stage bleed" : "stage"}>
-        {!route.supported ? (
+        {((tab==="rewards"&&!siteFeature("rewards")) || (route.meSheet==="premium"&&!siteFeature("membership"))) ? (<div className="center" role="status"><h2>{locale==="zh"?"本站暂未开放此功能":"This feature is unavailable on this site."}</h2><a href="#home">{t(locale,"nav.home")}</a></div>) : !route.supported ? (
           <div className="center">
             <h2>
               {locale === "zh" ? "在桌面版中继续" : "Continue in desktop view"}
@@ -157,7 +158,7 @@ function AppShell() {
                       "//" +
                       window.location.hostname +
                       ":5174"
-                    : "https://jjtv.8jj.net")) +
+                    : siteLink("web"))) +
                 "/" +
                 window.location.hash
               }
@@ -207,16 +208,16 @@ function AppShell() {
         )}
         {!playing && !searching && tab === "me" && (
           <div className="mobile-desktop-links">
-            <a href="#coins">{locale === "zh" ? "购买金币" : "Buy coins"}</a>
-            <a href="#support">
+            {siteFeature("coins")&&<a href="#coins">{locale === "zh" ? "购买金币" : "Buy coins"}</a>}
+            {siteFeature("support")&&<a href="#support">
               {locale === "zh" ? "帮助与客服" : "Help & support"}
-            </a>
+            </a>}
           </div>
         )}
       </main>
       {!playing && !searching && !loginOpen && (
         <nav className="tabs" role="tablist">
-          {TABS.map((item) => {
+          {TABS.filter(item=>item.id!=="rewards"||siteFeature("rewards")).map((item) => {
             const active = item.id === tab;
             return (
               <button

@@ -21,6 +21,7 @@ from app.db import get_db
 from app.modules.content import service as content
 from app.modules.content.pricing import episode_access
 from app.modules.content.models import Drama, Episode, Tag
+from app.modules.content.public_terms import public_watch_terms
 
 router = APIRouter(prefix="/v1", tags=["public"])
 
@@ -31,6 +32,7 @@ PREVIEW_LIMIT = 7
 
 def _drama_out(drama: Drama) -> dict:
     return {
+        **public_watch_terms(drama),
         "id": drama.id,
         "title": drama.title,
         "synopsis": drama.synopsis,
@@ -97,6 +99,7 @@ _tags_by_drama = content.tags_by_drama
 
 def _preview_drama_out(drama: Drama, counters: dict, tags: list[Tag]) -> dict:
     return {
+        **public_watch_terms(drama),
         "id": drama.id,
         "title": drama.title,
         "synopsis": drama.synopsis,

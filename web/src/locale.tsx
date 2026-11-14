@@ -1,3 +1,4 @@
+import { getSite, siteName, siteStorageKey, siteLocale } from "../../shared/site";
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 export const LANGUAGES = [
   { code: "en", label: "English", tag: "en-US" },
@@ -15,10 +16,12 @@ export type Variables = Record<string, string | number>;
 export const LOCALE_STORAGE_KEY = "jjtv_pc_locale";
 const valid = (value: unknown): value is Locale => LANGUAGES.some((item) => item.code === value);
 export function loadLocale(): Locale {
-  try { const saved = localStorage.getItem(LOCALE_STORAGE_KEY); return valid(saved) ? saved : "en"; }
-  catch { return "en"; }
+  try { const saved = localStorage.getItem(siteStorageKey(LOCALE_STORAGE_KEY)); return valid(saved) && getSite().tenant.locales.includes(saved) ? saved : (valid(siteLocale()) ? siteLocale() as Locale : "en"); }
+  catch { return (valid(siteLocale()) ? siteLocale() as Locale : "en"); }
 }
-const dictionaries: Record<string, Record<string, string>> = { en: {} };
+const dictionaries: Record<string, Record<string, string>> = { en: {"This feature is unavailable on this site.":"This feature is unavailable on this site.","Brand preview — this draft is not published.":"Brand preview — this draft is not published."}, zh:{"This feature is unavailable on this site.":"本站暂未开放此功能。","Brand preview — this draft is not published.":"品牌草稿预览 · 尚未发布。"} };
+Object.assign(dictionaries.en,{"Content availability":"Content availability","Available to watch until {date}":"Available to watch until {date}","Sales end {date}":"Sales end {date}","Could not load content availability.":"Could not load content availability."});
+Object.assign(dictionaries.zh ||= {},{"Content availability":"内容有效期","Available to watch until {date}":"本剧可观看至 {date}","Sales end {date}":"销售截至 {date}","Could not load content availability.":"暂时无法读取本剧授权期限，请稍后重试。"});
 // Every section owns a plain data module; new sections do not couple UI to API code.
 const sections = import.meta.glob<Record<string, unknown>>("./locale-*.ts", { eager: true });
 for (const section of Object.values(sections)) {
@@ -36,24 +39,24 @@ for (const table of Object.values(dictionaries)) for (const [key,value] of Objec
 export function translate(locale: Locale, key: string, vars: Variables = {}): string {
   const actualKey = Object.prototype.hasOwnProperty.call(dictionaries.en, key) ? key : englishKeys.get(key) || key;
   const template = dictionaries[locale]?.[actualKey] ?? dictionaries.en[actualKey] ?? key;
-  return template.replace(/\{([A-Za-z0-9_]+)\}/g, (match, name: string) => Object.prototype.hasOwnProperty.call(vars, name) ? String(vars[name]) : match);
+  return template.replaceAll("JJTV", siteName()).replace(/\{([A-Za-z0-9_]+)\}/g, (match, name: string) => Object.prototype.hasOwnProperty.call(vars, name) ? String(vars[name]) : match);
 }
 export function localeTag(locale: Locale) { return LANGUAGES.find((item) => item.code === locale)!.tag; }
 export function formatNumber(locale: Locale, value: number, options?: Intl.NumberFormatOptions) {
   return new Intl.NumberFormat(localeTag(locale), options).format(value);
 }
-export function formatMoney(locale: Locale, cents: number, currency = "USD") {
-  return formatNumber(locale, cents / 100, { style: "currency", currency });
+export function formatMoney(locale: Locale, cents: number, currency = getSite().tenant.currency) {
+  return formatNumber(locale, cents / 10 ** (new Intl.NumberFormat(localeTag(locale), {style:"currency",currency}).resolvedOptions().maximumFractionDigits ?? 2), { style: "currency", currency });
 }
 export function formatDate(locale: Locale, value: string | number | Date, options?: Intl.DateTimeFormatOptions) {
   const parsed = value instanceof Date ? value : new Date(value);
-  return Number.isNaN(parsed.getTime()) ? "—" : new Intl.DateTimeFormat(localeTag(locale), options ?? { dateStyle: "medium", timeStyle: "short" }).format(parsed);
+  return Number.isNaN(parsed.getTime()) ? "—" : new Intl.DateTimeFormat(localeTag(locale), { ...(options ?? { dateStyle: "medium", timeStyle: "short" }), timeZone:getSite().tenant.timezone }).format(parsed);
 }
 function createValue(locale: Locale, setLocale: (value: Locale) => void) {
   return { locale, setLocale,
     t: (key: string, vars?: Variables) => translate(locale, key, vars),
     number: (value: number, options?: Intl.NumberFormatOptions) => formatNumber(locale, value, options),
-    money: (cents: number, currency = "USD") => formatMoney(locale, cents, currency),
+    money: (cents: number, currency = getSite().tenant.currency) => formatMoney(locale, cents, currency),
     date: (value: string | number | Date, options?: Intl.DateTimeFormatOptions) => formatDate(locale, value, options),
   };
 }
@@ -62,7 +65,7 @@ export function LocaleProvider({ children }: { children: ReactNode }) {
   const [locale, changeLocale] = useState<Locale>(loadLocale);
   useEffect(() => {
     document.documentElement.lang = localeTag(locale);
-    try { localStorage.setItem(LOCALE_STORAGE_KEY, locale); } catch { /* Private browsing can disable storage. */ }
+    try { localStorage.setItem(siteStorageKey(LOCALE_STORAGE_KEY), locale); } catch { /* Private browsing can disable storage. */ }
   }, [locale]);
   useEffect(() => {
     const update = (event: StorageEvent) => { if (event.key === LOCALE_STORAGE_KEY) changeLocale(valid(event.newValue) ? event.newValue : "en"); };

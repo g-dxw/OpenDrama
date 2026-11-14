@@ -1,3 +1,4 @@
+import { siteStorageKey } from "../../shared/site";
 import type {
   CommentCreateResult,
   CommentsPayload,
@@ -12,24 +13,23 @@ import { createConsumerClient, ApiError } from "../../shared/consumer/client";
 export { ApiError };
 const DEVICE_KEY = "minitv_h5_device";
 export function deviceId() {
-  let value = localStorage.getItem(DEVICE_KEY);
+  let value = localStorage.getItem(siteStorageKey(DEVICE_KEY));
   if (!value) {
     value = "h5-" + crypto.randomUUID();
-    localStorage.setItem(DEVICE_KEY, value);
+    localStorage.setItem(siteStorageKey(DEVICE_KEY), value);
   }
   return value;
 }
 const client = createConsumerClient({
   apiBase:
-    import.meta.env.VITE_API_BASE ??
-    (import.meta.env.PROD ? "https://jjtv-api.8jj.net" : ""),
-  attributionPid: () => localStorage.getItem("jjtv_attribution_pid"),
+    import.meta.env.VITE_API_BASE ?? "",
+  attributionPid: () => localStorage.getItem(siteStorageKey("jjtv_attribution_pid")),
   deviceId,
   tokenStore: {
-    get: () => localStorage.getItem("minitv_h5_token"),
+    get: () => localStorage.getItem(siteStorageKey("minitv_h5_token")),
     set: (value) => {
-      if (value) localStorage.setItem("minitv_h5_token", value);
-      else localStorage.removeItem("minitv_h5_token");
+      if (value) localStorage.setItem(siteStorageKey("minitv_h5_token"), value);
+      else localStorage.removeItem(siteStorageKey("minitv_h5_token"));
     },
   },
 });
@@ -312,7 +312,7 @@ export function startCheckout(
       code: planCode,
       idempotency_key: intent,
       attribution_pid:
-        localStorage.getItem("jjtv_attribution_pid") || undefined,
+        localStorage.getItem(siteStorageKey("jjtv_attribution_pid")) || undefined,
       success_url:
         window.location.origin +
         "/?checkout=success&surface=h5" +

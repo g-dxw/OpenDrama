@@ -1,4 +1,4 @@
-"""Local health app for the JJTV test environment."""
+"""MiniTV multi-site API and installation health endpoints."""
 
 from __future__ import annotations
 
@@ -46,9 +46,6 @@ _DEFAULT_ORIGINS = [
     "http://127.0.0.1:5173",
     "http://localhost:5174",
     "http://127.0.0.1:5174",
-    "https://jjtv.8jj.net",
-    "https://jjtv-admin.8jj.net",
-    "https://jjtv-h5.8jj.net",
 ]
 
 
@@ -73,17 +70,27 @@ app.add_middleware(
 
 @app.get("/health")
 def health() -> dict:
-    db_url = os.environ["DATABASE_URL"]
+    # psycopg accepts PostgreSQL URLs, while SQLAlchemy also accepts a driver
+    # suffix. Keep both supported without ever logging a credential-bearing URL.
+    db_url = os.environ["DATABASE_URL"].replace("postgresql+psycopg://", "postgresql://", 1)
     redis_url = os.environ["REDIS_URL"]
-    with psycopg.connect(db_url, connect_timeout=3) as conn:
-        pg_version = conn.execute("SHOW server_version").fetchone()[0]
-    client = redis.Redis.from_url(redis_url, socket_connect_timeout=3)
-    client.ping()
+    from fastapi.responses import JSONResponse
+    try:
+        with psycopg.connect(db_url, connect_timeout=3) as conn:
+            pg_version = conn.execute("SHOW server_version").fetchone()[0]
+    except psycopg.Error:
+        return JSONResponse(status_code=503, content={"status": "unavailable", "service": "postgres"})
+    client = redis.Redis.from_url(redis_url, socket_connect_timeout=3, socket_timeout=3)
+    try:
+        client.ping()
+        redis_version = client.info("server").get("redis_version")
+    except redis.RedisError:
+        return JSONResponse(status_code=503, content={"status": "unavailable", "service": "redis"})
     return {
         "status": "ok",
         "env": os.environ.get("APP_ENV", "local"),
         "postgres": pg_version,
-        "redis": client.info("server").get("redis_version"),
+        "redis": redis_version,
     }
 
 
@@ -104,6 +111,12 @@ def _register_routers() -> None:
     from app.modules.ops.api_key_router import tenant_router as tenant_key_router
     # Replace legacy globally-scoped staff controllers with tenant-owned aliases.
     admin_router.routes[:]=[route for route in admin_router.routes if not getattr(route,'path','').startswith('/admin/v1/staff')]
+    from app.modules.sites.router import public_router as site_public_router, tenant_router as site_tenant_router
+    from app.modules.library.router import platform_router as library_platform_router, tenant_router as library_tenant_router
+    app.include_router(site_public_router)
+    app.include_router(site_tenant_router)
+    app.include_router(library_platform_router)
+    app.include_router(library_tenant_router)
     app.include_router(platform_router)
     app.include_router(tenant_router)
     app.include_router(staff_router)
@@ -115,11 +128,13 @@ def _register_routers() -> None:
     app.include_router(admin_api_key_router)
     from app.modules.content.enhancements import admin_router as content_admin, public_router as catalog_router
     from app.modules.ops.login_router import router as login_settings_router
-    from app.modules.billing.commerce_router import admin_router as commerce_admin, public_router as commerce_public
+    from app.modules.billing.commerce_router import admin_router as commerce_admin, public_router as commerce_public, platform_router as commerce_platform, tenant_router as commerce_tenant
     from app.modules.support.router import admin_router as support_admin, public_router as support_public
     from app.modules.attribution.router import admin_router as attr_admin, public_router as attr_public
     for router in (content_admin,catalog_router,login_settings_router,commerce_admin,commerce_public,support_admin,support_public,attr_admin,attr_public):
         app.include_router(router)
+    app.include_router(commerce_platform)
+    app.include_router(commerce_tenant)
     app.include_router(admin_flow_router)
     app.include_router(partner_router)
     app.include_router(review_router)
@@ -147,12 +162,24 @@ async def private_admin_responses(request: Request, call_next):
 async def verified_tenant_domain_cors(request: Request,call_next):
     origin=request.headers.get('Origin')
     approved=False
+    if origin:
+        from urllib.parse import urlsplit
+        try:
+            parsed_origin=urlsplit(origin)
+            origin_host=parsed_origin.hostname
+            valid_origin=parsed_origin.scheme in {'http','https'} and bool(origin_host)
+        except ValueError:
+            valid_origin=False
+        if not valid_origin:
+            from fastapi.responses import JSONResponse
+            return JSONResponse(status_code=403 if origin=='null' else 400,content={'detail':{'code':'tenant_domain_mismatch' if origin=='null' else 'invalid_origin'}})
     if origin and origin not in _cors_origins():
         from urllib.parse import urlsplit
         from app.db import get_engine,make_session_factory
         from app.modules.tenancy.domains import active_admin_domain
+        from app.modules.sites.service import hostname_site
         db=make_session_factory(get_engine())()
-        try: approved=active_admin_domain(db,urlsplit(origin).hostname) is not None
+        try: approved=active_admin_domain(db,origin_host) is not None or hostname_site(db,origin_host) is not None
         finally: db.close()
     if approved and request.method=='OPTIONS':
         from fastapi.responses import Response

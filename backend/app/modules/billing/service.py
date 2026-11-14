@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 from app.modules.billing.models import BillingSettings, Order, Plan, PlanVersion, Subscription
 from app.modules.common.models import AuditLog
 from app.modules.content.models import Drama
+from app.modules.tenancy.consumer_scope import current_site, require_owned, site_context
 
 _stripe_credentials = ContextVar('jjtv_stripe_credentials', default=None)
 
@@ -113,10 +114,16 @@ def list_current_plans(session: Session) -> list[dict]:
 BILLING_MODES = ("subscription", "one_time")
 
 
+def new_billing_settings(session,tenant_id=None):
+    from sqlalchemy import func,text
+    session.execute(text("SELECT pg_advisory_xact_lock(hashtext('site-billing-settings'))"))
+    identifier=(session.scalar(select(func.max(BillingSettings.id)).execution_options(include_all_tenants=True)) or 0)+1
+    return BillingSettings(id=identifier,tenant_id=tenant_id or current_site(session),billing_mode='one_time')
+
 def get_billing_settings(session: Session) -> BillingSettings:
-    row = session.get(BillingSettings, 1)
+    row = session.scalar(select(BillingSettings).where(BillingSettings.tenant_id == current_site(session)))
     if row is None:
-        row = BillingSettings(id=1, billing_mode="one_time")
+        row = new_billing_settings(session)
         session.add(row)
         session.commit()
     return row
@@ -260,7 +267,9 @@ def active_membership(session: Session, user_id: int) -> dict:
 
 def change_price(session: Session, *, code: str, price_cents: int, benefits: dict, actor_id: int) -> PlanVersion:
     plan = session.scalar(select(Plan).where(Plan.code == code))
-    ensure_chargeable(billing_mode(session), price_cents, "USD")
+    from app.modules.billing.site_merchants import site_currency,assert_site_currency
+    currency=site_currency(session)
+    ensure_chargeable(billing_mode(session), price_cents, currency)
     if plan is None:
         raise BillingError(404, "plan not found")
     latest = session.scalar(
@@ -270,6 +279,7 @@ def change_price(session: Session, *, code: str, price_cents: int, benefits: dic
         plan_id=plan.id,
         version=(latest.version if latest else 0) + 1,
         price_cents=price_cents,
+        currency=currency,
         benefits=benefits,
     )
     session.add(version)
@@ -1240,12 +1250,12 @@ def list_user_orders(session: Session,user_id:int,limit:int=20,offset:int=0)->di
     return list_orders(session,user_id,limit,offset)
 
 def apply_stripe_event(session:Session,*,body:bytes,signature:str,payload:dict)->dict:
-    from app.modules.billing.commerce import process_event,signature as verify_managed
-    verify_managed(session,'env',body,signature)
-    result=process_event(session,'env',payload)
-    if result is not None:return {'received':True,'type':payload.get('type'),**result}
-    with managed_stripe_runtime(session):
-        return _legacy_apply_stripe_event(session,body=body,signature=signature,payload=payload,signature_verified=True)
+    from app.modules.billing.site_merchants import receive
+    def legacy():
+        with managed_stripe_runtime(session):
+            return _legacy_apply_stripe_event(session,body=body,signature=signature,payload=payload,signature_verified=True)
+    return receive(session,'env',body,signature,payload,legacy_handler=legacy)
+
 
 def _prepare_managed_cancellation(session:Session,row:Subscription)->Subscription:
     """Commit the intent before network I/O, then restore wallet/subscription locks."""
@@ -1373,3 +1383,33 @@ _legacy_ensure_stripe_price = ensure_stripe_price
 def ensure_stripe_price(session:Session,plan:Plan,version:PlanVersion,mode:str="subscription")->str:
     with managed_stripe_runtime(session):
         return _legacy_ensure_stripe_price(session,plan,version,mode)
+
+
+_original_fake_webhook=apply_webhook
+
+def apply_webhook(session:Session,*,body:bytes,signature:str,payload:dict)->dict:
+    """The pre-Stripe testing protocol is a JJTV-only compatibility endpoint."""
+    from app.modules.account.models import User
+    if os.environ.get('APP_ENV','local').lower() in {'production','prod'}:
+        configured=os.environ.get('PAY_WEBHOOK_SECRET','').strip()
+        if os.environ.get('ENABLE_LEGACY_PAY_WEBHOOK','0')!='1' or not configured or configured=='local-pay-webhook':raise BillingError(403,'Legacy payment protocol is disabled')
+    if current_site(session)!='jjtv':raise BillingError(403,'Legacy payment protocol is not enabled for this site')
+    with site_context(session,'jjtv'):
+        if not hmac.compare_digest(sign_webhook(body),signature or ''):raise BillingError(401,'bad signature')
+        require_owned(session,User,payload.get('user_id'))
+        return _original_fake_webhook(session,body=body,signature=signature,payload=payload)
+
+
+def provision_site_billing(db,tenant_id):
+    """Explicit provisioning hook. Default packages are local drafts until funded."""
+    with site_context(db,tenant_id):
+        from app.modules.sites.models import SiteSettings
+        settings=db.get(SiteSettings,tenant_id)
+        currency=settings.currency if settings else 'USD'
+        if db.scalar(select(Plan).limit(1)) is None:
+            for code,en,zh,cents,best,items in DEFAULT_PLANS:
+                plan=Plan(tenant_id=tenant_id,code=code,name_en=en,name_zh=zh)
+                db.add(plan);db.flush()
+                db.add(PlanVersion(tenant_id=tenant_id,plan_id=plan.id,version=1,price_cents=cents,currency=currency,benefits={'items':items,'best':best}))
+        if db.scalar(select(BillingSettings).limit(1)) is None:db.add(new_billing_settings(db,tenant_id))
+        db.flush()

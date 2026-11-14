@@ -1,3 +1,4 @@
+import { siteName, siteFeature } from "../../shared/site";
 import { useLocale } from "./locale";
 import { useEffect, useRef, type ReactNode } from "react";
 import type { CatalogDrama } from "./consumer-api";
@@ -248,7 +249,7 @@ export function DramaCard({ drama }: { drama: CatalogDrama }) {
             }}
           />
         ) : (
-          <span className="cover-placeholder">JJTV</span>
+          <span className="cover-placeholder">{siteName()}</span>
         )}
         <span className="card-play">
           <Icon name="play" size={26} />

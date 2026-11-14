@@ -8,13 +8,11 @@ from pathlib import Path
 from uuid import uuid4
 import pytest
 import sqlalchemy as sa
-from sqlalchemy.orm import Session
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from app.modules.ops.service import hash_password,verify_password
 from app.modules.ops.api_keys import generate_key
-from app.modules.account.models import User
-from app.modules.wallet.models import WalletAccount
 
 BACKEND=Path(__file__).resolve().parents[1]
 
@@ -66,14 +64,22 @@ def test_real_migration_preserves_actors_business_data_and_effective_grants(engi
                 preserved_key=db.execute(sa.text("INSERT INTO admin_api_keys(admin_user_id,name,key_prefix,key_hash,scopes,status,expires_at,revoked_at,revoke_reason) VALUES (:user,'Previously revoked key',:prefix,:digest,CAST(:scopes AS jsonb),'revoked',:expires,:revoked,'Legacy manual removal') RETURNING id"),dict(user=shared_id,prefix=old_prefix,digest=old_digest,scopes=json.dumps(['read']),expires=datetime.now(timezone.utc)+timedelta(days=30),revoked=datetime.now(timezone.utc))).scalar_one()
                 db.execute(sa.text("INSERT INTO india_connections(tenant_id,user_id,session_key,secret) VALUES ('india-short-drama',:user,:key,'old-opaque-cipher')"),dict(user=shared_id,key='a'*64))
                 historical_id=db.execute(sa.text("INSERT INTO audit_logs(actor_type,actor_id,action,target_type,target_id,payload) VALUES ('admin',:actor,'old.content.operation','admin_user',:actor,CAST(:payload AS jsonb)) RETURNING id"),dict(actor=shared_id,payload=json.dumps({'tenant_id':'india-short-drama','old_marker':'preserve'}))).scalar_one()
-            with Session(target) as db:
-                consumer=User(email='migration-consumer@example.com',display_name='Preserved viewer')
-                db.add(consumer);db.flush()
-                viewer_id=consumer.id
-                db.add(WalletAccount(user_id=viewer_id,balance=123))
+            with target.begin() as db:
+                # Reflect the actual b2e6 schema: current ORM projections also
+                # contain later consumer ownership columns and must not be used
+                # to write a historical database during this migration test.
+                old_schema=sa.MetaData()
+                users=sa.Table('users',old_schema,autoload_with=db)
+                wallets=sa.Table('wallet_accounts',old_schema,autoload_with=db)
+                assert 'tenant_id' not in users.c and 'tenant_id' not in wallets.c
+                viewer_id=db.execute(users.insert().values(
+                    email='migration-consumer@example.com',display_name='Preserved viewer',
+                    avatar_url='',gender='unspecified',bio='',region='',locale='en',
+                    following_count=0,follower_count=0,received_likes=0,reminder_opt_in=False,
+                ).returning(users.c.id)).scalar_one()
+                db.execute(wallets.insert().values(user_id=viewer_id,balance=123))
                 # Seed the actual historical projection, before desktop columns exist.
                 drama_id=db.execute(sa.text("INSERT INTO dramas(tenant_id,title,status,synopsis,cover_url,free_episode_count,coin_price_per_episode,country_allowlist,play_count,review_state) VALUES ('jjtv','Preserved migration content','draft','','',0,0,'',0,'none') RETURNING id")).scalar_one()
-                db.commit()
             command.upgrade(cfg,'head')
             with target.connect() as db:
                 rows={r['id']:dict(r) for r in db.execute(sa.text('SELECT * FROM admin_users')).mappings()}
@@ -114,14 +120,20 @@ def test_real_migration_preserves_actors_business_data_and_effective_grants(engi
                 assert audit['payload']['old_marker']=='preserve'
                 assert db.execute(sa.text('SELECT balance FROM wallet_accounts WHERE user_id=:id'),dict(id=viewer_id)).scalar_one()==123
                 assert db.execute(sa.text('SELECT email FROM users WHERE id=:id'),dict(id=viewer_id)).scalar_one()=='migration-consumer@example.com'
+                assert db.execute(sa.text('SELECT tenant_id FROM users WHERE id=:id'),dict(id=viewer_id)).scalar_one()=='jjtv'
                 assert db.execute(sa.text('SELECT tenant_id FROM dramas WHERE id=:id'),dict(id=drama_id)).scalar_one()=='jjtv'
                 original_modules={'dashboard','users','rewards','comments','moderation','finance','settlements','plans','suppliers','home_ops'}
                 bindings=set(db.execute(sa.text("SELECT module_key FROM legacy_business_bindings WHERE tenant_id='jjtv'")).scalars())
                 assert original_modules <= bindings
                 assert bindings-original_modules=={'login_settings','stripe','coin_packs','coins','attribution','support'}
                 assert db.execute(sa.text("SELECT count(*) FROM legacy_business_bindings WHERE tenant_id<>'jjtv'")).scalar_one()==0
-            with pytest.raises(RuntimeError,match='cannot be recombined'):
+            # The newest irreversible ownership migration now refuses first.
+            # Keep the original identity migration's refusal assertion too.
+            with pytest.raises(RuntimeError,match='cannot be merged safely'):
                 command.downgrade(cfg,'b2e6c9148a70')
+            identity_migration=ScriptDirectory.from_config(cfg).get_revision('c4d8e0a1b295').module
+            with pytest.raises(RuntimeError,match='cannot be recombined'):
+                identity_migration.downgrade()
     finally:
         if target is not None:target.dispose()
         if created:

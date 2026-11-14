@@ -25,11 +25,13 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
+from sqlalchemy import String, ForeignKey
 from app.db import Base
 
 
 class Plan(Base):
     __tablename__ = "plans"
+    tenant_id: Mapped[str] = mapped_column(ForeignKey('tenants.id', ondelete='RESTRICT'), nullable=False, default='jjtv', server_default='jjtv', index=True)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     code: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)  # weekly / monthly / yearly
@@ -46,6 +48,7 @@ class Plan(Base):
 
 class PlanVersion(Base):
     __tablename__ = "plan_versions"
+    tenant_id: Mapped[str] = mapped_column(ForeignKey('tenants.id', ondelete='RESTRICT'), nullable=False, default='jjtv', server_default='jjtv', index=True)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     plan_id: Mapped[int] = mapped_column(ForeignKey("plans.id"), nullable=False)
@@ -71,6 +74,7 @@ class Subscription(Base):
     """At most one active subscription per user (partial unique index)."""
 
     __tablename__ = "subscriptions"
+    tenant_id: Mapped[str] = mapped_column(ForeignKey('tenants.id', ondelete='RESTRICT'), nullable=False, default='jjtv', server_default='jjtv', index=True)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
@@ -115,6 +119,7 @@ class Subscription(Base):
 
 class Order(Base):
     __tablename__ = "orders"
+    tenant_id: Mapped[str] = mapped_column(ForeignKey('tenants.id', ondelete='RESTRICT'), nullable=False, default='jjtv', server_default='jjtv', index=True)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     order_no: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
@@ -173,8 +178,9 @@ class BillingSettings(Base):
     """Single-row global switch: how *new* purchases are billed."""
 
     __tablename__ = "billing_settings"
+    tenant_id: Mapped[str] = mapped_column(ForeignKey('tenants.id', ondelete='RESTRICT'), nullable=False, default='jjtv', server_default='jjtv', index=True)
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     billing_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="one_time")
     updated_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     updated_at: Mapped[datetime.datetime] = mapped_column(

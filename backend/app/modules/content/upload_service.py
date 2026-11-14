@@ -53,6 +53,8 @@ def create_upload_session(
     height: int,
     duration_seconds: int = 0,
 ) -> dict:
+    from app.modules.library.service import assert_site_media_editable
+    assert_site_media_editable(episode)
     if mime not in ALLOWED_MIME:
         raise UploadRejected("only MP4 or MOV is accepted")
     if size_bytes > MAX_BYTES:

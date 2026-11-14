@@ -1,3 +1,4 @@
+import { siteName, siteFeature } from "../../shared/site";
 import { useLocale } from "./locale";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import {
@@ -48,15 +49,15 @@ export function Home() {
         <div className="hero-kicker"><span>{String(currentIndex + 1).padStart(2,"0")}</span><i/><span>{banner.kicker || t("Featured")}</span></div>
         <h1>{banner.headline || banner.title || featured?.title || t("Featured drama")}</h1>
         <p>{t("Short-form drama, made to binge — every episode, one tap away.")}</p>
-        <div className="hero-metadata"><span>{t("SHORT DRAMA")}</span>{featured?.play_count ? <span>{t("{count} views",{count:number(featured.play_count,{notation:"compact"})})}</span> : null}<span>JJTV</span></div>
+        <div className="hero-metadata"><span>{t("SHORT DRAMA")}</span>{featured?.play_count ? <span>{t("{count} views",{count:number(featured.play_count,{notation:"compact"})})}</span> : null}<span>{siteName()}</span></div>
         <div className="button-row"><a className="button primary" href={heroLink}><Icon name="play" size={16}/>{t("Watch now")}</a><a className="hero-details" href={heroLink}>{t("Details")}<span>→</span></a></div>
         <div className="hero-pager" aria-label={t("Featured drama slides")}>{banners.map((item,index) => <button key={item.id} className={index===currentIndex?"active":""} aria-label={t("Show featured drama {number}",{number:index+1})} aria-pressed={index===currentIndex} onClick={() => setBannerIndex(index)}>{String(index+1).padStart(2,"0")}</button>)}</div>
       </div>
       <div className="hero-artwork" aria-hidden="true">
         {(adjacent[0]?.cover_url || banner.cover_url) && <img className="hero-side-poster hero-side-left" src={adjacent[0]?.cover_url || banner.cover_url || ""} alt=""/>}
         {(adjacent[1]?.cover_url || banner.cover_url) && <img className="hero-side-poster hero-side-right" src={adjacent[1]?.cover_url || banner.cover_url || ""} alt=""/>}
-        {banner.cover_url ? <img className="hero-poster" src={banner.cover_url} alt=""/> : <div className="hero-poster hero-poster-empty">JJTV</div>}
-        <span className="hero-poster-caption">JJTV · NO. {String(currentIndex+1).padStart(2,"0")}</span>
+        {banner.cover_url ? <img className="hero-poster" src={banner.cover_url} alt=""/> : <div className="hero-poster hero-poster-empty">{siteName()}</div>}
+        <span className="hero-poster-caption">{siteName()} · NO. {String(currentIndex+1).padStart(2,"0")}</span>
       </div>
     </section>}
     {banner && <div className="home-spotlight"><span><i/>{t("IN THE SPOTLIGHT")}</span><span>{t("CURATED FOR YOU")}</span><span>{String(currentIndex+1).padStart(2,"0")} / {String(banners.length).padStart(2,"0")}</span></div>}
@@ -339,7 +340,7 @@ export function ForYou() {
           {index===active&&canAuthorize?<Suspense fallback={<Loading/>}><FeedVideo dramaId={item.drama.id} episode={episode} muted={muted} poster={item.drama.cover_url||undefined} onFinished={()=>move(index+1)} onDenied={()=>setNotice({key:"Open Episodes to check this episode's viewing options."})}/></Suspense>:!canAuthorize?<div className="feed-locked"><Icon name="lock" size={28}/><p>{t("Continue the story")}</p><a className="button secondary" href={link}>{t("View episodes")}</a></div>:null}
           <div className="feed-shade"/>
           <button className="icon-button feed-settings-toggle" aria-label={t("Playback settings")} aria-expanded={index===active&&settingsOpen} disabled={!canAuthorize} onClick={()=>setSettingsOpen(!settingsOpen)}><Icon name="more" size={18}/></button>{index===active&&settingsOpen&&<div className="feed-settings-heading"><strong>{t("Playback settings")}</strong><button aria-label={t(muted?"Unmute":"Mute")} aria-pressed={!muted} onClick={()=>setMuted(!muted)}><Icon name={muted?"volume-off":"volume"} size={16}/>{t(muted?"Unmute":"Mute")}</button></div>}
-          <div className="feed-actions"><a className="feed-avatar" href={link} aria-label={t("Open {title}",{title:item.drama.title})}>{item.drama.cover_url?<img src={item.drama.cover_url} alt=""/>:"J"}<span>+</span></a><button aria-label={t(item.drama.liked?"Unlike drama":"Like drama")} aria-pressed={item.drama.liked} disabled={busy!==null} onClick={()=>requireAuth(()=>{void like(item);})}><Icon name="heart" size={29}/><small>{number(item.drama.like_count||0,{notation:"compact"})}</small></button><button aria-label={t("Comments")} onClick={()=>setComments(item)}><Icon name="message" size={28}/><small>{number(item.episode.comment_count||0,{notation:"compact"})}</small></button><button aria-label={t("Share drama")} onClick={()=>void share(item)}><Icon name="share" size={27}/><small>{t("Share")}</small></button></div>
+          <div className="feed-actions"><a className="feed-avatar" href={link} aria-label={t("Open {title}",{title:item.drama.title})}>{item.drama.cover_url?<img src={item.drama.cover_url} alt=""/>:"J"}<span>+</span></a><button aria-label={t(item.drama.liked?"Unlike drama":"Like drama")} aria-pressed={item.drama.liked} disabled={busy!==null} onClick={()=>requireAuth(()=>{void like(item);})}><Icon name="heart" size={29}/><small>{number(item.drama.like_count||0,{notation:"compact"})}</small></button>{siteFeature("comments")&&<button aria-label={t("Comments")} onClick={()=>setComments(item)}><Icon name="message" size={28}/><small>{number(item.episode.comment_count||0,{notation:"compact"})}</small></button>}<button aria-label={t("Share drama")} onClick={()=>void share(item)}><Icon name="share" size={27}/><small>{t("Share")}</small></button></div>
           <div className="feed-caption"><h2><a href={link}>{item.drama.title}</a></h2><div className="feed-tags"><span>{t("EP {number}",{number:item.episode.episode_number})}</span>{item.drama.tags?.slice(0,3).map((tag)=><span key={tag}>{tag}</span>)}</div><p>{item.drama.synopsis}</p><a className="feed-episodes" href={link}><Icon name="menu" size={17}/>{t("Episodes")}<Icon name="arrow" size={15}/></a></div>
         </div>
       </article>;})}
@@ -349,6 +350,6 @@ export function ForYou() {
     </div>
     {items.length>1&&<div className="feed-navigation"><button className="icon-button" aria-label={t("Previous episode")} disabled={!active} onClick={()=>move(active-1)}>↑</button><button className="icon-button" aria-label={t("Next episode")} disabled={active===items.length-1} onClick={()=>move(active+1)}>↓</button></div>}
     {notice&&<div className="feed-notice" role="status"><span>{t(notice.key,notice.vars)}</span><button aria-label={t("Dismiss message")} onClick={()=>setNotice(null)}><Icon name="close" size={15}/></button></div>}
-    {comments&&<Modal title={t("Comments")} className="feed-comments-modal" onClose={()=>setComments(null)}><Suspense fallback={<Loading/>}><FeedComments episodeId={comments.episode.id}/></Suspense></Modal>}
+    {siteFeature("comments")&&comments&&<Modal title={t("Comments")} className="feed-comments-modal" onClose={()=>setComments(null)}><Suspense fallback={<Loading/>}><FeedComments episodeId={comments.episode.id}/></Suspense></Modal>}
   </div>;
 }

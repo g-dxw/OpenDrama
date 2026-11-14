@@ -1,4 +1,5 @@
-export interface DramaCard {
+export interface ContentRights {watch_until?:string|null;sales_until?:string|null;}
+export interface DramaCard extends ContentRights {
   id: number;
   title: string;
   cover_url: string | null;
@@ -45,7 +46,7 @@ export interface ConfigPayload {
   copies: Record<string, string>;
 }
 
-export interface FeedDrama {
+export interface FeedDrama extends ContentRights {
   id: number;
   title: string;
   synopsis: string;
@@ -60,7 +61,7 @@ export interface FeedDrama {
   liked: boolean;
 }
 
-export interface DramaLite {
+export interface DramaLite extends ContentRights {
   id: number;
   title: string;
   cover_url: string | null;
@@ -168,6 +169,8 @@ export interface PlayEpisode {
 
 export interface PlayPayload {
   drama: {
+    watch_until?:string|null;
+    sales_until?:string|null;
     id: number;
     title: string;
     synopsis: string;

@@ -2185,3 +2185,15 @@ img { display: block; max-width: 100%; }
 .auth-connection-error{background:#492735;padding:12px;display:flex;align-items:center;gap:12px;font-size:12px;flex:none}.auth-connection-error button{padding:8px 12px;border:1px solid #a47c86;border-radius:6px;min-height:36px;margin-left:auto}
 
 .mobile-desktop-links{display:flex;justify-content:center;gap:24px;padding:10px 12px;color:var(--muted);font-size:12px;background:var(--bg)}
+
+html body {font-family:var(--site-font,system-ui,sans-serif)}
+.consumer-app .button,.app .premium-cta,.app .unlock-cta {border-radius:var(--site-button-radius,12px)}
+.consumer-brand img {width:32px;height:32px;object-fit:contain}
+
+html[data-feature-rewards="off"] :is(a[href^="#rewards"],[data-testid="me-checkin"]),html[data-feature-coins="off"] :is(a[href="#coins"],a[href="#account/ledger"]),html[data-feature-support="off"] a[href^="#support"]{display:none!important}
+
+.consumer-app .button.primary,.app .auth-primary,.app .premium-cta,.app .lock-cta {color:var(--site-primary-text,#fff)}
+
+.site-preview-banner {padding:9px 16px;background:#123246;color:#e2f4ff;font:500 13px/1.5 system-ui;text-align:center;flex:none}
+
+.rights-notice{margin:12px 0;padding:10px 12px;border-left:3px solid var(--pc-brand,var(--red,#f53666));background:rgba(127,127,127,.12);color:inherit;font-size:13px;line-height:1.6}.rights-notice small{opacity:.75;font-size:12px}

@@ -52,7 +52,10 @@ def test_queue_badges_stay_global_when_search_team_and_page_change(session, make
             ticket.waiting_since = stamp
         tickets.append(ticket)
     # A future/foreign tenant row must never influence JJTV queue totals.
-    foreign = SupportTicket(tenant_id="india-short-drama", user_id=user.id, number="TK-FOREIGN-QUEUE", subject="Foreign", status="open", priority="normal", team_code="billing", sla_policy=config["sla"]["normal"], created_at=stamp, updated_at=stamp)
+    from app.modules.account.models import User
+    foreign_user=User(tenant_id="india-short-drama",email="foreign-queue@example.com",display_name="Foreign viewer")
+    session.add(foreign_user);session.flush()
+    foreign = SupportTicket(tenant_id="india-short-drama", user_id=foreign_user.id, number="TK-FOREIGN-QUEUE", subject="Foreign", status="open", priority="normal", team_code="billing", sla_policy=config["sla"]["normal"], created_at=stamp, updated_at=stamp)
     session.add(foreign)
     session.commit()
     response = client.get("/admin/v1/support/tickets", headers=headers, params={

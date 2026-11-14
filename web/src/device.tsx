@@ -1,3 +1,4 @@
+import { siteName, siteFeature } from "../../shared/site";
 import {
   lazy,
   Suspense,
@@ -133,7 +134,7 @@ export function ResponsiveApp() {
     <Suspense
       fallback={
         <div role="status" style={{ padding: 24 }}>
-          Loading JJTV…
+          Loading…
         </div>
       }
     >

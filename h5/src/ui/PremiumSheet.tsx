@@ -1,3 +1,6 @@
+import { RightsNotice } from "./RightsNotice";
+import type {ContentRights} from "../../../shared/consumer/types";
+import { getSite, siteMoney } from "../../../shared/site";
 import { useEffect, useRef, useState } from "react";
 import {
   ApiError,
@@ -32,7 +35,7 @@ type TerminalCheckout = {
 
 function formatDay(iso: string | null, locale: Locale): string {
   if (!iso) return "—";
-  return new Date(iso).toLocaleDateString(locale === "zh" ? "zh-CN" : "en-US", {
+  return new Date(iso).toLocaleDateString(locale === "zh" ? "zh-CN" : "en-US", { timeZone:getSite().tenant.timezone,
     month: "short",
     day: "numeric",
     year: "numeric",
@@ -46,11 +49,13 @@ function formatDay(iso: string | null, locale: Locale): string {
  * (global switch); this sheet only mirrors that. Prices come from /v1/plans.
  */
 export function PremiumSheet({
+  rights,
   locale,
   membership,
   onChanged,
   onClose,
 }: {
+  rights?:ContentRights;
   locale: Locale;
   membership?: Membership;
   onChanged: () => void;
@@ -371,7 +376,7 @@ export function PremiumSheet({
       }
       onClose={onClose}
       testId="premium-sheet"
-    >
+    ><RightsNotice rights={rights} locale={locale}/>
       {showActive && membership ? (
         <>
           <div
@@ -481,7 +486,7 @@ export function PremiumSheet({
                       : plan.name_en}
                   </b>
                   <span className="premium-price">
-                    ${(plan.price_cents / 100).toFixed(2)}
+                    {siteMoney(plan.price_cents,locale,(plan as {currency?:string}).currency||getSite().tenant.currency)}
                     <i>/{unitOf(plan)}</i>
                   </span>
                 </div>
