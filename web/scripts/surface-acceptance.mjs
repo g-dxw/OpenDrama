@@ -873,7 +873,8 @@ try {
     await page.$eval(".me-tab.on", (element) => element.textContent.trim()),
     "Saved",
   );
-  await page.click('[data-testid="orders-sheet"] .close-btn');
+  // The remounted sheet slides in; wait for stable geometry before real pointer input.
+  await page.locator('[data-testid="orders-sheet"] .close-btn').click();
   await page.waitForFunction(() => location.hash === "#account/favorites");
   pass(
     "H5 saved and order actions synchronize routes and survive desktop round trips without losing the library tab",
