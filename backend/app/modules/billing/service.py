@@ -102,6 +102,8 @@ def list_current_plans(session: Session) -> list[dict]:
                 "benefits": version.benefits,
                 "base_coins": version.base_coins,
                 "bonus_coins": version.bonus_coins,
+                "duration_days": PLAN_DAYS.get(plan.code, 30),
+                "recurring_interval": INTERVAL_OF.get(plan.code, "month") if mode == "subscription" else None,
                 "billing_mode": mode,
             }
         )

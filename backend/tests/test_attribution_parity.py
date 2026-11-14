@@ -80,10 +80,14 @@ def test_payload_hashes_identity_and_test_events_do_not_count(session,make,pixel
     payload=service.provider_payload(session,test,pixel)
     assert payload["event_source_id"]==pixel.pixel_id and payload["data"][0]["event_id"]=="test:1"
 
-def test_local_links_disabled_plan_and_visit_dedup(session,pixel,plan):
+@pytest.mark.parametrize("public_base", ["https://jjtv.8jj.net", "http://127.0.0.1:5174"])
+def test_local_links_disabled_plan_and_visit_dedup(session,pixel,plan,monkeypatch,public_base):
+    monkeypatch.setenv("WEB_PUBLIC_BASE_URL",public_base)
     for value in ("https://evil.example/","//evil.example/","/\\evil.example/","/x\n"):
         with pytest.raises(HTTPException):service.safe_landing(value)
-    assert service.plan_link(plan).startswith("https://jjtv.8jj.net/?pid=test-pid")
+    assert service.plan_link(plan).startswith(public_base+"/?pid=test-pid")
+    plan.landing_path="/?campaign=desktop#watch/123"
+    assert service.plan_link(plan)==public_base+"/?campaign=desktop&pid=test-pid#watch/123"
     one=service.visit(session,plan.pid,client_id="browser-one");session.commit()
     two=service.visit(session,plan.pid,client_id="browser-one");session.commit()
     assert one["visit_id"]==two["visit_id"] and one["pixel"]["pixel_id"]==pixel.pixel_id

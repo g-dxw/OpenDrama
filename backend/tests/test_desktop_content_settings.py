@@ -129,3 +129,35 @@ def test_history_pagination_and_effective_preview_count(session,make):
     assert not {x['episode_id'] for x in one.json()['items']}&{x['episode_id'] for x in two.json()['items']}
     play=client.get('/v1/dramas/'+str(drama.id)+'/play').json()
     assert play['drama']['free_episode_count']==2
+
+
+def test_subtitle_manager_preserves_legacy_default_and_tenant_scope(session,make):
+ owner=make.admin(role='admin');drama=make.drama();episode=make.episode(drama)
+ episode.subtitle_url='legacy/subtitles/default.vtt';session.commit()
+ other=Tenant(id='subtitle-other',code='subtitle-other',name='Other',kind='native',status='active')
+ session.add(other);session.flush();seed_tenant_defaults(session,other);session.commit()
+ foreign=Drama(tenant_id=other.id,title='Foreign subtitle show',status='draft');session.add(foreign);session.flush()
+ foreign_episode=Episode(drama_id=foreign.id,episode_number=1,subtitle_url='private/foreign.vtt')
+ session.add(foreign_episode);session.commit()
+ client=TestClient(app);headers=login(client,owner)
+ response=client.get('/admin/v1/episodes/'+str(episode.id)+'/subtitles',headers=headers)
+ assert response.status_code==200,response.text
+ assert response.json()=={'items':[],'legacy_default_url':'legacy/subtitles/default.vtt'}
+ assert client.get('/admin/v1/episodes/'+str(foreign_episode.id)+'/subtitles',headers=headers).status_code==404
+
+
+def test_public_plan_cards_expose_entitlement_days_and_only_recurring_periods(session):
+ from app.modules.billing.models import Plan,PlanVersion
+ from app.modules.billing import service as billing
+ for code in ['weekly','monthly','yearly']:
+  plan=Plan(code=code,name_en=code,status='active');session.add(plan);session.flush()
+  session.add(PlanVersion(plan_id=plan.id,version=1,price_cents=999))
+ session.commit();billing.set_billing_mode(session,'subscription',1)
+ client=TestClient(app)
+ recurring=client.get('/v1/plans').json()['items']
+ assert [(p['code'],p['duration_days'],p['recurring_interval']) for p in recurring]==[
+  ('weekly',7,'week'),('monthly',30,'month'),('yearly',365,'year')]
+ billing.set_billing_mode(session,'one_time',1)
+ one_time=client.get('/v1/plans').json()['items']
+ assert [p['duration_days'] for p in one_time]==[7,30,365]
+ assert all(p['recurring_interval'] is None for p in one_time)

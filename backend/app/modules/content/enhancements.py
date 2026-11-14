@@ -45,8 +45,9 @@ def track_out(track):
 
 @admin_router.get('/episodes/{episode_id}/subtitles')
 def subtitles(episode_id:int,db:Session=Depends(get_db),user:AdminUser=Depends(require_admin)):
-    if db.get(Episode,episode_id) is None: raise HTTPException(404,detail='episode not found')
-    return dict(items=[track_out(t) for t in db.scalars(select(EpisodeSubtitle).where(EpisodeSubtitle.episode_id==episode_id).order_by(EpisodeSubtitle.language))])
+    episode=db.get(Episode,episode_id)
+    if episode is None: raise HTTPException(404,detail='episode not found')
+    return dict(legacy_default_url=episode.subtitle_url,items=[track_out(t) for t in db.scalars(select(EpisodeSubtitle).where(EpisodeSubtitle.episode_id==episode_id).order_by(EpisodeSubtitle.language))])
 
 @admin_router.post('/episodes/{episode_id}/subtitles')
 async def upload_subtitle(episode_id:int,language:str=Form(...,pattern=r'^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$'),label:str=Form('',max_length=80),is_default:bool=Form(False),file:UploadFile=File(...),db:Session=Depends(get_db),user:AdminUser=Depends(require_content_writer)):
