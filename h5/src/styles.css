@@ -2183,3 +2183,5 @@ img { display: block; max-width: 100%; }
 .subtitle-picker{position:absolute;left:14px;bottom:110px;z-index:8;display:flex;align-items:center;gap:8px;padding:6px 10px;background:#111b;border-radius:8px;color:white;font-size:12px}.subtitle-picker select{background:#17171f;color:#fff;border:1px solid #555;border-radius:6px;min-height:36px;max-width:150px}
 
 .auth-connection-error{background:#492735;padding:12px;display:flex;align-items:center;gap:12px;font-size:12px;flex:none}.auth-connection-error button{padding:8px 12px;border:1px solid #a47c86;border-radius:6px;min-height:36px;margin-left:auto}
+
+.mobile-desktop-links{display:flex;justify-content:center;gap:24px;padding:10px 12px;color:var(--muted);font-size:12px;background:var(--bg)}

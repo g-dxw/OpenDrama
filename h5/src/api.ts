@@ -20,7 +20,7 @@ export function deviceId() {
   return value;
 }
 const client = createConsumerClient({
-  apiBase: import.meta.env.VITE_API_BASE ?? "",
+  apiBase: import.meta.env.VITE_API_BASE ?? (import.meta.env.PROD ? "https://jjtv-api.8jj.net" : ""),
   attributionPid: () => localStorage.getItem("jjtv_attribution_pid"),
   deviceId,
   tokenStore: {
@@ -263,12 +263,12 @@ export function startCheckout(planCode: string): Promise<CheckoutResult> {
       idempotency_key: intent,
       attribution_pid:
         localStorage.getItem("jjtv_attribution_pid") || undefined,
-      success_url: window.location.origin + "/?checkout=success",
-      cancel_url: window.location.origin + "/?checkout=cancel",
+      success_url: window.location.origin + "/?checkout=success&surface=h5" + window.location.hash,
+      cancel_url: window.location.origin + "/?checkout=cancel&surface=h5" + window.location.hash,
     },
     { "Idempotency-Key": intent },
   ).then((result) => {
-    sessionStorage.setItem("jjtv_checkout_order", result.order_no);
+    sessionStorage.setItem("jjtv_h5_checkout_order", result.order_no);
     return result;
   });
 }

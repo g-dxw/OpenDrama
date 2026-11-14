@@ -8,8 +8,8 @@ interface DramaHit {
   title: string;
 }
 
-export function SearchPage({ locale, onOpen, onBack }: { locale: Locale; onOpen: (id: number) => void; onBack: () => void }) {
-  const [query, setQuery] = useState("");
+export function SearchPage({ locale, onOpen, onBack, initialQuery = "", onQuery }: { locale: Locale; onOpen: (id: number) => void; onBack: () => void; initialQuery?: string; onQuery?: (query: string) => void }) {
+  const [query, setQuery] = useState(initialQuery);
   const [trending, setTrending] = useState<string[]>([]);
   const [items, setItems] = useState<DramaHit[]>([]);
   const [error, setError] = useState(false);
@@ -24,10 +24,13 @@ export function SearchPage({ locale, onOpen, onBack }: { locale: Locale; onOpen:
     const q = term.trim();
     if (!q) return;
     setQuery(q);
+    onQuery?.(q);
     getJson<{ items: DramaHit[] }>(`/v1/search?q=${encodeURIComponent(q)}`)
       .then((data) => { setItems(data.items); setError(false); })
       .catch(() => setError(true));
   };
+
+  useEffect(() => { if (initialQuery.trim()) search(initialQuery); }, [initialQuery]);
 
   return (
     <div>

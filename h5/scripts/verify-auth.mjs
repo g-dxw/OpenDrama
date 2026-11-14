@@ -280,11 +280,15 @@ async function newPage(options = {}) {
   );
   await page.screenshot({ path: `${OUT}-play-signed-in.png` });
 
+  const savedDramaHash = new URL(page.url()).hash;
   await page.reload({ waitUntil: "networkidle" });
+  await page.waitForSelector(".play .back-btn", { timeout: 10000 });
+  const restoredDramaLink = new URL(page.url()).hash === savedDramaHash;
+  await page.locator(".play .back-btn").click();
   await page.waitForSelector('[data-tab="me"]', { timeout: 10000 });
   await page.locator('[data-tab="me"]').click();
   await page.waitForSelector(".me-hero h2", { timeout: 8000 });
-  check((await page.locator(".me-hero h2").innerText()).trim() === "viewer", "reload keeps the session and renders the profile");
+  check(restoredDramaLink && (await page.locator(".me-hero h2").innerText()).trim() === "viewer", "reload preserves the drama link and session, then renders the profile");
   check((await page.locator('[data-testid="me-coins"]').innerText()).trim() === "80", "profile shows the coin balance");
   await page.screenshot({ path: `${OUT}-me.png` });
 

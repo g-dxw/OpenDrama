@@ -6,6 +6,7 @@ const page = (name: string) => fileURLToPath(new URL(`./${name}`, import.meta.ur
 
 export default defineConfig({
   plugins: [react()],
+  resolve: { dedupe: ["react", "react-dom", "hls.js"] },
   build: {
     rollupOptions: {
       // Two pages: the React site plus a standalone legal page served at /privacy.html.

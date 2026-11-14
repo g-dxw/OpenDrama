@@ -27,6 +27,7 @@ import { UnlockSheet } from "../ui/UnlockSheet";
 
 interface Props {
   dramaId: number;
+  episodeId?: number;
   locale: Locale;
   onBack: () => void;
   onOpenRewards: () => void;
@@ -36,7 +37,7 @@ const RANGE = 30;
 const SPEED_OPTIONS = [0.75, 1.0, 1.25, 1.5, 2.0];
 
 /** The drama's own page: every episode, opened at the resume point. Finishing one jumps to the next. */
-export function PlayPage({ dramaId, locale, onBack, onOpenRewards }: Props) {
+export function PlayPage({ dramaId, episodeId, locale, onBack, onOpenRewards }: Props) {
   const { requireAuth, user, refresh } = useAuth();
   const [payload, setPayload] = useState<PlayPayload | null>(null);
   const [error, setError] = useState(false);
@@ -85,7 +86,7 @@ export function PlayPage({ dramaId, locale, onBack, onOpenRewards }: Props) {
     setPayload(null);
     getJson<PlayPayload>(`/v1/dramas/${dramaId}/play`)
       .then((data) => {
-        const resumeId = data.resume?.episode_id;
+        const resumeId = episodeId ?? data.resume?.episode_id;
         const start = data.items.findIndex((item) => item.id === resumeId);
         setIndex(start < 0 ? 0 : start);
         setLiked(data.drama.liked);
@@ -96,7 +97,7 @@ export function PlayPage({ dramaId, locale, onBack, onOpenRewards }: Props) {
       .catch(() => setError(true));
   };
 
-  useEffect(load, [dramaId]);
+  useEffect(load, [dramaId, episodeId]);
 
   const openUnlock = (episode: PlayEpisode) =>
     requireAuth(() => {

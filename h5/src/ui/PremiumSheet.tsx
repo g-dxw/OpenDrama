@@ -11,6 +11,7 @@ import type { Locale } from "../copy";
 import { t } from "../copy";
 import { Sheet } from "./Sheet";
 import { toast } from "./toast";
+import { useAuth } from "../auth/AuthProvider";
 
 type Membership = NonNullable<MeProfile["membership"]>;
 type BillingMode = "subscription" | "one_time";
@@ -41,6 +42,7 @@ export function PremiumSheet({
   onChanged: () => void;
   onClose: () => void;
 }) {
+  const { requireAuth } = useAuth();
   const [plans, setPlans] = useState<Plan[]>([]);
   const [mode, setMode] = useState<BillingMode>("one_time");
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
@@ -69,7 +71,8 @@ export function PremiumSheet({
     };
   }, []);
 
-  async function subscribe(code: string) {
+  const subscribe = (code: string) => requireAuth(() => { void startSubscription(code); });
+  async function startSubscription(code: string) {
     setBusy(code);
     setError("");
     try {

@@ -59,14 +59,18 @@ export function MePage({
   locale,
   onLocale,
   onOpen,
+  initialTab = "history",
+  initialSheet = null,
 }: {
   locale: Locale;
   onLocale: (locale: Locale) => void;
   onOpen: (id: number) => void;
+  initialTab?: MeTab;
+  initialSheet?: SheetId | null;
 }) {
   const { status, user, openLogin, requireAuth, refresh, logout } = useAuth();
-  const [tab, setTab] = useState<MeTab>("history");
-  const [sheet, setSheet] = useState<SheetId | null>(null);
+  const [tab, setTab] = useState<MeTab>(initialTab);
+  const [sheet, setSheet] = useState<SheetId | null>(initialSheet);
   const [history, setHistory] = useState<HistoryItem[] | null>(null);
   const [favorites, setFavorites] = useState<FavoritesPayload | null>(null);
   const [likes, setLikes] = useState<DramaLite[] | null>(null);
