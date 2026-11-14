@@ -1,10 +1,18 @@
 """JJTV-only finance authorization and minimal manual source-resolution HTTP boundary."""
+from copy import deepcopy
+from datetime import datetime, timedelta, timezone
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import func, select
 
 from app.main import app
 from app.modules.billing import commerce
 from app.modules.billing.service import BillingError
+from app.modules.billing.models import Order
+from app.modules.billing.commerce_models import CoinSource, CommerceRefund, MembershipGrant
+from app.modules.common.models import AuditLog
+from app.modules.wallet.models import CoinLedgerEntry, WalletAccount
+from tests.test_commerce import commercial, membership_order, pay
 from app.modules.ops import api_keys
 from app.modules.tenancy.models import Tenant, TenantModule, TenantRole
 from app.modules.tenancy.permissions import preset_role_id, seed_tenant_defaults
@@ -160,3 +168,91 @@ def test_resolution_can_release_coins_without_restoring_an_access_window(boundar
     assert response.status_code == 200, response.text
     assert response.json() == result
     assert "PRIVATE" not in response.text
+
+
+@pytest.mark.parametrize("provider_outcome", ["failed", "canceled"])
+def test_real_failed_refund_source_resolution_http_is_cas_safe_and_idempotent(
+    session, commercial, make, monkeypatch, provider_outcome,
+):
+    user, original_actor, _network_calls = commercial
+    point = datetime.now(timezone.utc)
+    monkeypatch.setattr(commerce, "now", lambda: point)
+    first = membership_order(session, user, "http-resolution-first")
+    pay(session, first)
+    # B's Checkout already exists before A freezes; its delayed callback is a
+    # real external race, not an attempt to reopen checkout during a refund.
+    checkout = commerce.checkout(session, user_id=user.id, email=user.email, product_type="membership", code="monthly", idempotency_key="http-resolution-second")
+    second = session.scalar(select(Order).where(Order.order_no == checkout["order_no"]))
+    original_remote = commerce.stripe_request
+    def pending(db, code, path, data=None, method="POST", idempotency_key=None):
+        if path == "/refunds":
+            return {"id": "re_http_resolution", "status": "pending", "amount": first.amount_cents, "currency": "usd"}
+        return original_remote(db, code, path, data, method, idempotency_key)
+    monkeypatch.setattr(commerce, "stripe_request", pending)
+    commerce.request_refund(session, first.order_no, original_actor.id, "Unused original source", "http-refund-first")
+    pay(session, second)
+    second_grant = session.scalar(select(MembershipGrant).where(MembershipGrant.order_id == second.id))
+    second_window = (second_grant.starts_at, second_grant.ends_at)
+    commerce.process_event(session, "env", {"type": "refund.updated", "data": {"object": {
+        "id": "re_http_resolution", "payment_intent": first.payment_intent_id,
+        "status": provider_outcome, "amount": first.amount_cents, "currency": "usd"}}})
+    point = second_grant.ends_at
+    client = TestClient(app)
+    actor, headers = authorized_finance(session, make, client)
+    detail_path = "/admin/v1/commerce/orders/" + first.order_no
+    action_path = "/admin/v1/finance/orders/" + first.order_no + "/membership-refund-resolution"
+    detail = client.get(detail_path, headers=headers)
+    assert detail.status_code == 200, detail.text
+    metadata = detail.json()["membership_refund_resolution"]
+    assert metadata["required"] and metadata["can_resolve"] and not metadata["resolved"]
+    assert metadata["provider_status"] == provider_outcome
+    assert metadata["disposition"] == "restore_remaining"
+    assert metadata["remaining_seconds"] == 30 * 86400
+    body = {"reason": "Verified original provider failure; restore only the purchased source", "idempotency_key": "http-source-resolution-once", "expected_revision": metadata["revision"]}
+
+    def state():
+        session.expire_all()
+        order = session.get(Order, first.id)
+        grant = session.scalar(select(MembershipGrant).where(MembershipGrant.order_id == first.id))
+        source = session.scalar(select(CoinSource).where(CoinSource.order_id == first.id))
+        refund = session.scalar(select(CommerceRefund).where(CommerceRefund.order_id == first.id))
+        return (order.status, deepcopy(order.checkout_context), grant.status, grant.starts_at, grant.ends_at,
+                source.remaining, source.reserved, refund.status, session.get(WalletAccount, user.id).balance,
+                session.scalar(select(func.count()).select_from(CoinLedgerEntry)))
+    before = state()
+    bad = client.post(action_path, headers=headers, json={**body, "expected_revision": "0" * 64})
+    assert bad.status_code == 409, bad.text
+    assert bad.json()["detail"]["code"] == "membership_resolution_changed"
+    assert bad.json()["detail"]["committed"] is False
+    assert state() == before
+
+    def forbid_provider(*args, **kwargs):
+        raise AssertionError("Manual source resolution must not request another Stripe refund or charge")
+    monkeypatch.setattr(commerce, "stripe_request", forbid_provider)
+    response = client.post(action_path, headers=headers, json=body)
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert set(result) == set(RESULT)
+    assert result["order_no"] == first.order_no and result["resolved"] and result["restored"]
+    assert result["released_coins"] == 25 and not result["replayed"]
+    assert datetime.fromisoformat(result["starts_at"]) == point
+    assert datetime.fromisoformat(result["ends_at"]) - point == timedelta(days=30)
+    after = state()
+    assert after[8] == before[8] + 25
+    assert (session.get(MembershipGrant, second_grant.id).starts_at, session.get(MembershipGrant, second_grant.id).ends_at) == second_window
+    assert not session.get(MembershipGrant, second_grant.id).access_consumed
+    replay = client.post(action_path, headers=headers, json=body)
+    assert replay.status_code == 200, replay.text
+    assert replay.json() == {**result, "replayed": True}
+    assert state() == after
+    resolved = client.get(detail_path, headers=headers).json()["membership_refund_resolution"]
+    assert resolved["resolved"] and not resolved["required"]
+    assert resolved["result"] == result
+    duplicate = client.post(action_path, headers=headers, json={**body, "idempotency_key": "different-resolution-key"})
+    assert duplicate.status_code == 409, duplicate.text
+    assert duplicate.json()["detail"]["code"] == "membership_resolution_already_resolved"
+    assert state() == after
+    audit = list(session.scalars(select(AuditLog).where(AuditLog.action == "membership_source.resolve", AuditLog.target_id == first.id)))
+    assert len(audit) == 1 and audit[0].actor_id == actor.id and audit[0].tenant_id == "jjtv"
+    assert audit[0].payload["reason"] == body["reason"]
+    assert session.scalar(select(func.count()).select_from(CoinLedgerEntry).where(CoinLedgerEntry.biz_type == "refund_release", CoinLedgerEntry.biz_key == "refund_release:" + first.order_no)) == 1
