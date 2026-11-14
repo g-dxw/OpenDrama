@@ -102,12 +102,13 @@ def user_read(number:str,user:User=Depends(require_user),db:Session=Depends(get_
 @admin_router.get("/agents")
 def agents(request:Request,staff:AdminUser=Depends(require_admin),db:Session=Depends(get_db)):
     staff_scope(request,"support.view")
-    return {"items":[dict(id=u.id,name=u.display_name or u.username) for u in db.scalars(select(AdminUser).where(AdminUser.tenant_id=="jjtv",AdminUser.status=="active",AdminUser.role!="partner").order_by(AdminUser.id))]}
+    config,_=service.settings(db)
+    return {"items":[dict(id=u.id,name=u.display_name or u.username) for u in db.scalars(select(AdminUser).where(AdminUser.tenant_id=="jjtv",AdminUser.status=="active",AdminUser.role!="partner").order_by(AdminUser.id))],"teams":[dict(code=team["code"],name=team["name"]) for team in config["teams"]]}
 
 @admin_router.get("/tickets")
-def admin_tickets(request:Request,q:str=Query("",max_length=200),status:str|None=None,priority:str|None=None,assignee_id:int|None=None,queue:str|None=None,sort:str="updated",page:int=Query(1,ge=1),page_size:int=Query(25,ge=1,le=100),staff:AdminUser=Depends(require_admin),db:Session=Depends(get_db)):
+def admin_tickets(request:Request,q:str=Query("",max_length=200),status:str|None=None,priority:str|None=None,assignee_id:int|None=None,team_code:str|None=Query(None,max_length=64),queue:str|None=None,sort:str="updated",page:int=Query(1,ge=1),page_size:int=Query(25,ge=1,le=100),staff:AdminUser=Depends(require_admin),db:Session=Depends(get_db)):
     staff_scope(request,"support.view")
-    return service.list_tickets(db,admin=True,actor_id=staff.id,q=q,status=status,priority=priority,assignee_id=assignee_id,queue=queue,sort=sort,page=page,page_size=page_size)
+    return service.list_tickets(db,admin=True,actor_id=staff.id,q=q,status=status,priority=priority,assignee_id=assignee_id,team_code=team_code,queue=queue,sort=sort,page=page,page_size=page_size)
 
 @admin_router.post("/tickets/bulk")
 def bulk(body:BulkIn,request:Request,staff:AdminUser=Depends(require_admin),db:Session=Depends(get_db)):

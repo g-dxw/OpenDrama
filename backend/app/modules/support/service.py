@@ -6,7 +6,7 @@ import re
 from datetime import datetime, date, time, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from fastapi import HTTPException
-from sqlalchemy import select, func, or_
+from sqlalchemy import select, func, or_, case
 from sqlalchemy.orm import Session
 from app.modules.account.models import User
 from app.modules.ops.models import AdminUser
@@ -18,7 +18,7 @@ TERMINAL = {"resolved", "closed", "merged"}
 STATUSES = {"open", "in_progress", "waiting_customer", "resolved", "closed"}
 PRIORITIES = {"low", "normal", "high", "urgent"}
 DEFAULT_CONFIG = {
- "calendar": {"timezone":"Asia/Shanghai", "weekdays":[0,1,2,3,4], "start":"09:00", "end":"18:00", "holidays":[]},
+ "calendar": {"timezone":"America/Los_Angeles", "weekdays":[0,1,2,3,4], "start":"09:00", "end":"18:00", "holidays":[]},
  "sla": {"low":{"first_response_minutes":240,"resolution_minutes":1440},"normal":{"first_response_minutes":60,"resolution_minutes":480},"high":{"first_response_minutes":30,"resolution_minutes":240},"urgent":{"first_response_minutes":15,"resolution_minutes":120}},
  "teams":[{"code":"default","name":"客服组","members":[],"max_concurrent":20}], "default_team":"default",
  "categories":[{"code":"general","name_en":"General","name_zh":"一般问题","fields":[]},{"code":"billing","name_en":"Billing","name_zh":"支付与会员","fields":[]},{"code":"playback","name_en":"Playback","name_zh":"播放问题","fields":[]},{"code":"account","name_en":"Account","name_zh":"账号问题","fields":[]}],
@@ -27,19 +27,34 @@ DEFAULT_CONFIG = {
 def now(): return datetime.now(timezone.utc)
 def aware(value): return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
+def calendar_hours(calendar):
+    """24:00 is an exclusive end-of-day boundary, never a start time."""
+    opening = time.fromisoformat(calendar.get("start", "09:00"))
+    end = calendar.get("end", "18:00")
+    end_of_day = end == "24:00"
+    closing = time.min if end_of_day else time.fromisoformat(end)
+    if opening.tzinfo is not None or closing.tzinfo is not None:
+        raise ValueError("Business hours must be local times")
+    if opening.second or opening.microsecond or closing.second or closing.microsecond:
+        raise ValueError("Business hours use minute precision")
+    if not end_of_day and opening >= closing:
+        raise ValueError("Business hours must end after opening")
+    return opening, closing, end_of_day
+
+
 def business_minutes(start: datetime, end: datetime, calendar: dict) -> float:
     """Integrate in UTC over local business days, including DST transitions."""
     start, end = aware(start), aware(end)
     if end <= start: return 0.0
-    zone = ZoneInfo(calendar.get("timezone", "Asia/Shanghai"))
+    zone = ZoneInfo(calendar.get("timezone", DEFAULT_CONFIG["calendar"]["timezone"]))
     first, last = start.astimezone(zone).date(), end.astimezone(zone).date()
-    opening, closing = time.fromisoformat(calendar.get("start", "09:00")), time.fromisoformat(calendar.get("end", "18:00"))
+    opening, closing, end_of_day = calendar_hours(calendar)
     weekdays, holidays = set(calendar.get("weekdays", range(5))), set(calendar.get("holidays", []))
     total, day = 0.0, first
     while day <= last:
         if day.weekday() in weekdays and day.isoformat() not in holidays:
             left = max(start, datetime.combine(day, opening, zone).astimezone(timezone.utc))
-            right = min(end, datetime.combine(day, closing, zone).astimezone(timezone.utc))
+            right = min(end, datetime.combine(day + timedelta(days=1) if end_of_day else day, closing, zone).astimezone(timezone.utc))
             total += max(0.0, (right-left).total_seconds()/60)
         day += timedelta(days=1)
     return total
@@ -56,8 +71,7 @@ def validate_settings(db, config):
     if not isinstance(calendar,dict): raise HTTPException(422,"Invalid calendar")
     try:
         ZoneInfo(calendar["timezone"])
-        opening, closing = time.fromisoformat(calendar["start"]), time.fromisoformat(calendar["end"])
-        if opening >= closing or opening.second or closing.second: raise ValueError()
+        calendar_hours(calendar)
         if not isinstance(calendar["weekdays"],list) or not calendar["weekdays"] or len(calendar["weekdays"])>7 or any(type(x) is not int or x<0 or x>6 for x in calendar["weekdays"]): raise ValueError()
         if not isinstance(calendar.get("holidays",[]),list) or len(calendar.get("holidays", [])) > 500: raise ValueError()
         for value in calendar.get("holidays", []): date.fromisoformat(value)
@@ -290,7 +304,29 @@ def merge(db,source,target,actor_id):
     event(db,source,"merged",actor_id,{"into":target.number});event(db,target,"merged_from",actor_id,{"number":source.number})
     audit(db,actor_id,"support.merge",source.id,{"into":target.number});db.flush()
 
-def list_tickets(db,*,admin=False,user_id=None,actor_id=None,q="",status=None,priority=None,assignee_id=None,queue=None,page=1,page_size=25,sort="updated"):
+def queue_counts(db, actor_id):
+    """Unfiltered JJTV queue totals; search and pagination never alter badges."""
+    active = SupportTicket.status.notin_(TERMINAL)
+    totals = db.execute(select(
+        func.count().filter(active).label("active"),
+        func.count().filter(active, SupportTicket.assignee_id == actor_id if actor_id is not None else False).label("mine"),
+        func.count().filter(active, SupportTicket.assignee_id.is_(None)).label("unassigned"),
+        func.count().filter(SupportTicket.status == "waiting_customer").label("waiting_customer"),
+    ).select_from(SupportTicket).where(SupportTicket.tenant_id == "jjtv")).mappings().one()
+    # Each ticket freezes its own calendar. A SQL age threshold would count
+    # weekends, holidays and paused customer time as active SLA time.
+    stamp = now()
+    overdue = sum(sla(ticket, stamp)["overdue"] for ticket in db.scalars(
+        select(SupportTicket).where(SupportTicket.tenant_id == "jjtv", active)
+    ))
+    return {**dict(totals), "overdue": overdue}
+
+
+def list_tickets(db,*,admin=False,user_id=None,actor_id=None,q="",status=None,priority=None,assignee_id=None,team_code=None,queue=None,page=1,page_size=25,sort="updated"):
+    if queue not in {None,"all","active","mine","unassigned","waiting_customer","overdue"}:
+        raise HTTPException(422,"Unknown support queue")
+    if sort not in {"updated","oldest","priority"}:
+        raise HTTPException(422,"Unknown support sort")
     query=select(SupportTicket).where(SupportTicket.tenant_id=="jjtv")
     if not admin: query=query.where(SupportTicket.user_id==user_id)
     if q:
@@ -298,17 +334,23 @@ def list_tickets(db,*,admin=False,user_id=None,actor_id=None,q="",status=None,pr
     if status: query=query.where(SupportTicket.status==status)
     if priority: query=query.where(SupportTicket.priority==priority)
     if assignee_id is not None: query=query.where(SupportTicket.assignee_id==assignee_id)
+    if team_code: query=query.where(SupportTicket.team_code==team_code)
     if queue=="mine": query=query.where(SupportTicket.assignee_id==actor_id,SupportTicket.status.notin_(TERMINAL))
     elif queue=="unassigned": query=query.where(SupportTicket.assignee_id.is_(None),SupportTicket.status.notin_(TERMINAL))
     elif queue=="waiting_customer": query=query.where(SupportTicket.status=="waiting_customer")
-    elif queue=="overdue": query=query.where(SupportTicket.status.notin_(TERMINAL))
+    elif queue in {"active","overdue"}: query=query.where(SupportTicket.status.notin_(TERMINAL))
     count=db.scalar(select(func.count()).select_from(query.subquery())) or 0
-    query=query.order_by(SupportTicket.created_at.asc() if sort=="oldest" else SupportTicket.updated_at.desc(),SupportTicket.id.desc())
+    if sort=="priority":
+        query=query.order_by(case({"urgent":0,"high":1,"normal":2,"low":3},value=SupportTicket.priority,else_=4),SupportTicket.created_at.asc(),SupportTicket.id.asc())
+    else:
+        query=query.order_by(SupportTicket.created_at.asc() if sort=="oldest" else SupportTicket.updated_at.desc(),SupportTicket.id.desc())
     if queue=="overdue":
-        # SLA depends on each ticket's immutable calendar snapshot.
-        rows=[t for t in db.scalars(query) if sla(t)["overdue"]];count=len(rows);rows=rows[(page-1)*page_size:page*page_size]
+        stamp=now()
+        rows=[t for t in db.scalars(query) if sla(t,stamp)["overdue"]];count=len(rows);rows=rows[(page-1)*page_size:page*page_size]
     else: rows=list(db.scalars(query.offset((page-1)*page_size).limit(page_size)))
-    return dict(items=[ticket_out(db,t,admin) for t in rows],total=count,page=page,page_size=page_size)
+    result=dict(items=[ticket_out(db,t,admin) for t in rows],total=count,page=page,page_size=page_size)
+    if admin: result["counts"]=queue_counts(db,actor_id)
+    return result
 
 def percentile(values,p):
     if not values: return None
