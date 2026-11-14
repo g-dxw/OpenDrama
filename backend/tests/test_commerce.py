@@ -36,6 +36,7 @@ def commercial(session,make,monkeypatch):
             if path.endswith('/expire'):sessions[session_id]['status']='expired'
             return dict(sessions[session_id])
         if path=='/refunds':return {'id':'re_'+hashlib.sha256(idempotency_key.encode()).hexdigest()[:12],'status':'succeeded','amount':int(data['amount']),'currency':'usd'}
+        if path.startswith('/subscriptions/') and method=='GET':return {'id':path.split('/')[-1],'status':'active','cancel_at_period_end':True}
         if path=='/account':return {'id':'acct_unit','country':'US'}
         return {}
     monkeypatch.setattr(c,'stripe_request',remote)

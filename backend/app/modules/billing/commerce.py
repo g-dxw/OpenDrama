@@ -320,6 +320,24 @@ def _checkout_remote_state(db,order):
 def _checkout_result(order,reused=False):
     return dict(url=order.checkout_url,session_id=order.external_txn_id,order_no=order.order_no,reused=reused)
 
+def assert_no_renewing_subscription(db,user_id):
+    # Event.created has only second precision. A same-second cancel/resume or
+    # delayed lifecycle event is not proof that an old subscription stopped
+    # renewing. Confirm planned cancellations through their ORIGINAL merchant,
+    # while the wallet mutex still protects the replacement reservation.
+    rows=db.scalars(select(Subscription).where(Subscription.user_id==user_id,Subscription.stripe_subscription_id.is_not(None),Subscription.status=='active').execution_options(populate_existing=True))
+    for row in rows:
+        fact=db.get(StripeSubscriptionLifecycle,(row.account_code,row.stripe_subscription_id),populate_existing=True)
+        if fact is not None and fact.user_id!=user_id:raise BillingError(409,'Subscription identity needs manual reconciliation before another purchase')
+        if fact is not None and fact.deleted:continue
+        if row.canceled_at is None:raise BillingError(409,'an active renewing subscription already exists; manage it before starting another')
+        remote=stripe_request(db,row.account_code,'/subscriptions/'+urllib.parse.quote(row.stripe_subscription_id,safe=''),method='GET')
+        if not isinstance(remote,dict) or remote.get('id')!=row.stripe_subscription_id:raise BillingError(409,'Could not verify the original subscription cancellation; retry or contact support before another purchase')
+        if remote.get('status') in {'canceled','incomplete_expired'}:continue
+        if remote.get('status') not in {'active','trialing'} or type(remote.get('cancel_at_period_end')) is not bool:
+            raise BillingError(409,'Original subscription cancellation is not confirmed; retry or contact support before another purchase')
+        if not remote['cancel_at_period_end']:raise BillingError(409,'an active renewing subscription already exists; manage it before starting another')
+
 def checkout(db,*,user_id,email,product_type,code,idempotency_key,account_code=None,success_url=None,cancel_url=None,source_drama_id=None,attribution_pid=None):
     success=return_url(success_url,'success');cancel=return_url(cancel_url,'cancel')
     key='checkout:'+str(user_id)+':'+hashlib.sha256(idempotency_key.encode()).hexdigest()
@@ -355,8 +373,7 @@ def checkout(db,*,user_id,email,product_type,code,idempotency_key,account_code=N
                 if state=='open':return _checkout_result(order,True)
                 break
             if order is None:
-                existing_subscription=db.scalar(select(Subscription).where(Subscription.user_id==user_id,Subscription.stripe_subscription_id.is_not(None),Subscription.status=='active',Subscription.canceled_at.is_(None)))
-                if existing_subscription is not None:raise BillingError(409,'an active renewing subscription already exists; manage it before starting another')
+                assert_no_renewing_subscription(db,user_id)
         if order is None:
             account=select_account(db,user_id,account_code)
             if snapshot['price_cents']<50:raise BillingError(422,'Stripe price must be at least USD 0.50')

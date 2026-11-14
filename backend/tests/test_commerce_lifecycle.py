@@ -324,3 +324,108 @@ def test_expired_checkout_retains_wallet_mutex_until_replacement_is_reserved(ses
     session.expire_all()
     assert session.get(Order,old_id).status=='failed'
     assert session.scalar(select(func.count()).select_from(Order).where(Order.status=='created'))==1
+
+
+@pytest.mark.parametrize('event_order',[(True,False),(False,True)])
+@pytest.mark.parametrize('remote_cancel',[False,True])
+def test_same_second_cancel_resume_uses_original_provider_current_state(session,commercial,monkeypatch,event_order,remote_cancel):
+    user,_,_=commercial;order=subscription_order(session,user)
+    c.process_event(session,'env',invoice(order))
+    for cancel in event_order:
+        c.process_event(session,'env',lifecycle(order,kind='customer.subscription.updated',created=500,cancel=cancel))
+    sub=session.scalar(select(Subscription));assert sub.canceled_at is not None
+    original=c.stripe_request;checked=[]
+    def remote(db,code,path,data=None,method='POST',idempotency_key=None):
+        if path=='/subscriptions/sub_lifecycle':
+            checked.append((code,method));return dict(id='sub_lifecycle',status='active',cancel_at_period_end=remote_cancel)
+        return original(db,code,path,data,method,idempotency_key)
+    monkeypatch.setattr(c,'stripe_request',remote)
+    if remote_cancel:
+        assert checkout(session,user)['order_no']!=order.order_no
+    else:
+        with pytest.raises(BillingError,match='active renewing'):checkout(session,user)
+        assert session.scalar(select(func.count()).select_from(Order))==1
+    assert checked==[('env','GET')]
+
+
+@pytest.mark.parametrize('failure',['network','wrong_id','missing_cancel','string_cancel','unknown_status','not_object'])
+def test_cancellation_verification_failure_cannot_create_replacement_order(session,commercial,monkeypatch,failure):
+    user,_,_=commercial;order=subscription_order(session,user)
+    c.process_event(session,'env',invoice(order))
+    c.process_event(session,'env',lifecycle(order,kind='customer.subscription.updated',created=500,cancel=True))
+    original=c.stripe_request
+    def remote(db,code,path,data=None,method='POST',idempotency_key=None):
+        if path=='/subscriptions/sub_lifecycle':
+            if failure=='network':raise BillingError(503,'provider unavailable')
+            if failure=='not_object':return []
+            response=dict(id='sub_lifecycle',status='active',cancel_at_period_end=True)
+            if failure=='wrong_id':response['id']='sub_someone_else'
+            elif failure=='missing_cancel':response.pop('cancel_at_period_end')
+            elif failure=='string_cancel':response['cancel_at_period_end']='true'
+            elif failure=='unknown_status':response['status']='past_due'
+            return response
+        return original(db,code,path,data,method,idempotency_key)
+    monkeypatch.setattr(c,'stripe_request',remote)
+    with pytest.raises(BillingError):checkout(session,user)
+    assert session.scalar(select(func.count()).select_from(Order))==1
+    assert session.get(WalletAccount,user.id).balance==25
+
+
+def test_planned_cancellation_is_verified_on_original_disabled_account_not_new_default(session,commercial,monkeypatch):
+    user,actor,_=commercial;order=subscription_order(session,user)
+    c.process_event(session,'env',invoice(order))
+    c.process_event(session,'env',lifecycle(order,kind='customer.subscription.updated',created=500,cancel=True))
+    c.save_account(session,'env',dict(status='disabled'),actor.id)
+    c.save_account(session,'new_default',dict(name='New default',status='active',is_default=True,secret_key='sk_test_new_default',webhook_secret='whsec_new_default'),actor.id)
+    original=c.stripe_request;checked=[]
+    def remote(db,code,path,data=None,method='POST',idempotency_key=None):
+        if path=='/subscriptions/sub_lifecycle':
+            checked.append((code,method));return dict(id='sub_lifecycle',status='active',cancel_at_period_end=True)
+        return original(db,code,path,data,method,idempotency_key)
+    monkeypatch.setattr(c,'stripe_request',remote)
+    result=checkout(session,user,account_code='new_default')
+    replacement=session.scalar(select(Order).where(Order.order_no==result['order_no']))
+    assert replacement.account_code=='new_default' and checked==[('env','GET')]
+    assert session.scalar(select(Subscription)).account_code=='env'
+
+
+def test_verified_terminal_deletion_does_not_require_remote_planned_cancel_verification(session,commercial,monkeypatch):
+    user,_,_=commercial;order=subscription_order(session,user)
+    c.process_event(session,'env',invoice(order))
+    c.process_event(session,'env',lifecycle(order,created=500))
+    c.process_event(session,'env',lifecycle(order,kind='customer.subscription.updated',created=600,cancel=False))
+    original=c.stripe_request
+    def remote(db,code,path,data=None,method='POST',idempotency_key=None):
+        assert not path.startswith('/subscriptions/'),'verified terminal deletion must remain terminal'
+        return original(db,code,path,data,method,idempotency_key)
+    monkeypatch.setattr(c,'stripe_request',remote)
+    assert checkout(session,user)['order_no']!=order.order_no
+
+
+def test_provider_cancel_confirmation_keeps_wallet_lock_after_expired_checkout(session,commercial,engine,monkeypatch):
+    from sqlalchemy.exc import DBAPIError
+    user,_,_=commercial;paid=subscription_order(session,user)
+    c.process_event(session,'env',invoice(paid))
+    c.process_event(session,'env',lifecycle(paid,kind='customer.subscription.updated',created=500,cancel=True))
+    prior_result=checkout(session,user,key='now-expired-checkout')
+    expired=session.scalar(select(Order).where(Order.order_no==prior_result['order_no']))
+    expired_id,expired_session=expired.id,expired.external_txn_id
+    original=c.stripe_request;checked=[]
+    factory=sessionmaker(bind=engine,expire_on_commit=False)
+    def remote(db,code,path,data=None,method='POST',idempotency_key=None):
+        if path=='/checkout/sessions/'+expired_session:
+            return dict(id=expired_session,status='expired',payment_status='unpaid')
+        if path=='/subscriptions/sub_lifecycle':
+            with factory() as contender:
+                with pytest.raises(DBAPIError) as error:
+                    contender.execute(select(WalletAccount).where(WalletAccount.user_id==user.id).with_for_update(nowait=True))
+                assert (getattr(error.value.orig,'sqlstate',None) or getattr(error.value.orig,'pgcode',None))=='55P03'
+            checked.append(code)
+            return dict(id='sub_lifecycle',status='active',cancel_at_period_end=True)
+        return original(db,code,path,data,method,idempotency_key)
+    monkeypatch.setattr(c,'stripe_request',remote)
+    result=checkout(session,user,key='confirmed-replacement')
+    assert result['order_no']!=expired.order_no and checked==['env']
+    session.expire_all()
+    assert session.get(Order,expired_id).status=='failed'
+    assert session.scalar(select(func.count()).select_from(Order).where(Order.status=='created'))==1
