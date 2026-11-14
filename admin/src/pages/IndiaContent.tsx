@@ -38,15 +38,17 @@ export default function IndiaContent() {
   const detailGeneration = useRef(0);
   const listGeneration = useRef(0);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; detailGeneration.current++; listGeneration.current++; }; }, []);
-  const oldEditor = ["admin", "editor"].includes(session?.role || "");
-  const oldReviewer = ["admin", "reviewer"].includes(session?.role || "");
-  const writable = usePermission("dramas.edit") && oldEditor;
-  const canUpload = usePermission("dramas.upload") && oldEditor;
-  const canPricing = usePermission("dramas.pricing") && oldEditor;
-  const reviewer = usePermission("reviews.decide") && oldReviewer;
-  const canPublish = usePermission("dramas.publish") && oldReviewer;
-  const oldAdmin = canUpload && session?.role === "admin";
-  const connectionReady = session?.configured !== false && session?.auth_mode === "jjtv_client_password";
+  const delegated = session?.auth_mode === "jjtv_delegated";
+  const legacyConnection = session?.auth_mode === "jjtv_client_password";
+  const editorAllowed = delegated || (legacyConnection && ["admin", "editor"].includes(session?.role || ""));
+  const reviewerAllowed = delegated || (legacyConnection && ["admin", "reviewer"].includes(session?.role || ""));
+  const writable = usePermission("dramas.edit") && editorAllowed;
+  const canUpload = usePermission("dramas.upload") && editorAllowed;
+  const canPricing = usePermission("dramas.pricing") && editorAllowed;
+  const reviewer = usePermission("reviews.decide") && reviewerAllowed;
+  const canPublish = usePermission("dramas.publish") && reviewerAllowed;
+  const canRetry = canUpload && (delegated || session?.role === "admin");
+  const connectionReady = session?.configured !== false && legacyConnection;
   const readSession = useCallback(async () => {
     setSessionLoading(true); setSessionError("");
     try { const value = await api<IndiaSession>(INDIA_BASE + "/session"); if (mounted.current) setSession(value); }
@@ -130,21 +132,22 @@ export default function IndiaContent() {
     <Card>
       <Space wrap style={{ justifyContent: "space-between", width: "100%" }}>
         <div><Typography.Title level={4} style={{ margin: "0 0 8px" }}>India 内容运营</Typography.Title>
-          {sessionLoading ? <Space><Spin size="small" /><span>正在检查账号连接…</span></Space> : <Space wrap>
-            <Tag color={session?.connected ? "green" : "default"}>{session?.connected ? "已连接旧站" : "未连接旧站"}</Tag>
-            {session?.connected && <Typography.Text>{session.username} · {({ admin: "管理员", editor: "内容编辑", reviewer: "审核员" } as Record<string, string>)[session.role || ""] || session.role}</Typography.Text>}
-            {session?.expires_at && session.connected && <Typography.Text type="secondary">到期 {new Date(session.expires_at).toLocaleString()}</Typography.Text>}
+          {sessionLoading ? <Space role="status" aria-live="polite"><Spin size="small" /><span>正在检查运营权限…</span></Space> : <Space wrap>
+            <Tag color={session?.connected ? "green" : "default"}>{delegated ? session?.connected ? "租户角色授权" : "运营暂不可用" : legacyConnection ? session?.connected ? "已连接旧站" : "未连接旧站" : "运营暂不可用"}</Tag>
+            {delegated ? <Typography.Text type="secondary">{current.role_name ? "当前角色：" + current.role_name + "。" : "按当前租户角色分配权限。"}无需连接旧站账号。</Typography.Text>
+              : session?.connected && <Typography.Text>{session.username} · {({ admin: "管理员", editor: "内容编辑", reviewer: "审核员" } as Record<string, string>)[session.role || ""] || session.role}</Typography.Text>}
+            {!delegated && session?.expires_at && session.connected && <Typography.Text type="secondary">到期 {new Date(session.expires_at).toLocaleString()}</Typography.Text>}
           </Space>}
         </div>
         <Space wrap>
-          <Button icon={<ReloadOutlined aria-hidden />} onClick={() => void readSession()} loading={sessionLoading}>检查连接</Button>
-          <Button icon={<LinkOutlined aria-hidden />} type={session?.connected ? "default" : "primary"} disabled={sessionLoading || !connectionReady} onClick={() => { loginForm.resetFields(); setConnectError(""); setConnectOpen(true); }}>{session?.connected ? "更换旧站账号" : "连接旧站运营账号"}</Button>
-          {session?.connected && <Button loading={connecting} onClick={() => void renewConnection()}>续期连接</Button>}
-          {session?.connected && <Popconfirm title="断开当前会话的旧站连接？" okText="断开" cancelText="取消" onConfirm={disconnect}><Button>断开</Button></Popconfirm>}
+          <Button icon={<ReloadOutlined aria-hidden />} onClick={() => void readSession()} loading={sessionLoading}>{legacyConnection ? "检查连接" : "检查运营状态"}</Button>
+          {legacyConnection && <Button icon={<LinkOutlined aria-hidden />} type={session?.connected ? "default" : "primary"} disabled={sessionLoading || !connectionReady} onClick={() => { loginForm.resetFields(); setConnectError(""); setConnectOpen(true); }}>{session?.connected ? "更换旧站账号" : "连接旧站运营账号"}</Button>}
+          {legacyConnection && session?.connected && <Button loading={connecting} onClick={() => void renewConnection()}>续期连接</Button>}
+          {legacyConnection && session?.connected && <Popconfirm title="断开当前会话的旧站连接？" okText="断开" cancelText="取消" onConfirm={disconnect}><Button>断开</Button></Popconfirm>}
         </Space>
       </Space>
       {sessionError && <Alert type="error" showIcon message={sessionError} style={{ marginTop: 16 }} />}
-      {!sessionLoading && !sessionError && !connectionReady && <Alert type="info" showIcon message="旧站专用连接暂未配置完成，请联系平台管理员" style={{ marginTop: 16 }} />}
+      {!sessionLoading && !sessionError && (delegated ? !session?.connected : !connectionReady) && <Alert type="info" showIcon message={delegated ? "India 运营授权暂不可用，请联系平台管理员检查配置" : legacyConnection ? "旧站专用连接暂未配置完成，请联系平台管理员" : "India 内容运营暂未配置完成，请联系平台管理员"} style={{ marginTop: 16 }} />}
       {connectionReady && !session?.connected && session?.state === "mfa_required" && <Alert type="info" showIcon message="旧连接需要更新，请重新输入旧站账号和密码连接" style={{ marginTop: 16 }} />}
     </Card>
     {session?.connected ? <>
@@ -170,7 +173,7 @@ export default function IndiaContent() {
         <Typography.Text type="secondary">第 {cursors.length} 页</Typography.Text>
         <Button disabled={loading || !nextCursor} onClick={() => nextCursor && setCursors(values => [...values, nextCursor])}>下一页</Button>
       </Space>
-    </> : !sessionLoading && <Card><Empty description="连接旧站运营账号后，即可管理 India 的剧集和视频" /></Card>}
+    </> : !sessionLoading && <Card><Empty description={delegated ? "运营服务准备就绪后，将在此显示 India 的剧集和视频" : legacyConnection ? "连接旧站运营账号后，即可管理 India 的剧集和视频" : "India 内容运营暂不可用"} /></Card>}
     <Modal title="新增 India 剧集" open={creating} onCancel={() => setCreating(false)} width={900} footer={null} destroyOnHidden>
       {creating && <IndiaSeriesForm writable={writable} canPricing={canPricing} onSaved={row => { setCreating(false); openDetail(row.id); void load(); }} />}
     </Modal>
@@ -188,7 +191,7 @@ export default function IndiaContent() {
         </Space>
         <Tabs items={[
           { key: "metadata", label: "剧集资料与版权", children: <IndiaSeriesForm key={detail.id} record={detail} writable={writable} canPricing={canPricing} onSaved={() => changed()} /> },
-          { key: "episodes", label: "分集与视频", children: <IndiaEpisodes series={detail} writable={writable} canUpload={canUpload} oldAdmin={oldAdmin} onChanged={changed} /> },
+          { key: "episodes", label: "分集与视频", children: <IndiaEpisodes series={detail} writable={writable} canUpload={canUpload} canRetry={canRetry} onChanged={changed} /> },
           { key: "files", label: "封面与版权证明", children: <IndiaAssets series={detail} writable={canUpload && !["published", "scheduled"].includes(detail.status)} onChanged={changed} /> },
         ]} />
       </>}
@@ -201,7 +204,7 @@ export default function IndiaContent() {
         <Input.TextArea id="india-action-reason" rows={3} maxLength={500} value={actionReason} onChange={event => setActionReason(event.target.value)} />
       </Space>
     </Modal>
-    <Modal title="连接旧站运营账号" open={connectOpen} onCancel={closeConnect} footer={null} destroyOnHidden maskClosable={!connecting}>
+    <Modal title="连接旧站运营账号" open={legacyConnection && connectOpen} onCancel={closeConnect} footer={null} destroyOnHidden maskClosable={!connecting}>
       <Space direction="vertical" size="middle" style={{ width: "100%" }}>
         <Typography.Text type="secondary">输入旧站账号和密码即可连接，无需验证码。此连接仅用于当前 JJTV 登录会话，密码不会保存。</Typography.Text>
         <Typography.Text type="secondary">直接登录旧站时，仍需使用验证器。</Typography.Text>

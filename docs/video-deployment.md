@@ -55,6 +55,11 @@ missing connector settings to the existing private environment file while
 preserving existing secrets. An invalid existing key fails deployment instead
 of being rotated and making stored sessions unreadable. Back up this key with
 the database; rotating it requires an explicit credential migration.
+The optional [role-delegated India mode](india-jjtv-role-auth.md) uses a separate
+protected key file in the existing read-only India client directory. Deploy the
+matching India provider before enabling both sides; deployment does not generate
+this key or activate delegation. In this mode each operator uses their JJTV tenant
+role directly instead of connecting a legacy staff session.
 The native Bunny callback verifier also receives an independent, stable
 `BUNNY_CALLBACK_SECRET` when the setting is missing. Existing callback secrets
 are retained; a development fallback is not provisioned for production.
@@ -91,7 +96,7 @@ HTML entry points use Cache-Control: no-store and disable ETag/If-Modified-Since
 
 Every video upgrade now stops the JJTV API before schema changes and writes a private backup under `/opt/jjtv/backups/<UTC>-<source SHA>/`. It verifies a full PostgreSQL custom archive, preserves the runtime environment and India client key directory, and exports account/permission snapshots before and after migration. The new-image helper checks original account IDs, password hashes, statuses, historical audit payloads and unaffected business table counts without exporting password hashes.
 
-Only migration-created tenant administrators and cloned tenant employees receive new one-time credentials, recorded in `tenant-credentials.json` with mode 0600 and initialization audit events. Existing platform accounts and original JJTV staff keep their passwords. New tenant accounts must change their temporary password on first login; India users reconnect their own old-site operator after signing in. JJTV content defaults are backfilled once, without replacing existing configuration; future native tenants initialize their own defaults on creation.
+Only migration-created tenant administrators and cloned tenant employees receive new one-time credentials, recorded in `tenant-credentials.json` with mode 0600 and initialization audit events. Existing platform accounts and original JJTV staff keep their passwords. New tenant accounts must change their temporary password on first login. India users connect their own old-site operator only in password compatibility mode; paired role-delegated mode needs no personal legacy connection. JJTV content defaults are backfilled once, without replacing existing configuration; future native tenants initialize their own defaults on creation.
 
 A failed upgrade keeps the old API stopped and writes private diagnostics. After the independent identity migration, repair forward using the new account model; never restart the old global-account image against the migrated database. Database restore is a separately controlled recovery operation. Public DNS and old India services are unchanged.
 

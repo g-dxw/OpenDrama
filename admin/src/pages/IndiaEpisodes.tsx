@@ -3,7 +3,7 @@ import { Alert, Button, Card, Form, Input, InputNumber, Modal, Progress, Select,
 import { PlusOutlined, ReloadOutlined, UploadOutlined } from "@ant-design/icons";
 import { indiaApi, indiaUpload, indiaErrorText, STATUS, videoContentType, type IndiaEpisode, type IndiaJob, type IndiaSeries } from "./india-api";
 
-function EpisodeMedia({ episode, writable, admin, onChanged }: { episode: IndiaEpisode; writable: boolean; admin: boolean; onChanged: () => void }) {
+function EpisodeMedia({ episode, writable, canRetry, onChanged }: { episode: IndiaEpisode; writable: boolean; canRetry: boolean; onChanged: () => void }) {
   const [busy, setBusy] = useState(false);
   const [percent, setPercent] = useState(0);
   const [phase, setPhase] = useState("");
@@ -110,7 +110,7 @@ function EpisodeMedia({ episode, writable, admin, onChanged }: { episode: IndiaE
         <Typography.Text type="secondary" copyable>{job.id}</Typography.Text>
         <Typography.Text type="secondary">{automatic ? "正在自动刷新，每 15 秒检查一次。" : "自动刷新已停止，可手动刷新。"}{job.attempts !== undefined ? " 尝试次数：" + job.attempts : ""}</Typography.Text>
         {job.error && <Alert type="error" showIcon message={"转码未完成：" + job.error} />}
-        {["failed", "dead_letter"].includes(job.status) && <Button disabled={!admin || busy} loading={busy} onClick={() => void retry()}>重试转码（旧站管理员）</Button>}
+        {["failed", "dead_letter"].includes(job.status) && <Button disabled={!canRetry || busy} loading={busy} onClick={() => void retry()}>重试转码</Button>}
       </Space>
     </Card>}
     <Card size="small" title="字幕">
@@ -130,7 +130,7 @@ function EpisodeMedia({ episode, writable, admin, onChanged }: { episode: IndiaE
   </Space>;
 }
 
-export default function IndiaEpisodes({ series, writable, canUpload, oldAdmin, onChanged }: { series: IndiaSeries; writable: boolean; canUpload: boolean; oldAdmin: boolean; onChanged: () => void }) {
+export default function IndiaEpisodes({ series, writable, canUpload, canRetry, onChanged }: { series: IndiaSeries; writable: boolean; canUpload: boolean; canRetry: boolean; onChanged: () => void }) {
   const [adding, setAdding] = useState(false);
   const [form] = Form.useForm();
   const [saving, setSaving] = useState(false);
@@ -171,7 +171,7 @@ export default function IndiaEpisodes({ series, writable, canUpload, oldAdmin, o
       </Form>
     </Modal>
     <Modal title={episode ? "第 " + episode.episode_no + " 集 · " + episode.title : "分集媒体"} open={!!episode} onCancel={() => setSelected(null)} footer={null} width={820} destroyOnHidden>
-      {episode && <EpisodeMedia key={episode.id} episode={episode} writable={uploadable} admin={oldAdmin && uploadable} onChanged={onChanged} />}
+      {episode && <EpisodeMedia key={episode.id} episode={episode} writable={uploadable} canRetry={canRetry && uploadable} onChanged={onChanged} />}
     </Modal>
   </Space>;
 }
