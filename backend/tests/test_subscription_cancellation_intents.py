@@ -3,6 +3,7 @@ from copy import deepcopy
 import importlib.util
 from pathlib import Path
 from io import StringIO
+from types import SimpleNamespace
 import time
 
 import pytest
@@ -122,16 +123,31 @@ def test_accepted_but_pre_request_snapshot_does_not_clear_a_confirmed_intent(ses
     assert calls[-1][1] == original_key
 
 
-def test_same_request_second_is_not_proof_of_a_new_resume_cycle(session, cancellation):
+@pytest.mark.parametrize("retry_elapsed_seconds", [0, 2])
+def test_same_request_second_is_not_proof_of_a_new_resume_cycle(
+    session, cancellation, monkeypatch, retry_elapsed_seconds,
+):
     user, actor, order, row, _, calls = cancellation
+    clock = SimpleNamespace(value=int(time.time()))
+    # Replace this module's clock reference, never the shared time module used
+    # by database/Redis clients. Provider events follow the same explicit clock.
+    monkeypatch.setattr(billing, "time", SimpleNamespace(time=lambda: clock.value))
     cancel(session, user, actor, "user")
     original_key = calls[-1][1]
     stamp = row.cancellation_context["confirmed_at"]
     c.process_event(session, "env", lifecycle(order, kind="customer.subscription.updated", created=stamp, cancel=False))
+    clock.value += retry_elapsed_seconds
     cancel(session, user, actor, "user")
     assert calls[-1][1] == original_key
-    # A later accepted resume can still retire the old confirmed intent.
-    c.process_event(session, "env", lifecycle(order, kind="customer.subscription.updated", created=stamp+1, cancel=False))
+    verified = row.cancellation_context["verified_at"]
+    assert verified == stamp + retry_elapsed_seconds
+    # Even a slow retry refreshes the verification watermark. A tied event is
+    # still ambiguous; a new resume must be later than this latest verification.
+    c.process_event(session, "env", lifecycle(order, kind="customer.subscription.updated", created=verified, cancel=False))
+    assert row.cancellation_context["key"] == original_key
+    clock.value = verified + 1
+    c.process_event(session, "env", lifecycle(order, kind="customer.subscription.updated", created=clock.value, cancel=False))
+    assert row.cancellation_context == {}
     cancel(session, user, actor, "user")
     assert calls[-1][1] != original_key
 
