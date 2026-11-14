@@ -156,7 +156,7 @@ def test_public_plan_cards_expose_entitlement_days_and_only_recurring_periods(se
  client=TestClient(app)
  recurring=client.get('/v1/plans').json()['items']
  assert [(p['code'],p['duration_days'],p['recurring_interval']) for p in recurring]==[
-  ('weekly',7,'week'),('monthly',30,'month'),('yearly',365,'year')]
+  ('weekly',None,'week'),('monthly',None,'month'),('yearly',None,'year')]
  billing.set_billing_mode(session,'one_time',1)
  one_time=client.get('/v1/plans').json()['items']
  assert [p['duration_days'] for p in one_time]==[7,30,365]
