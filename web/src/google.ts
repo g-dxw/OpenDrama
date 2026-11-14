@@ -51,8 +51,11 @@ export async function renderGoogleButton(
   host: HTMLElement,
   clientId: string,
   onCredential: (credential: string) => void,
+  locale = "en-US",
+  isCurrent: () => boolean = () => true,
 ): Promise<void> {
   await loadGoogleScript();
+  if (!isCurrent()) return;
   const api = window.google?.accounts?.id;
   if (!api) throw new Error("google unavailable");
   api.initialize({
@@ -60,11 +63,12 @@ export async function renderGoogleButton(
     ux_mode: "popup",
     auto_select: false,
     callback: (response) => {
-      if (response.credential) onCredential(response.credential);
+      if (isCurrent() && response.credential) onCredential(response.credential);
     },
   });
   host.innerHTML = "";
   api.renderButton(host, {
+    locale: locale.replace("-", "_"),
     theme: "filled_white",
     size: "large",
     shape: "pill",

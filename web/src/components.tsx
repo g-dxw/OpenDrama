@@ -1,3 +1,4 @@
+import { useLocale } from "./locale";
 import { useEffect, useRef, type ReactNode } from "react";
 import type { CatalogDrama } from "./consumer-api";
 export function Icon({ name, size = 20 }: { name: string; size?: number }) {
@@ -107,6 +108,7 @@ export function Modal({
   children: ReactNode;
   className?: string;
 }) {
+  const { t } = useLocale();
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const modal = ref.current;
@@ -184,7 +186,7 @@ export function Modal({
           <button
             className="icon-button"
             onClick={onClose}
-            aria-label="Close dialog"
+            aria-label={t("Close dialog")}
           >
             <Icon name="close" />
           </button>
@@ -195,11 +197,11 @@ export function Modal({
   );
 }
 export function Loading() {
+  const { t } = useLocale();
   return (
     <div className="loading" role="status">
       <span className="spinner" />
-      Loading…
-    </div>
+      {t("Loading…")}</div>
   );
 }
 export function Failure({
@@ -209,29 +211,30 @@ export function Failure({
   message: string;
   retry?: () => void;
 }) {
+  const { t } = useLocale();
   return (
     <div className="error-card" role="alert">
-      <p>{message}</p>
+      <p>{t(message)}</p>
       {retry && (
         <button className="button secondary" onClick={retry}>
-          Try again
-        </button>
+          {t("Try again")}</button>
       )}
     </div>
   );
 }
 export function Empty({ message = "Nothing here yet." }: { message?: string }) {
+  const { t } = useLocale();
   return (
     <div className="empty">
       <Icon name="play" size={32} />
-      <p>{message}</p>
+      <p>{t(message)}</p>
       <a className="button secondary" href="#browse">
-        Explore dramas
-      </a>
+        {t("Explore dramas")}</a>
     </div>
   );
 }
 export function DramaCard({ drama }: { drama: CatalogDrama }) {
+  const { t, number } = useLocale();
   return (
     <a className="drama-card" href={"#watch/" + drama.id}>
       <div className="drama-cover">
@@ -251,11 +254,11 @@ export function DramaCard({ drama }: { drama: CatalogDrama }) {
           <Icon name="play" size={26} />
         </span>
         {drama.free_episode_count != null && drama.free_episode_count > 0 && (
-          <span className="card-badge">Free episodes</span>
+          <span className="card-badge">{t("Free episodes")}</span>
         )}
       </div>
       <h3>{drama.title}</h3>
-      <p>{drama.episode_count != null || drama.published_episode_count != null ? (drama.episode_count ?? drama.published_episode_count) + " episodes" : ""}{drama.play_count != null ? ((drama.episode_count != null || drama.published_episode_count != null) ? " · " : "") + Intl.NumberFormat("en", {notation:"compact"}).format(drama.play_count) + " views" : ""}</p>
+      <p>{drama.episode_count != null || drama.published_episode_count != null ? t("{count} episodes",{count:number(drama.episode_count ?? drama.published_episode_count ?? 0)}) : ""}{drama.play_count != null ? ((drama.episode_count != null || drama.published_episode_count != null) ? " · " : "") + t("{count} views",{count:number(drama.play_count, {notation:"compact"})}) : ""}</p>
     </a>
   );
 }
@@ -272,11 +275,14 @@ export function Cards({ items }: { items: CatalogDrama[] }) {
 }
 
 export function StatusTag({ status }: { status: string }) {
+  const { t } = useLocale();
   const labels: Record<string, string> = {
     created: "Awaiting payment",
     paid: "Paid",
     failed: "Payment failed",
     refunded: "Refunded",
+    refund_pending: "Refund pending",
+    refund_review: "Refund under review",
     open: "Open",
     in_progress: "In progress",
     waiting_customer: "Waiting for your reply",
@@ -286,7 +292,7 @@ export function StatusTag({ status }: { status: string }) {
   };
   return (
     <span className={"status-tag status-" + status}>
-      {labels[status] ?? status.replace(/_/g, " ")}
+      {t(labels[status] ?? status.replace(/_/g, " "))}
     </span>
   );
 }

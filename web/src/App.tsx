@@ -1,3 +1,5 @@
+import { LocaleProvider, useLocale } from "./locale";
+import { LanguageMenu } from "./language-menu";
 import { useEffect, useState, lazy, Suspense } from "react";
 import { AuthProvider, useAuth } from "./auth";
 import { Login } from "./login";
@@ -10,16 +12,15 @@ const Watch = lazy(() =>
 import { Support } from "./support";
 import { get, post, errorMessage } from "./consumer-api";
 import { Failure, Icon, Loading } from "./components";
-import "./consumer.css";
-import "./details.css";
 export default function App() {
   return (
-    <AuthProvider>
+    <LocaleProvider><AuthProvider>
       <Shell />
-    </AuthProvider>
+    </AuthProvider></LocaleProvider>
   );
 }
 function Shell() {
+  const { t } = useLocale();
   const { user, status, loginOpen, openLogin, authError, refresh } = useAuth();
   const [hash, setHash] = useState(window.location.hash.slice(1) || "home"),
     [menu, setMenu] = useState(false);
@@ -87,7 +88,7 @@ function Shell() {
           episodeId={Number(params.get("episode")) || undefined}
         />
       ) : (
-        <Failure message="This drama link is invalid." />
+        <Failure message={t("This drama link is invalid.")} />
       );
   } else if (route[0] === "account" || route[0] === "me")
     content = (
@@ -132,10 +133,9 @@ function Shell() {
           document.getElementById("main-content")?.focus();
         }}
       >
-        Skip to content
-      </a>
+        {t("Skip to content")}</a>
       <header className="consumer-header">
-        <a className="consumer-brand" href="#home" aria-label="JJTV home">
+        <a className="consumer-brand" href="#home" aria-label={t("JJTV home")}>
           <span className="brand-symbol">
             <Icon name="play" size={20} />
           </span>
@@ -144,12 +144,12 @@ function Shell() {
         <button
           className="icon-button mobile-menu"
           aria-expanded={menu}
-          aria-label="Toggle navigation"
+          aria-label={t("Toggle navigation")}
           onClick={() => setMenu(!menu)}
         >
           <Icon name="menu" />
         </button>
-        <nav className={menu ? "open" : ""} aria-label="Main navigation">
+        <nav className={menu ? "open" : ""} aria-label={t("Main navigation")}>
           {[
             ["home", "Home"],
             ["foryou", "For You"],
@@ -162,19 +162,19 @@ function Shell() {
               className={activeNavigation === id ? "active" : ""}
               aria-current={activeNavigation === id ? "page" : undefined}
             >
-              {label}
+              {t(label)}
             </a>
           ))}
         </nav>
         <div className="header-account">
-          <a className={"header-search-trigger icon-button" + (path === "search" ? " active" : "")} href="#search" aria-label="Search dramas"><Icon name="search" size={20}/></a>
-          <span className="header-language" title="English">EN</span>
+          <a className={"header-search-trigger icon-button" + (path === "search" ? " active" : "")} href="#search" aria-label={t("Search dramas")}><Icon name="search" size={20}/></a>
+          <LanguageMenu />
           {user ? (
             <>
               <a
                 className="profile-button"
                 href="#account"
-                aria-label="Your account"
+                aria-label={t("Your account")}
               >
                 {user.display_name.slice(0, 1).toUpperCase()}
               </a>
@@ -185,7 +185,7 @@ function Shell() {
               onClick={openLogin}
               disabled={status === "loading"}
             >
-              {status === "loading" ? "…" : "Sign in"}
+              {status === "loading" ? "…" : t("Sign in")}
             </button>
           )}
         </div>
@@ -193,10 +193,9 @@ function Shell() {
       <main id="main-content" tabIndex={-1}>
         {authError && (
           <div className="auth-notice" role="alert">
-            <span>Your session is saved. {authError}</span>
+            <span>{t("Your session is saved.")} {t(authError)}</span>
             <button className="button secondary" onClick={() => void refresh()}>
-              Retry account connection
-            </button>
+              {t("Retry account connection")}</button>
           </div>
         )}
         {checkout && (
@@ -209,52 +208,47 @@ function Shell() {
       </main>
       <footer className="consumer-footer">
         <div className="footer-identity"><a className="consumer-brand" href="#home">JJ<span>TV</span></a><span>© {new Date().getFullYear()} JJTV</span></div>
-        <nav aria-label="Footer"><a href="#about">About</a><a href="#support">Help & support</a><a href="#legal/terms">Terms</a><a href="/privacy.html">Privacy</a></nav>
+        <nav aria-label={t("Footer")}><a href="#about">{t("About")}</a><a href="#support">{t("Help & support")}</a><a href="#legal/terms">{t("Terms")}</a><a href="/privacy.html">{t("Privacy")}</a></nav>
       </footer>
       {loginOpen && <Login />}
     </div>
   );
 }
 function About() {
+  const { t } = useLocale();
   return (
     <div className="page-content about-page">
-      <span className="eyebrow">Welcome to JJTV</span>
-      <h1>Stories that fit your day.</h1>
+      <span className="eyebrow">{t("Welcome to JJTV")}</span>
+      <h1>{t("Stories that fit your day.")}</h1>
       <p>
-        Discover short dramas, watch free episodes, and unlock the stories you
-        love with coins or membership.
-      </p>
+        {t("Discover short dramas, watch free episodes, and unlock the stories you love with coins or membership.")}</p>
       <div className="button-row">
         <a className="button primary" href="#browse">
-          Watch online
-        </a>
+          {t("Watch online")}</a>
         <a
           className="button secondary"
           href="https://jjtv-h5.8jj.net"
           target="_blank"
           rel="noopener noreferrer"
         >
-          Open mobile web app
-          <Icon name="arrow" />
+          {t("Open mobile web app")}<Icon name="arrow" />
         </a>
       </div>
       <div className="about-card">
-        <img src="/ph_feed.png" alt="JJTV mobile viewing experience" />
+        <img src="/ph_feed.png" alt={t("JJTV mobile viewing experience")} />
         <div>
-          <h2>Take the story with you.</h2>
+          <h2>{t("Take the story with you.")}</h2>
           <p>
-            The mobile web app is ready to watch in your browser. Native app
-            downloads will appear when verified JJTV builds are available.
-          </p>
+            {t("The mobile web app is ready to watch in your browser. Native app downloads will appear when verified JJTV builds are available.")}</p>
           <a href="https://jjtv-h5.8jj.net" className="button primary">
-            Watch on mobile
-          </a>
+            {t("Watch on mobile")}</a>
         </div>
       </div>
     </div>
   );
 }
 function Legal({ slug }: { slug: string }) {
+  const { t } = useLocale();
   const [data, setData] = useState<{
       title?: string;
       body?: string;
@@ -282,7 +276,7 @@ function Legal({ slug }: { slug: string }) {
           <div className="legal-body">
             {data.body ||
               data.content ||
-              "This document is not available yet. Please contact support."}
+              t("This document is not available yet. Please contact support.")}
           </div>
         </>
       )}

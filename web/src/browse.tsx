@@ -1,3 +1,4 @@
+import { useLocale } from "./locale";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import {
   get,
@@ -17,19 +18,22 @@ import { useAuth } from "./auth";
 const FeedVideo = lazy(() => import("./player").then((module) => ({default:module.Video})));
 const FeedComments = lazy(() => import("./player").then((module) => ({default:module.Comments})));
 export function Home() {
+  const { locale, t, number } = useLocale();
+  const homeRequest = useRef(0);
   const [home, setHome] = useState<HomePayload | null>(null), [config, setConfig] = useState<ConfigPayload | null>(null), [error, setError] = useState("");
   const [bannerIndex, setBannerIndex] = useState(0), [channelIndex, setChannelIndex] = useState(0);
   const load = () => {
     setError("");
-    Promise.all([get<HomePayload>("/v1/home/groups"), get<ConfigPayload>("/v1/config?locale=en").catch(() => null)])
-      .then(([nextHome, nextConfig]) => { setHome(nextHome); setConfig(nextConfig); })
-      .catch((e) => setError(errorMessage(e)));
+    const request = ++homeRequest.current;
+    Promise.all([get<HomePayload>("/v1/home/groups"), get<ConfigPayload>("/v1/config?locale=" + (locale === "zh" ? "zh" : "en")).catch(() => null)])
+      .then(([nextHome, nextConfig]) => { if (request === homeRequest.current) { setHome(nextHome); setConfig(nextConfig); } })
+      .catch((e) => { if (request === homeRequest.current) setError(errorMessage(e)); });
   };
-  useEffect(load, []);
+  useEffect(() => { load(); return () => { homeRequest.current++; }; }, [locale]);
   if (error) return <div className="page-content"><Failure message={error} retry={load}/></div>;
   if (!home) return <Loading/>;
   const allDramas = home.groups.flatMap((group) => group.dramas);
-  const banners: Banner[] = home.banners.length ? home.banners : allDramas.filter((drama, index, list) => drama.cover_url && list.findIndex((item) => item.id === drama.id) === index).slice(0, 3).map((drama) => ({ id: -drama.id, drama_id: drama.id, cover_url: drama.cover_url, title: drama.title, headline: drama.title, kicker: "Featured", slot: "hero" }));
+  const banners: Banner[] = home.banners.length ? home.banners : allDramas.filter((drama, index, list) => drama.cover_url && list.findIndex((item) => item.id === drama.id) === index).slice(0, 3).map((drama) => ({ id: -drama.id, drama_id: drama.id, cover_url: drama.cover_url, title: drama.title, headline: drama.title, kicker: "", slot: "hero" }));
   const currentIndex = banners.length ? bannerIndex % banners.length : 0;
   const banner = banners[currentIndex];
   const featured = allDramas.find((drama) => drama.id === banner?.drama_id);
@@ -39,14 +43,14 @@ export function Home() {
   const visibleGroups = channelIndex === 0 || tab.locked ? home.groups : home.groups.filter((group) => group.id === tab.group_id);
   const heroLink = banner?.drama_id ? "#watch/" + banner.drama_id : featured ? "#watch/" + featured.id : "#browse";
   return <div className="consumer-home">
-    {banner && <section className="feature-hero" aria-label="Featured dramas">
+    {banner && <section className="feature-hero" aria-label={t("Featured dramas")}>
       <div className="feature-copy">
-        <div className="hero-kicker"><span>{String(currentIndex + 1).padStart(2,"0")}</span><i/><span>{banner.kicker || "Featured"}</span></div>
-        <h1>{banner.headline || banner.title || featured?.title || "Featured drama"}</h1>
-        <p>Short-form drama, made to binge — every episode, one tap away.</p>
-        <div className="hero-metadata"><span>SHORT DRAMA</span>{featured?.play_count ? <span>{Intl.NumberFormat("en",{notation:"compact"}).format(featured.play_count)} VIEWS</span> : null}<span>JJTV</span></div>
-        <div className="button-row"><a className="button primary" href={heroLink}><Icon name="play" size={16}/>Watch now</a><a className="hero-details" href={heroLink}>Details <span>→</span></a></div>
-        <div className="hero-pager" aria-label="Featured drama slides">{banners.map((item,index) => <button key={item.id} className={index===currentIndex?"active":""} aria-label={"Show featured drama " + (index+1)} aria-pressed={index===currentIndex} onClick={() => setBannerIndex(index)}>{String(index+1).padStart(2,"0")}</button>)}</div>
+        <div className="hero-kicker"><span>{String(currentIndex + 1).padStart(2,"0")}</span><i/><span>{banner.kicker || t("Featured")}</span></div>
+        <h1>{banner.headline || banner.title || featured?.title || t("Featured drama")}</h1>
+        <p>{t("Short-form drama, made to binge — every episode, one tap away.")}</p>
+        <div className="hero-metadata"><span>{t("SHORT DRAMA")}</span>{featured?.play_count ? <span>{t("{count} views",{count:number(featured.play_count,{notation:"compact"})})}</span> : null}<span>JJTV</span></div>
+        <div className="button-row"><a className="button primary" href={heroLink}><Icon name="play" size={16}/>{t("Watch now")}</a><a className="hero-details" href={heroLink}>{t("Details")}<span>→</span></a></div>
+        <div className="hero-pager" aria-label={t("Featured drama slides")}>{banners.map((item,index) => <button key={item.id} className={index===currentIndex?"active":""} aria-label={t("Show featured drama {number}",{number:index+1})} aria-pressed={index===currentIndex} onClick={() => setBannerIndex(index)}>{String(index+1).padStart(2,"0")}</button>)}</div>
       </div>
       <div className="hero-artwork" aria-hidden="true">
         {(adjacent[0]?.cover_url || banner.cover_url) && <img className="hero-side-poster hero-side-left" src={adjacent[0]?.cover_url || banner.cover_url || ""} alt=""/>}
@@ -55,14 +59,14 @@ export function Home() {
         <span className="hero-poster-caption">JJTV · NO. {String(currentIndex+1).padStart(2,"0")}</span>
       </div>
     </section>}
-    {banner && <div className="home-spotlight"><span><i/>IN THE SPOTLIGHT</span><span>CURATED FOR YOU</span><span>{String(currentIndex+1).padStart(2,"0")} / {String(banners.length).padStart(2,"0")}</span></div>}
+    {banner && <div className="home-spotlight"><span><i/>{t("IN THE SPOTLIGHT")}</span><span>{t("CURATED FOR YOU")}</span><span>{String(currentIndex+1).padStart(2,"0")} / {String(banners.length).padStart(2,"0")}</span></div>}
     <div className="page-content home-content">
-      <div className="home-channels" role="tablist" aria-label="Drama channels">{tabs.map((item,index) => <button key={item.code} role="tab" aria-selected={index===channelIndex} className={index===channelIndex?"active":""} onClick={() => setChannelIndex(index)}>{item.title_en || item.title_zh}</button>)}</div>
+      <div className="home-channels" role="tablist" aria-label={t("Drama channels")}>{tabs.map((item,index) => <button key={item.code} role="tab" aria-selected={index===channelIndex} className={index===channelIndex?"active":""} onClick={() => setChannelIndex(index)}>{item.code === "discover" && !config?.tabs?.length ? t("Discover") : locale === "zh" ? item.title_zh || item.title_en : item.title_en || item.title_zh}</button>)}</div>
       {visibleGroups.filter((group) => group.dramas.length).map((group,index) => <section className="drama-section" key={group.id}>
-        <div className="section-heading"><div className="home-section-title"><span className="section-index">{String(index+1).padStart(2,"0")} /</span><h2>{group.name}</h2><span className="section-count">{group.dramas.length} TITLES</span></div><a href={"#browse?group="+group.id}>More <span>→</span></a></div>
-        {index===0&&group.style!=="rank"&&group.dramas.length>=2 ? <div className="home-editorial"><DramaCard drama={group.dramas[0]}/><div className="editorial-list"><div className="editorial-list-heading"><span>THE LIST / 02—{String(Math.min(group.dramas.length,6)).padStart(2,"0")}</span><span>JJTV SELECTION</span></div>{group.dramas.slice(1,6).map((drama,index)=><a className="editorial-list-item" key={drama.id} href={"#watch/"+drama.id}><span className="editorial-item-index">{String(index+2).padStart(2,"0")}</span><span className="editorial-item-cover">{drama.cover_url&&<img src={drama.cover_url} alt="" loading="lazy"/>}</span><span className="editorial-item-copy"><strong>{drama.title}</strong><small>{drama.play_count!=null?Intl.NumberFormat("en",{notation:"compact"}).format(drama.play_count)+" views":"Short drama"}</small></span><Icon name="arrow" size={17}/></a>)}</div></div> : <div className={group.style==="rank"?"drama-row ranking-row":"drama-row"}>{group.dramas.map((drama,index) => group.style==="rank" ? <div className="ranked-card" key={drama.id}><span className="rank-number" aria-label={"Rank "+(index+1)}>{index+1}</span><DramaCard drama={drama}/></div> : <DramaCard key={drama.id} drama={drama}/>)}</div>}
+        <div className="section-heading"><div className="home-section-title"><span className="section-index">{String(index+1).padStart(2,"0")} /</span><h2>{group.name}</h2><span className="section-count">{t("{count} TITLES",{count:number(group.dramas.length)})}</span></div><a href={"#browse?group="+group.id}>{t("More")}<span>→</span></a></div>
+        {index===0&&group.style!=="rank"&&group.dramas.length>=2 ? <div className="home-editorial"><DramaCard drama={group.dramas[0]}/><div className="editorial-list"><div className="editorial-list-heading"><span>{t("THE LIST")} / 02—{String(Math.min(group.dramas.length,6)).padStart(2,"0")}</span><span>{t("JJTV SELECTION")}</span></div>{group.dramas.slice(1,6).map((drama,index)=><a className="editorial-list-item" key={drama.id} href={"#watch/"+drama.id}><span className="editorial-item-index">{String(index+2).padStart(2,"0")}</span><span className="editorial-item-cover">{drama.cover_url&&<img src={drama.cover_url} alt="" loading="lazy"/>}</span><span className="editorial-item-copy"><strong>{drama.title}</strong><small>{drama.play_count!=null?t("{count} views",{count:number(drama.play_count,{notation:"compact"})}):t("Short drama")}</small></span><Icon name="arrow" size={17}/></a>)}</div></div> : <div className={group.style==="rank"?"drama-row ranking-row":"drama-row"}>{group.dramas.map((drama,index) => group.style==="rank" ? <div className="ranked-card" key={drama.id}><span className="rank-number" aria-label={t("Rank {number}",{number:index+1})}>{index+1}</span><DramaCard drama={drama}/></div> : <DramaCard key={drama.id} drama={drama}/>)}</div>}
       </section>)}
-      {!visibleGroups.some((group) => group.dramas.length) && <Empty message="New stories are on their way. Check back soon."/>}
+      {!visibleGroups.some((group) => group.dramas.length) && <Empty message={t("New stories are on their way. Check back soon.")}/>}
     </div>
   </div>;
 }
@@ -75,6 +79,7 @@ export function Browse({
   preview?: boolean;
   searchOnly?: boolean;
 }) {
+  const { t, number } = useLocale();
   const params = new URLSearchParams(query);
   const [q, setQ] = useState(params.get("q") || ""),
     [tag, setTag] = useState(params.get("tag") || ""),
@@ -138,19 +143,19 @@ export function Browse({
   }
   return (
     <div className={"page-content catalog-page" + (searchOnly ? " search-page" : "")}>
-      {searchOnly ? <><div className="search-page-heading"><a className="icon-button" href="#home" aria-label="Back to Home">←</a><h1>Search dramas</h1></div><form className="search-page-form" role="search" onSubmit={(event) => {event.preventDefault();apply();}}><label className="sr-only" htmlFor="drama-search-input">Search dramas</label><input id="drama-search-input" aria-label="Search dramas" autoFocus type="search" value={q} onChange={(event) => setQ(event.target.value)} placeholder="Search dramas"/></form></> : <><div className="page-title">
-        <span className="eyebrow">The JJTV collection</span>
+      {searchOnly ? <><div className="search-page-heading"><a className="icon-button" href="#home" aria-label={t("Back to Home")}>←</a><h1>{t("Search dramas")}</h1></div><form className="search-page-form" role="search" onSubmit={(event) => {event.preventDefault();apply();}}><label className="sr-only" htmlFor="drama-search-input">{t("Search dramas")}</label><input id="drama-search-input" aria-label={t("Search dramas")} autoFocus type="search" value={q} onChange={(event) => setQ(event.target.value)} placeholder={t("Search dramas")}/></form></> : <><div className="page-title">
+        <span className="eyebrow">{t("The JJTV collection")}</span>
         <h1>
           {preview
-            ? "Free Preview"
+            ? t("Free Preview")
             : params.get("q")
-              ? "Search results"
-              : "Explore dramas"}
+              ? t("Search results")
+              : t("Explore dramas")}
         </h1>
         <p className="muted">
           {preview
-            ? "Start with free episodes. Sign in whenever you are ready for more."
-            : "Find a story worth staying up for."}
+            ? t("Start with free episodes. Sign in whenever you are ready for more.")
+            : t("Find a story worth staying up for.")}
         </p>
       </div>
       <form
@@ -161,46 +166,41 @@ export function Browse({
         }}
       >
         <label className="search-filter">
-          Search dramas
-          <input
-            aria-label="Search dramas"
+          {t("Search dramas")}<input
+            aria-label={t("Search dramas")}
             type="search"
             value={q}
             onChange={(event) => setQ(event.target.value)}
-            placeholder="Search title or story…"
+            placeholder={t("Search title or story…")}
           />
         </label>
         <label>
-          Tag
-          <input
+          {t("Tag")}<input
             value={tag}
             onChange={(event) => setTag(event.target.value)}
-            placeholder="Any genre"
+            placeholder={t("Any genre")}
           />
         </label>
         <label>
-          Language
-          <input
+          {t("Language")}<input
             value={language}
             onChange={(event) => setLanguage(event.target.value)}
-            placeholder="All languages"
+            placeholder={t("All languages")}
           />
         </label>
         <label>
-          Sort
-          <select
+          {t("Sort")}<select
             value={sort}
             onChange={(event) => setSort(event.target.value)}
           >
-            <option value="newest">Recently added</option>
-            <option value="popular">Most watched</option>
-            <option value="title">Title A–Z</option>
+            <option value="newest">{t("Recently added")}</option>
+            <option value="popular">{t("Most watched")}</option>
+            <option value="title">{t("Title A–Z")}</option>
           </select>
         </label>
         <div className="catalog-filter-actions">
           <button className="button primary" type="submit">
-            Apply filters
-          </button>
+            {t("Apply filters")}</button>
           <button
             className="text-button"
             type="button"
@@ -212,10 +212,9 @@ export function Browse({
               navigate(new URLSearchParams());
             }}
           >
-            Clear filters
-          </button>
+            {t("Clear filters")}</button>
           {params.get("group") && (
-            <span className="muted">Browsing a selected collection</span>
+            <span className="muted">{t("Browsing a selected collection")}</span>
           )}
         </div>
       </form></>}
@@ -230,7 +229,7 @@ export function Browse({
         data && (
           <>
             <p className="result-count" role="status">
-              {data.total} {data.total === 1 ? "drama" : "dramas"}
+              {t(data.total === 1 ? "{count} drama" : "{count} dramas",{count:number(data.total)})}
             </p>
             <Cards items={data.items} />
             <div className="pagination">
@@ -239,19 +238,16 @@ export function Browse({
                 disabled={!offset}
                 onClick={() => paginate(Math.max(0, offset - 24))}
               >
-                Previous
-              </button>
+                {t("Previous")}</button>
               <span>
-                {data.total ? offset + 1 : 0}–
-                {Math.min(offset + 24, data.total)} of {data.total}
+                {t("{from}–{to} of {total}",{from:number(data.total ? offset + 1 : 0),to:number(Math.min(offset+24,data.total)),total:number(data.total)})}
               </span>
               <button
                 className="button secondary"
                 disabled={offset + 24 >= data.total}
                 onClick={() => paginate(offset + 24)}
               >
-                Next
-              </button>
+                {t("Next")}</button>
             </div>
           </>
         )
@@ -260,9 +256,10 @@ export function Browse({
   );
 }
 export function ForYou() {
+  const { t, number } = useLocale();
   const { requireAuth, user } = useAuth();
   const [items,setItems] = useState<FeedItem[]>([]), [cursor,setCursor] = useState<string|null>(null), [hasMore,setHasMore] = useState(true), [loading,setLoading] = useState(false), [error,setError] = useState("");
-  const [active,setActive] = useState(0), [muted,setMuted] = useState(true), [settingsOpen,setSettingsOpen] = useState(false), [busy,setBusy] = useState<number|null>(null), [notice,setNotice] = useState(""), [comments,setComments] = useState<FeedItem|null>(null);
+  const [active,setActive] = useState(0), [muted,setMuted] = useState(true), [settingsOpen,setSettingsOpen] = useState(false), [busy,setBusy] = useState<number|null>(null), [notice,setNotice] = useState<{key:string;vars?:Record<string,string|number>}|null>(null), [comments,setComments] = useState<FeedItem|null>(null);
   const scroll=useRef<HTMLDivElement>(null), sequence=useRef(0), pending=useRef(false), owner=useRef(user?.id);
   const completedReactions = useRef<{
     owner: number | undefined;
@@ -304,7 +301,7 @@ export function ForYou() {
     finally {if(current===sequence.current&&owner.current===actor){pending.current=false;setLoading(false);}}
   }
   useEffect(()=>{
-    setItems([]);setCursor(null);setHasMore(true);setActive(0);setNotice("");setBusy(null);
+    setItems([]);setCursor(null);setHasMore(true);setActive(0);setNotice(null);setBusy(null);
     scroll.current?.scrollTo(0,0);void load(true);
     return()=>{sequence.current++;pending.current=false;};
   },[user?.id]);
@@ -315,7 +312,7 @@ export function ForYou() {
   async function like(item:FeedItem) {
     if(busy!==null)return;
     const actor=owner.current, desired=!item.drama.liked;
-    setBusy(item.drama.id);setNotice("");
+    setBusy(item.drama.id);setNotice(null);
     try {
       const result=await post<{active?:boolean}>("/v1/reactions",{target_type:"drama",target_id:item.drama.id,kind:"like",remove:!desired});
       if(owner.current!==actor)return;
@@ -325,29 +322,29 @@ export function ForYou() {
       setItems((previous)=>owner.current!==actor?previous:previous.map((row)=>row.drama.id===item.drama.id?{
         ...row,drama:{...row.drama,liked,like_count:Math.max(0,row.drama.like_count+(row.drama.liked===liked?0:liked?1:-1))},
       }:row));
-    } catch(e) {if(owner.current===actor)setNotice(errorMessage(e));}
+    } catch(e) {if(owner.current===actor)setNotice({key:errorMessage(e)});}
     finally {if(owner.current===actor)setBusy(null);}
   }
-  async function share(item:FeedItem){const link=new URL(window.location.href);link.search="";link.hash="watch/"+item.drama.id+"?episode="+item.episode.id;try{if(navigator.share)await navigator.share({title:item.drama.title,url:link.href});else{await navigator.clipboard.writeText(link.href);setNotice("Link copied.");}}catch(e){if(!(e instanceof Error&&e.name==="AbortError"))setNotice("Copy this link: "+link.href);}}
+  async function share(item:FeedItem){const link=new URL(window.location.href);link.search="";link.hash="watch/"+item.drama.id+"?episode="+item.episode.id;try{if(navigator.share)await navigator.share({title:item.drama.title,url:link.href});else{await navigator.clipboard.writeText(link.href);setNotice({key:"Link copied."});}}catch(e){if(!(e instanceof Error&&e.name==="AbortError"))setNotice({key:"Copy this link: {url}",vars:{url:link.href}});}}
   return <div className="for-you-page">
-    <h1 className="sr-only">For You</h1>
-    <div className="feed-scroll" ref={scroll} aria-label="Recommended episodes">
-      {items.map((item,index)=>{const episode:PlayEpisode={...item.episode,locked:!item.episode.free,progress_seconds:item.resume_seconds||0,unlock:null};const link="#watch/"+item.drama.id+"?episode="+item.episode.id;return <article className="feed-item" data-index={index} key={item.item_id||item.drama.id+":"+item.episode.id} aria-label={item.drama.title+", episode "+item.episode.episode_number}>
+    <h1 className="sr-only">{t("For You")}</h1>
+    <div className="feed-scroll" ref={scroll} aria-label={t("Recommended episodes")}>
+      {items.map((item,index)=>{const episode:PlayEpisode={...item.episode,locked:!item.episode.free,progress_seconds:item.resume_seconds||0,unlock:null};const link="#watch/"+item.drama.id+"?episode="+item.episode.id;return <article className="feed-item" data-index={index} key={item.item_id||item.drama.id+":"+item.episode.id} aria-label={t("{title}, episode {number}",{title:item.drama.title,number:item.episode.episode_number})}>
         <div className="video-frame feed-video-frame" data-settings-open={index===active&&settingsOpen?"true":"false"}>
           {item.drama.cover_url&&<img className="feed-poster" src={item.drama.cover_url} alt=""/>}
-          {index===active&&item.episode.free?<Suspense fallback={<Loading/>}><FeedVideo dramaId={item.drama.id} episode={episode} muted={muted} poster={item.drama.cover_url||undefined} onFinished={()=>move(index+1)} onDenied={()=>setNotice("Open Episodes to check this episode's viewing options.")}/></Suspense>:!item.episode.free?<div className="feed-locked"><Icon name="lock" size={28}/><p>Continue the story</p><a className="button secondary" href={link}>View episodes</a></div>:null}
+          {index===active&&item.episode.free?<Suspense fallback={<Loading/>}><FeedVideo dramaId={item.drama.id} episode={episode} muted={muted} poster={item.drama.cover_url||undefined} onFinished={()=>move(index+1)} onDenied={()=>setNotice({key:"Open Episodes to check this episode's viewing options."})}/></Suspense>:!item.episode.free?<div className="feed-locked"><Icon name="lock" size={28}/><p>{t("Continue the story")}</p><a className="button secondary" href={link}>{t("View episodes")}</a></div>:null}
           <div className="feed-shade"/>
-          <button className="icon-button feed-settings-toggle" aria-label="Playback settings" aria-expanded={index===active&&settingsOpen} disabled={!item.episode.free} onClick={()=>setSettingsOpen(!settingsOpen)}><Icon name="more" size={18}/></button>{index===active&&settingsOpen&&<div className="feed-settings-heading"><strong>Playback settings</strong><button aria-label={muted?"Unmute":"Mute"} aria-pressed={!muted} onClick={()=>setMuted(!muted)}><Icon name={muted?"volume-off":"volume"} size={16}/>{muted?"Unmute":"Mute"}</button></div>}
-          <div className="feed-actions"><a className="feed-avatar" href={link} aria-label={"Open "+item.drama.title}>{item.drama.cover_url?<img src={item.drama.cover_url} alt=""/>:"J"}<span>+</span></a><button aria-label={item.drama.liked?"Unlike drama":"Like drama"} aria-pressed={item.drama.liked} disabled={busy!==null} onClick={()=>requireAuth(()=>{void like(item);})}><Icon name="heart" size={29}/><small>{Intl.NumberFormat("en",{notation:"compact"}).format(item.drama.like_count||0)}</small></button><button aria-label="Comments" onClick={()=>setComments(item)}><Icon name="message" size={28}/><small>{Intl.NumberFormat("en",{notation:"compact"}).format(item.episode.comment_count||0)}</small></button><button aria-label="Share drama" onClick={()=>void share(item)}><Icon name="share" size={27}/><small>Share</small></button></div>
-          <div className="feed-caption"><h2><a href={link}>{item.drama.title}</a></h2><div className="feed-tags"><span>EP {item.episode.episode_number}</span>{item.drama.tags?.slice(0,3).map((tag)=><span key={tag}>{tag}</span>)}</div><p>{item.drama.synopsis}</p><a className="feed-episodes" href={link}><Icon name="menu" size={17}/>Episodes <Icon name="arrow" size={15}/></a></div>
+          <button className="icon-button feed-settings-toggle" aria-label={t("Playback settings")} aria-expanded={index===active&&settingsOpen} disabled={!item.episode.free} onClick={()=>setSettingsOpen(!settingsOpen)}><Icon name="more" size={18}/></button>{index===active&&settingsOpen&&<div className="feed-settings-heading"><strong>{t("Playback settings")}</strong><button aria-label={t(muted?"Unmute":"Mute")} aria-pressed={!muted} onClick={()=>setMuted(!muted)}><Icon name={muted?"volume-off":"volume"} size={16}/>{t(muted?"Unmute":"Mute")}</button></div>}
+          <div className="feed-actions"><a className="feed-avatar" href={link} aria-label={t("Open {title}",{title:item.drama.title})}>{item.drama.cover_url?<img src={item.drama.cover_url} alt=""/>:"J"}<span>+</span></a><button aria-label={t(item.drama.liked?"Unlike drama":"Like drama")} aria-pressed={item.drama.liked} disabled={busy!==null} onClick={()=>requireAuth(()=>{void like(item);})}><Icon name="heart" size={29}/><small>{number(item.drama.like_count||0,{notation:"compact"})}</small></button><button aria-label={t("Comments")} onClick={()=>setComments(item)}><Icon name="message" size={28}/><small>{number(item.episode.comment_count||0,{notation:"compact"})}</small></button><button aria-label={t("Share drama")} onClick={()=>void share(item)}><Icon name="share" size={27}/><small>{t("Share")}</small></button></div>
+          <div className="feed-caption"><h2><a href={link}>{item.drama.title}</a></h2><div className="feed-tags"><span>{t("EP {number}",{number:item.episode.episode_number})}</span>{item.drama.tags?.slice(0,3).map((tag)=><span key={tag}>{tag}</span>)}</div><p>{item.drama.synopsis}</p><a className="feed-episodes" href={link}><Icon name="menu" size={17}/>{t("Episodes")}<Icon name="arrow" size={15}/></a></div>
         </div>
       </article>;})}
       {error&&<div className="feed-feedback"><Failure message={error} retry={()=>void load(items.length===0)}/></div>}
       {loading&&<div className="feed-feedback"><Loading/></div>}
-      {!loading&&!items.length&&!error&&<Empty message="New episodes are on their way."/>}
+      {!loading&&!items.length&&!error&&<Empty message={t("New episodes are on their way.")}/>}
     </div>
-    {items.length>1&&<div className="feed-navigation"><button className="icon-button" aria-label="Previous episode" disabled={!active} onClick={()=>move(active-1)}>↑</button><button className="icon-button" aria-label="Next episode" disabled={active===items.length-1} onClick={()=>move(active+1)}>↓</button></div>}
-    {notice&&<div className="feed-notice" role="status"><span>{notice}</span><button aria-label="Dismiss message" onClick={()=>setNotice("")}><Icon name="close" size={15}/></button></div>}
-    {comments&&<Modal title="Comments" className="feed-comments-modal" onClose={()=>setComments(null)}><Suspense fallback={<Loading/>}><FeedComments episodeId={comments.episode.id}/></Suspense></Modal>}
+    {items.length>1&&<div className="feed-navigation"><button className="icon-button" aria-label={t("Previous episode")} disabled={!active} onClick={()=>move(active-1)}>↑</button><button className="icon-button" aria-label={t("Next episode")} disabled={active===items.length-1} onClick={()=>move(active+1)}>↓</button></div>}
+    {notice&&<div className="feed-notice" role="status"><span>{t(notice.key,notice.vars)}</span><button aria-label={t("Dismiss message")} onClick={()=>setNotice(null)}><Icon name="close" size={15}/></button></div>}
+    {comments&&<Modal title={t("Comments")} className="feed-comments-modal" onClose={()=>setComments(null)}><Suspense fallback={<Loading/>}><FeedComments episodeId={comments.episode.id}/></Suspense></Modal>}
   </div>;
 }

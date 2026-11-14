@@ -1,3 +1,4 @@
+import { useLocale } from "./locale";
 import { useEffect, useRef, useState } from "react";
 import Hls from "hls.js";
 import {
@@ -17,7 +18,6 @@ import {
 } from "./consumer-api";
 import { useAuth } from "./auth";
 import { Empty, Failure, Icon, Loading, Modal } from "./components";
-import "./player.css";
 export function Watch({
   dramaId,
   episodeId,
@@ -25,6 +25,7 @@ export function Watch({
   dramaId: number;
   episodeId?: number;
 }) {
+  const { t, number } = useLocale();
   const { status, user, requireAuth, refresh } = useAuth();
   const [ownedData, setOwnedData] = useState<{
       identity: string;
@@ -148,8 +149,8 @@ export function Watch({
       if (owner !== identityRef.current) return;
       setError(
         e instanceof ApiError && e.status === 402
-          ? "Not enough coins. Top up your wallet to continue."
-          : errorMessage(e),
+          ? t("pages.not_enough_coins_top_up_your_wallet_to_continue_7a52b4")
+          : t(errorMessage(e)),
       );
       await refresh();
     } finally {
@@ -179,7 +180,7 @@ export function Watch({
   const commentsModal =
     commentsOpen && commentsEpisodeId != null ? (
       <Modal
-        title="Comments"
+        title={t("pages.comments_8413c6")}
         className="watch-comments-modal"
         onClose={() => setCommentsOpen(false)}
       >
@@ -190,7 +191,7 @@ export function Watch({
     return (
       <div className="watch-page page-content">
         <div>
-          {error ? <Failure message={error} retry={load} /> : <Loading />}
+          {error ? <Failure message={t(error)} retry={load} /> : <Loading />}
         </div>
         {commentsModal}
       </div>
@@ -202,7 +203,7 @@ export function Watch({
   return (
     <div className="watch-page page-content">
       <div className="watch-layout">
-        <section className="watch-main" aria-label="Drama player">
+        <section className="watch-main" aria-label={t("pages.drama_player_6e7607")}>
           <div className="video-frame">
             <span className="player-brand" aria-hidden="true">
               JJ
@@ -215,36 +216,34 @@ export function Watch({
                       <Icon name="lock" size={24} />
                     </span>
                     <h2>
-                      {membershipOnly ? "Members only" : "The story continues"}
+                      {membershipOnly ? t("pages.members_only_1fbc6a") : t("pages.the_story_continues_bcf2d1")}
                     </h2>
                     <p>
                       {membershipOnly
-                        ? "This episode requires a membership."
-                        : "Unlock episode " +
-                          episode.episode_number +
-                          " to continue watching."}
+                        ? t("pages.this_episode_requires_a_membership_3c877c")
+                        : t("pages.unlock_continue", { number: number(episode.episode_number) })}
                     </p>
                     {coinPrice > 0 && (
                       <p className="player-lock-price">
-                        <strong>{coinPrice} coins</strong> / episode
+                        <strong>{t("pages.coins_count", { count: number(coinPrice) })}</strong>  {t("pages.episode_684f60")}
                       </p>
                     )}
                     {membershipOnly ? (
                       <a className="button primary" href={membershipLink}>
-                        See memberships
+                        {t("pages.see_memberships_09fbde")}
                       </a>
                     ) : (
                       <button
                         className="button primary"
                         onClick={() => requireAuth(() => setUnlockOpen(true))}
                       >
-                        {user ? "Unlock episode" : "Sign in to continue"}
+                        {user ? t("pages.unlock_episode_5a7695") : t("pages.sign_in_to_continue_568f08")}
                       </button>
                     )}
                     <p className="player-lock-note">
                       {membershipOnly
-                        ? "Membership access and any displayed episode price apply. Review the plan before buying."
-                        : "Unlock this episode once and keep watching from your account."}
+                        ? t("pages.membership_access_and_any_displayed_episode_price_apply_review_the_plan_before_buying_40d16a")
+                        : t("pages.unlock_this_episode_once_and_keep_watching_from_your_account_26c4d0")}
                     </p>
                   </div>
                 </div>
@@ -263,36 +262,35 @@ export function Watch({
                 />
               )
             ) : (
-              <Empty message="No episodes are available yet." />
+              <Empty message={t("pages.no_episodes_are_available_yet_181295")} />
             )}
           </div>
         </section>
         <aside
           className="watch-sidebar"
-          aria-label="Drama details and episodes"
+          aria-label={t("pages.drama_details_and_episodes_8dad35")}
         >
-          <nav className="watch-breadcrumb" aria-label="Breadcrumb">
-            <a href="#home">Home</a>
+          <nav className="watch-breadcrumb" aria-label={t("pages.breadcrumb_1cdb52")}>
+            <a href="#home">{t("pages.home_8cf04a")}</a>
             <span>/</span>
-            <a href="#browse">Dramas</a>
+            <a href="#browse">{t("pages.dramas_1c08e1")}</a>
             <span>/</span>
-            <span>{episode ? "EP " + episode.episode_number : "Details"}</span>
+            <span>{episode ? t("pages.episode_short", { number: number(episode.episode_number) }) : t("pages.details_3ec365")}</span>
           </nav>
           <h1>{data.drama.title}</h1>
           <p className="watch-episode-name">
             {episode
-              ? "EP " +
-                episode.episode_number +
+              ? t("pages.episode_short", { number: number(episode.episode_number) }) +
                 " · " +
-                (episode.title || "Episode " + episode.episode_number)
-              : data.items.length + " episodes"}
+                (episode.title || t("pages.episode_number", { number: number(episode.episode_number) }))
+              : t("pages.episode_count", { count: number(data.items.length) })}
           </p>
-          <p className="watch-side-label">Synopsis</p>
+          <p className="watch-side-label">{t("pages.synopsis_24da3c")}</p>
           <p
             id="drama-synopsis"
             className={"synopsis " + (expanded ? "expanded" : "clamped")}
           >
-            {data.drama.synopsis || "A new story is on its way."}
+            {data.drama.synopsis || t("pages.synopsis_empty")}
           </p>
           {data.drama.synopsis && (
             <button
@@ -301,7 +299,7 @@ export function Watch({
               aria-controls="drama-synopsis"
               onClick={() => setExpanded(!expanded)}
             >
-              {expanded ? "less" : "more"}
+              {expanded ? t("pages.less_e37e8d") : t("pages.more_addec4")}
             </button>
           )}
           <div className="tags">
@@ -316,7 +314,7 @@ export function Watch({
               className={"watch-action " + (liked ? "selected" : "")}
               disabled={busy}
               aria-pressed={liked}
-              aria-label="Like"
+              aria-label={t("pages.like_98b82c")}
               onClick={() =>
                 requireAuth(() => {
                   void react("like");
@@ -325,19 +323,14 @@ export function Watch({
             >
               <Icon name="heart" />
               <span>
-                {Math.max(
-                  0,
-                  data.drama.like_count +
-                    Number(liked) -
-                    Number(data.drama.liked),
-                ).toLocaleString()}
+                {number(Math.max(0, data.drama.like_count + Number(liked) - Number(data.drama.liked)))}
               </span>
             </button>
             <button
               className={"watch-action " + (favorited ? "selected" : "")}
               disabled={busy}
               aria-pressed={favorited}
-              aria-label="My list"
+              aria-label={t("pages.my_list_f2d31f")}
               onClick={() =>
                 requireAuth(() => {
                   void react("favorite");
@@ -345,7 +338,7 @@ export function Watch({
               }
             >
               <Icon name="star" />
-              <span>{favorited ? "Saved" : "Favorite"}</span>
+              <span>{favorited ? t("pages.saved_248336") : t("pages.favorite_01165d")}</span>
             </button>
             <button
               className="watch-action"
@@ -356,7 +349,7 @@ export function Watch({
               }}
             >
               <Icon name="message" />
-              <span>Comment</span>
+              <span>{t("pages.comment_0be840")}</span>
             </button>
             <button
               className="watch-action"
@@ -378,22 +371,22 @@ export function Watch({
               >
                 <path d="M12 16V3m-4 4 4-4 4 4M5 12v8h14v-8" />
               </svg>
-              <span>Share</span>
+              <span>{t("pages.share_5a95a4")}</span>
             </button>
           </div>
           <div className="watch-episodes-heading">
-            <h2>Episodes</h2>
-            <span>All {data.items.length} episodes</span>
+            <h2>{t("pages.episodes_1036de")}</h2>
+            <span>{t("pages.all_episodes", { count: number(data.items.length) })}</span>
           </div>
           <div className="episode-legend">
             <span>
               <Icon name="lock" size={11} />
-              {data.items.filter((item) => item.locked).length} locked
+              {data.items.filter((item) => item.locked).length} {t("pages.locked_4cef2f")}
             </span>
             <span>
               {data.entitlement.member
-                ? "Membership active"
-                : data.entitlement.unlocked_episode_ids.length + " unlocked"}
+                ? t("pages.membership_active_4812f9")
+                : t("pages.unlocked_count", { count: number(data.entitlement.unlocked_episode_ids.length) })}
             </span>
           </div>
           <div className="episode-grid">
@@ -406,9 +399,8 @@ export function Watch({
                   (item.locked ? "locked" : "")
                 }
                 aria-label={
-                  "Episode " +
-                  item.episode_number +
-                  (item.locked ? ", locked" : "")
+                  t("pages.episode_number", { number: number(item.episode_number) }) +
+                  (item.locked ? t("pages.locked_01e942") : "")
                 }
                 aria-current={item.id === selected ? "true" : undefined}
                 onClick={() => select(item)}
@@ -427,54 +419,50 @@ export function Watch({
             <div className="sidebar-upsell">
               <div>
                 <strong>
-                  {membershipOnly ? "Members only" : "Unlock this episode"}
+                  {membershipOnly ? t("pages.members_only_1fbc6a") : t("pages.unlock_this_episode_0a8755")}
                 </strong>
                 <p>
                   {membershipOnly
-                    ? "Choose a membership to access this episode."
-                    : coinPrice +
-                      " coins · Your balance: " +
-                      (user?.coins ?? 0) +
-                      " coins"}
+                    ? t("pages.choose_a_membership_to_access_this_episode_0bb618")
+                    : t("pages.price_balance", { price: number(coinPrice), balance: number(user?.coins ?? 0) })}
                 </p>
               </div>
               {membershipOnly ? (
                 <a className="button primary" href={membershipLink}>
-                  See memberships
+                  {t("pages.see_memberships_09fbde")}
                 </a>
               ) : (
                 <button
                   className="button primary"
                   onClick={() => requireAuth(() => setUnlockOpen(true))}
                 >
-                  Unlock episode
+                  {t("pages.unlock_episode_5a7695")}
                 </button>
               )}
             </div>
           ) : (
             <div className="watch-access">
               <span>
-                {data.drama.play_count.toLocaleString()} views ·{" "}
-                {data.items.filter((item) => item.free).length} free episodes
+                {t("pages.views_free", { views: number(data.drama.play_count), count: number(data.items.filter((item) => item.free).length) })}
               </span>
-              <a href={membershipLink}>Membership</a>
-              <a href={coinsLink}>Get coins</a>
+              <a href={membershipLink}>{t("pages.membership_77a3f5")}</a>
+              <a href={coinsLink}>{t("pages.get_coins_d4db29")}</a>
             </div>
           )}
-          {error && <Failure message={error} />}
+          {error && <Failure message={t(error)} />}
         </aside>
       </div>
       {commentsModal}
       {shareOpen && (
         <Modal
-          title="Share this drama"
+          title={t("pages.share_this_drama_9a08d4")}
           className="watch-share-modal"
           onClose={() => setShareOpen(false)}
         >
           <label className="share-link-label">
-            Drama link
+            {t("pages.drama_link_01a92c")}
             <input
-              aria-label="Drama link"
+              aria-label={t("pages.drama_link_01a92c")}
               readOnly
               value={shareUrl.toString()}
             />
@@ -490,27 +478,27 @@ export function Watch({
               }
             }}
           >
-            {copied ? "Link copied" : "Copy link"}
+            {copied ? t("pages.link_copied_acf84e") : t("pages.copy_link_b75833")}
           </button>
           <p className="muted small" role="status">
             {copied
-              ? "The drama link is ready to share."
-              : "You can also select and copy the link above."}
+              ? t("pages.the_drama_link_is_ready_to_share_a236ef")
+              : t("pages.you_can_also_select_and_copy_the_link_above_940daf")}
           </p>
         </Modal>
       )}
       {unlockOpen && episode && !membershipOnly && (
         <Modal
-          title={"Unlock episode " + episode.episode_number}
+          title={t("pages.unlock_number", { number: number(episode.episode_number) })}
           onClose={() => setUnlockOpen(false)}
         >
           <p>
-            Spend <strong>{coinPrice} coins</strong> to unlock this episode.
+            {t("pages.spend_unlock", { price: number(coinPrice) })}
           </p>
-          <p className="muted">Your balance: {user?.coins ?? 0} coins</p>
+          <p className="muted">{t("pages.balance_count", { count: number(user?.coins ?? 0) })}</p>
           {error && (
             <p className="error-text" role="alert">
-              {error}
+              {t(error)}
             </p>
           )}
           {(user?.coins ?? 0) >= coinPrice ? (
@@ -519,7 +507,7 @@ export function Watch({
               disabled={busy}
               onClick={() => void unlock()}
             >
-              {busy ? "Unlocking…" : "Confirm unlock"}
+              {busy ? t("pages.unlocking_c1b41d") : t("pages.confirm_unlock_bddc8b")}
             </button>
           ) : (
             <a
@@ -527,7 +515,7 @@ export function Watch({
               href={coinsLink}
               onClick={() => setUnlockOpen(false)}
             >
-              Get more coins
+              {t("pages.get_more_coins_324b1d")}
             </a>
           )}
           <a
@@ -535,7 +523,7 @@ export function Watch({
             href={membershipLink}
             onClick={() => setUnlockOpen(false)}
           >
-            See membership options
+            {t("pages.see_membership_options_7d4a02")}
           </a>
         </Modal>
       )}
@@ -557,6 +545,7 @@ export function Video({
   muted?: boolean;
   poster?: string;
 }) {
+  const { t, number } = useLocale();
   const ownerToken = useRef(authToken());
   const video = useRef<HTMLVideoElement>(null),
     hls = useRef<Hls | null>(null),
@@ -589,8 +578,8 @@ export function Video({
         if (!result.allowed || !result.url) {
           setError(
             result.reason === "region_blocked"
-              ? "This drama is not available in your region."
-              : "This episode is not available.",
+              ? "pages.this_drama_is_not_available_in_your_region_bf2dc2"
+              : "pages.this_episode_is_not_available_ee4b4e",
           );
           return;
         }
@@ -653,7 +642,7 @@ export function Video({
       if (!renewed.current) {
         renewed.current = true;
         setRetry((x) => x + 1);
-      } else setError("The stream could not load. Please try again.");
+      } else setError("pages.the_stream_could_not_load_please_try_again_cc8034");
     };
     el.addEventListener("loadedmetadata", metadata);
     el.addEventListener("playing", playing);
@@ -680,7 +669,7 @@ export function Video({
         if (data.fatal) {
           if (data.response?.code === 401 || data.response?.code === 403)
             renew();
-          else setError("Playback could not continue. Please try again.");
+          else setError("pages.playback_could_not_continue_please_try_again_657031");
         }
       });
     } else {
@@ -722,9 +711,7 @@ export function Video({
       })
       .catch(() => {
         if (!controller.signal.aborted)
-          setSubtitleError(
-            "Subtitles could not load. Playback is still available.",
-          );
+          setSubtitleError("pages.subtitles_could_not_load_playback_is_still_available_110510");
       });
     return () => {
       controller.abort();
@@ -759,7 +746,7 @@ export function Video({
         playsInline
         preload="metadata"
         crossOrigin="anonymous"
-        aria-label={"Episode " + episode.episode_number}
+        aria-label={t("pages.episode_number", { number: number(episode.episode_number) })}
       >
         {tracks.map((track) => (
           <track
@@ -776,7 +763,7 @@ export function Video({
       {error && (
         <div className="video-error">
           <Failure
-            message={error}
+            message={t(error)}
             retry={() => {
               renewed.current = false;
               setRetry((x) => x + 1);
@@ -787,13 +774,13 @@ export function Video({
       <div className="video-options">
         {subtitleError && (
           <span className="muted small" role="status">
-            {subtitleError}
+            {t(subtitleError)}
           </span>
         )}
         <label>
-          Quality
+          {t("pages.quality_571094")}
           <select
-            aria-label="Video quality"
+            aria-label={t("pages.video_quality_e89c29")}
             value={quality}
             onChange={(e) => {
               const next = Number(e.target.value);
@@ -801,7 +788,7 @@ export function Video({
               if (hls.current) hls.current.currentLevel = next;
             }}
           >
-            <option value={-1}>Auto</option>
+            <option value={-1}>{t("pages.auto_06b928")}</option>
             {levels.map((level) => (
               <option value={level.index} key={level.index}>
                 {level.label}
@@ -810,9 +797,9 @@ export function Video({
           </select>
         </label>
         <label>
-          Speed
+          {t("pages.speed_44877c")}
           <select
-            aria-label="Playback speed"
+            aria-label={t("pages.playback_speed_ae16ab")}
             value={speed}
             onChange={(e) => {
               const next = Number(e.target.value);
@@ -822,21 +809,21 @@ export function Video({
           >
             {[0.75, 1, 1.25, 1.5, 2].map((v) => (
               <option value={v} key={v}>
-                {v}×
+                {number(v)}×
               </option>
             ))}
           </select>
         </label>
         {tracks.length > 0 && (
           <label>
-            Subtitles
+            {t("pages.subtitles_6a7308")}
             <select
-              aria-label="Subtitles"
+              aria-label={t("pages.subtitles_6a7308")}
               value={subtitle}
               onChange={(e) => setSubtitle(e.target.value)}
             >
-              <option value="default">Default</option>
-              <option value="off">Off</option>
+              <option value="default">{t("pages.default_7a1920")}</option>
+              <option value="off">{t("pages.off_d15305")}</option>
               {tracks.map((track) => (
                 <option value={track.language} key={track.language}>
                   {track.label}
@@ -850,6 +837,7 @@ export function Video({
   );
 }
 export function Comments({ episodeId }: { episodeId: number }) {
+  const { t, number, date } = useLocale();
   const { requireAuth, user } = useAuth();
   const identity = String(user?.id ?? "guest") + ":" + episodeId;
   const identityRef = useRef(identity);
@@ -928,11 +916,7 @@ export function Comments({ episodeId }: { episodeId: number }) {
       );
       if (!current()) return;
       setDraft({ identity: owner, body: "" });
-      setNotice(
-        result.status === "pending"
-          ? "Your comment was submitted for review."
-          : "Your comment was posted.",
-      );
+      setNotice(result.status === "pending" ? "pages.your_comment_was_submitted_for_review_e15d26" : "pages.your_comment_was_posted_917dc3");
       load();
     } catch (e) {
       if (current()) setError(errorMessage(e));
@@ -948,7 +932,7 @@ export function Comments({ episodeId }: { episodeId: number }) {
   }, [user?.id, submitIntent]);
   return (
     <section className="comments">
-      <h2>Comments {data ? "(" + data.total + ")" : ""}</h2>
+      <h2>{t("pages.comments_8413c6")} {data ? "(" + number(data.total) + ")" : ""}</h2>
       <form
         className="form"
         onSubmit={(e) => {
@@ -958,27 +942,27 @@ export function Comments({ episodeId }: { episodeId: number }) {
         }}
       >
         <label className="sr-only" htmlFor="comment-body">
-          Your comment
+          {t("pages.your_comment_ef6703")}
         </label>
         <textarea
           id="comment-body"
           required
           maxLength={1000}
           placeholder={
-            user ? "Share your thoughts…" : "Sign in to join the conversation…"
+            user ? t("pages.share_your_thoughts_845ce8") : t("pages.sign_in_to_join_the_conversation_5adc6a")
           }
           rows={3}
           value={body}
           onChange={(e) => setDraft({ identity, body: e.target.value })}
         />
         <button className="button secondary" disabled={busy || !body.trim()}>
-          {busy ? "Posting…" : "Post comment"}
+          {busy ? t("pages.posting_b0ebc5") : t("pages.post_comment_5f9440")}
         </button>
       </form>
-      {notice && <p role="status">{notice}</p>}
+      {notice && <p role="status">{t(notice)}</p>}
       {error && (
         <p className="error-text" role="alert">
-          {error}
+          {t(error)}
         </p>
       )}
       {data?.items.map((comment) => (
@@ -987,7 +971,7 @@ export function Comments({ episodeId }: { episodeId: number }) {
           <p>{comment.body}</p>
           <time>
             {comment.created_at
-              ? new Date(comment.created_at).toLocaleDateString()
+              ? date(comment.created_at, { dateStyle: "medium" })
               : ""}
           </time>
         </article>
@@ -997,7 +981,7 @@ export function Comments({ episodeId }: { episodeId: number }) {
           className="button secondary"
           onClick={() => load(data.next_cursor)}
         >
-          More comments
+          {t("pages.more_comments_4289bd")}
         </button>
       )}
     </section>

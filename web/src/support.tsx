@@ -1,3 +1,4 @@
+import { useLocale } from "./locale";
 import { useEffect, useRef, useState } from "react";
 import { get, post, errorMessage, authToken, ApiError } from "./consumer-api";
 import { useAuth } from "./auth";
@@ -47,6 +48,7 @@ export function Support() {
   );
 }
 function SupportSession() {
+  const { t, locale, number, date } = useLocale();
   const { status, openLogin } = useAuth();
   const [items, setItems] = useState<Ticket[]>([]),
     [categories, setCategories] = useState<Category[]>([]),
@@ -305,18 +307,17 @@ function SupportSession() {
   return (
     <div className="page-content support-page">
       <div className="page-title">
-        <span className="eyebrow">We're here to help</span>
-        <h1>Help & support</h1>
+        <span className="eyebrow">{t("pages.we_re_here_to_help_45b403")}</span>
+        <h1>{t("pages.help_support_47a186")}</h1>
         <p className="muted">
-          Questions about playback, your account, or an order? Talk to the JJTV
-          team.
+          {t("pages.questions_about_playback_your_account_or_an_order_talk_to_the_jjtv_team_8e0d7b")}
         </p>
       </div>
       {status !== "user" ? (
         <div className="empty">
-          <p>Sign in to create a ticket and follow your conversations.</p>
+          <p>{t("pages.sign_in_to_create_a_ticket_and_follow_your_conversations_f783e0")}</p>
           <button className="button primary" onClick={openLogin}>
-            Sign in
+            {t("pages.sign_in_b6d422")}
           </button>
         </div>
       ) : (
@@ -337,7 +338,7 @@ function SupportSession() {
                   );
                 }}
               >
-                New ticket
+                {t("pages.new_ticket_a969f9")}
               </button>
               {items.map((ticket) => (
                 <button
@@ -353,13 +354,13 @@ function SupportSession() {
                   <span>
                     #{ticket.number} <StatusTag status={ticket.status} />
                     {ticket.unread_count
-                      ? " · " + ticket.unread_count + " new"
+                      ? " · " + t("pages.unread_count", { count: number(ticket.unread_count) })
                       : ""}
                   </span>
                 </button>
               ))}
               {!items.length && !loading && (
-                <p className="muted">Your conversations appear here.</p>
+                <p className="muted">{t("pages.your_conversations_appear_here_619f76")}</p>
               )}
               {total > pageSize && (
                 <div className="pagination ticket-pagination">
@@ -368,7 +369,7 @@ function SupportSession() {
                     disabled={page <= 1}
                     onClick={() => setPage(page - 1)}
                   >
-                    Newer tickets
+                    {t("pages.newer_tickets_0fa96c")}
                   </button>
                   <span>
                     {page}/{Math.ceil(total / pageSize)}
@@ -378,13 +379,13 @@ function SupportSession() {
                     disabled={page * pageSize >= total}
                     onClick={() => setPage(page + 1)}
                   >
-                    Older tickets
+                    {t("pages.older_tickets_cf1855")}
                   </button>
                 </div>
               )}
             </aside>
             <section className="support-main">
-              {error && <Failure message={error} />} {loading && <Loading />}
+              {error && <Failure message={t(error)} />} {loading && <Loading />}
               {creating ? (
                 <form
                   className="form"
@@ -393,9 +394,9 @@ function SupportSession() {
                     void create();
                   }}
                 >
-                  <h2>New support ticket</h2>
+                  <h2>{t("pages.new_support_ticket_2c76be")}</h2>
                   <label>
-                    Subject
+                    {t("pages.subject_c7892e")}
                     <input
                       disabled={busy}
                       required
@@ -405,7 +406,7 @@ function SupportSession() {
                     />
                   </label>
                   <label>
-                    Category
+                    {t("pages.category_3adbdb")}
                     <select
                       disabled={busy}
                       value={category}
@@ -416,13 +417,13 @@ function SupportSession() {
                     >
                       {categories.map((c) => (
                         <option key={c.code} value={c.code}>
-                          {c.name_en || c.name_zh}
+                          {locale === "zh" ? c.name_zh || c.name_en : c.name_en || c.name_zh}
                         </option>
                       ))}
                     </select>
                   </label>
                   <label>
-                    Order number (optional)
+                    {t("pages.order_number_optional_84fcb5")}
                     <input
                       disabled={busy}
                       value={order}
@@ -433,7 +434,7 @@ function SupportSession() {
                     .find((c) => c.code === category)
                     ?.fields.map((f) => (
                       <label key={f.key}>
-                        {f.label_en || f.label_zh}
+                        {locale === "zh" ? f.label_zh || f.label_en : f.label_en || f.label_zh}
                         {f.required ? " *" : ""}
                         {f.type === "select" ? (
                           <select
@@ -443,7 +444,7 @@ function SupportSession() {
                               setFields({ ...fields, [f.key]: e.target.value })
                             }
                           >
-                            <option value="">Select…</option>
+                            <option value="">{t("pages.select_0ffe9a")}</option>
                             {f.options?.map((o) => (
                               <option key={o}>{o}</option>
                             ))}
@@ -460,7 +461,7 @@ function SupportSession() {
                       </label>
                     ))}
                   <label>
-                    How can we help?
+                    {t("pages.how_can_we_help_8307fa")}
                     <textarea
                       disabled={busy}
                       required
@@ -471,7 +472,7 @@ function SupportSession() {
                     />
                   </label>
                   <button className="button primary" disabled={busy}>
-                    {busy ? "Sending…" : "Send ticket"}
+                    {busy ? t("pages.sending_4d01e8") : t("pages.send_ticket_355dc6")}
                   </button>
                 </form>
               ) : detail ? (
@@ -490,24 +491,23 @@ function SupportSession() {
                         disabled={busy}
                         onClick={() => setConfirmClose(true)}
                       >
-                        Close ticket
+                        {t("pages.close_ticket_2923de")}
                       </button>
                     )}
                   </div>
                   {detail.ticket.merged_into && (
                     <div className="membership-banner">
                       <div>
-                        <strong>This conversation was merged</strong>
+                        <strong>{t("pages.this_conversation_was_merged_a93691")}</strong>
                         <p>
-                          Your messages and replies continue in ticket #
-                          {detail.ticket.merged_into}.
+                          {t("pages.merged_ticket", { number: detail.ticket.merged_into })}
                         </p>
                       </div>
                       <button
                         className="button secondary"
                         onClick={() => void open(detail.ticket.merged_into!)}
                       >
-                        Open main conversation
+                        {t("pages.open_main_conversation_757833")}
                       </button>
                     </div>
                   )}
@@ -519,13 +519,13 @@ function SupportSession() {
                       >
                         <strong>
                           {m.author_type === "user"
-                            ? "You"
+                            ? t("pages.you_cae8d1")
                             : m.author_type === "admin"
-                              ? "JJTV Support"
-                              : "Update"}
+                              ? t("pages.jjtv_support_dec588")
+                              : t("pages.update_069330")}
                         </strong>
                         <p>{m.body}</p>
-                        <time>{new Date(m.created_at).toLocaleString()}</time>
+                        <time>{date(m.created_at)}</time>
                       </article>
                     ))}
                   </div>
@@ -538,7 +538,7 @@ function SupportSession() {
                       }}
                     >
                       <label>
-                        Your reply
+                        {t("pages.your_reply_d754a9")}
                         <textarea
                           disabled={busy}
                           required
@@ -549,7 +549,7 @@ function SupportSession() {
                         />
                       </label>
                       <button className="button primary" disabled={busy}>
-                        {busy ? "Sending…" : "Send reply"}
+                        {busy ? t("pages.sending_4d01e8") : t("pages.send_reply_662f37")}
                       </button>
                     </form>
                   )}
@@ -559,20 +559,21 @@ function SupportSession() {
                       role="status"
                       aria-live="polite"
                     >
-                      <strong>Your rating: {detail.ticket.csat_score}/5</strong>
+                      <strong>{t("pages.your_rating_9fa4c6")} {number(detail.ticket.csat_score)}/5</strong>
                       <p>
-                        Thank you for your feedback. Your rating has been saved.
+                        {t("pages.thank_you_for_your_feedback_your_rating_has_been_saved_0c8a9f")}
                       </p>
                     </div>
                   ) : (
                     ["closed", "resolved"].includes(detail.ticket.status) && (
                       <div className="satisfaction">
-                        <p>How was your support experience?</p>
+                        <p>{t("pages.how_was_your_support_experience_60c1a7")}</p>
                         {[1, 2, 3, 4, 5].map((score) => (
                           <button
                             className="button secondary"
                             disabled={busy}
                             key={score}
+                            aria-label={t("pages.rate_support", { score: number(score) })}
                             onClick={() => void action("/csat", { score })}
                           >
                             {score}/5
@@ -584,7 +585,7 @@ function SupportSession() {
                 </>
               ) : (
                 !loading && (
-                  <Empty message="Choose a conversation or start a new ticket." />
+                  <Empty message={t("pages.choose_a_conversation_or_start_a_new_ticket_9c62d6")} />
                 )
               )}
             </section>
@@ -593,16 +594,15 @@ function SupportSession() {
       )}
       {confirmClose && (
         <Modal
-          title="Close this conversation?"
+          title={t("pages.close_this_conversation_b194fa")}
           onClose={() => setConfirmClose(false)}
         >
           <p>
-            You can review the conversation after closing it. Start a new ticket
-            if you need further help.
+            {t("pages.you_can_review_the_conversation_after_closing_it_start_a_new_ticket_if_you_need_further_help_1793ff")}
           </p>
           {error && (
             <p className="error-text" role="alert">
-              {error}
+              {t(error)}
             </p>
           )}
           <div className="button-row">
@@ -610,7 +610,7 @@ function SupportSession() {
               className="button secondary"
               onClick={() => setConfirmClose(false)}
             >
-              Keep open
+              {t("pages.keep_open_a9901d")}
             </button>
             <button
               className="button primary"
@@ -621,7 +621,7 @@ function SupportSession() {
                 });
               }}
             >
-              Confirm close
+              {t("pages.confirm_close_21bcce")}
             </button>
           </div>
         </Modal>

@@ -1,9 +1,11 @@
+import { planPriceDisplay } from "./plan-display";
+import { useLocale } from "./locale";
+import { setDesktopCheckoutActive } from "./surface";
 import { useEffect, useRef, useState } from "react";
 import {
   get,
   post,
   errorMessage,
-  money,
   ApiError,
   authToken,
   type Pack,
@@ -77,6 +79,7 @@ export function Store({
   sourceDramaId?: number;
   sourceEpisodeId?: number;
 }) {
+  const { locale, t, number, date, money } = useLocale();
   const { user, requireAuth, refresh } = useAuth();
   const [plans, setPlans] = useState<Plan[]>([]),
     [packs, setPacks] = useState<Pack[]>([]),
@@ -97,6 +100,10 @@ export function Store({
   const viewerToken = authToken();
   const activeRecovery =
     recovery?.intent.ownerToken === viewerToken ? recovery : null;
+  useEffect(() => {
+    setDesktopCheckoutActive(!!busy || !!activeRecovery || cancelOpen);
+    return () => setDesktopCheckoutActive(false);
+  }, [busy, activeRecovery, cancelOpen]);
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -140,7 +147,7 @@ export function Store({
           setChannels([]);
           errors.push("Payment options: " + errorMessage(ch.reason));
         }
-        setError(errors.join(" "));
+        setError(errors.join("\n"));
       })
       .finally(() => setLoading(false));
   };
@@ -348,42 +355,38 @@ export function Store({
     <div className="page-content price-page">
       <div className="price-heading">
         <div>
-          <h1>Price</h1>
+          <h1>{t("Price")}</h1>
           <p className="muted">
-            Membership plans and coin packs, all in one place.
-          </p>
+            {t("Membership plans and coin packs, all in one place.")}</p>
         </div>
         {Number.isFinite(minimum) && (
           <span className="price-from">
-            Premium from {money(minimum, firstCurrency)}
+            {t("Premium from {price}",{price:money(minimum,firstCurrency)})}
           </span>
         )}
       </div>
-      <div className="segmented price-tabs" aria-label="Store category">
+      <div className="segmented price-tabs" aria-label={t("Store category")}>
         <button
           aria-pressed={kind === "membership"}
           onClick={() => selectTab("membership")}
         >
-          Premium
-        </button>
+          {t("Premium")}</button>
         <button
           aria-pressed={kind === "coin_pack"}
           onClick={() => selectTab("coin_pack")}
         >
-          Coins
-        </button>
+          {t("Coins")}</button>
       </div>
       {user?.membership?.active && (
         <div className="membership-banner">
           <Icon name="crown" />
           <div>
-            <strong>Your membership is active</strong>
+            <strong>{t("Your membership is active")}</strong>
             <p>
               {user.membership.until
-                ? "Access until " +
-                  new Date(user.membership.until).toLocaleDateString()
+                ? t("Access until {date}",{date:date(user.membership.until,{dateStyle:"medium"})})
                 : ""}
-              {user.membership.canceling ? " · Renewal cancelled" : ""}
+              {user.membership.canceling ? " · " + t("Renewal cancelled") : ""}
             </p>
           </div>
           {!user.membership.canceling &&
@@ -392,18 +395,17 @@ export function Store({
                 className="button secondary"
                 onClick={() => setCancelOpen(true)}
               >
-                Cancel renewal
-              </button>
+                {t("Cancel renewal")}</button>
             )}
         </div>
       )}
-      {error && <Failure message={error} retry={load} />}
+      {error && <Failure message={error.split("\n").map((line) => { const colon = line.indexOf(": "); return colon > 0 && ["Membership plans", "Coin packs", "Payment options"].includes(line.slice(0,colon)) ? t(line.slice(0,colon)) + ": " + t(line.slice(colon+2)) : t(line); }).join("\n")} retry={load} />}
       {activeRecovery && (
         <section className="checkout-recovery" role="alert">
-          <h2>{conflictTitles[activeRecovery.conflict.code]}</h2>
-          <p>{activeRecovery.conflict.message}</p>
+          <h2>{t(conflictTitles[activeRecovery.conflict.code])}</h2>
+          <p>{t(activeRecovery.conflict.message)}</p>
           {activeRecovery.conflict.order_no && (
-            <p>Order {activeRecovery.conflict.order_no}</p>
+            <p>{t("Order {number}",{number:activeRecovery.conflict.order_no})}</p>
           )}
           <div className="button-row">
             {activeRecovery.conflict.code ===
@@ -415,8 +417,7 @@ export function Store({
                     disabled={!!busy}
                     onClick={resumeCheckout}
                   >
-                    Continue checkout
-                  </button>
+                    {t("Continue checkout")}</button>
                 )}
                 <button
                   className="button secondary"
@@ -424,8 +425,8 @@ export function Store({
                   onClick={() => void cancelPendingCheckout()}
                 >
                   {busy === "cancel-checkout"
-                    ? "Cancelling…"
-                    : "Cancel pending checkout"}
+                    ? t("Cancelling…")
+                    : t("Cancel pending checkout")}
                 </button>
               </>
             )}
@@ -435,7 +436,7 @@ export function Store({
                 disabled={!!busy}
                 onClick={() => retryCheckout()}
               >
-                {busy ? "Retrying…" : "Retry checkout"}
+                {busy ? t("Retrying…") : t("Retry checkout")}
               </button>
             )}
             {activeRecovery.conflict.code === "checkout_expired" && (
@@ -444,8 +445,7 @@ export function Store({
                 disabled={!!busy}
                 onClick={() => retryCheckout(true)}
               >
-                Start new checkout
-              </button>
+                {t("Start new checkout")}</button>
             )}
             {activeRecovery.conflict.code === "checkout_payment_pending" && (
               <button
@@ -454,13 +454,12 @@ export function Store({
                 onClick={() => void checkPendingPayment()}
               >
                 {busy === "check-payment"
-                  ? "Checking…"
-                  : "Check payment status"}
+                  ? t("Checking…")
+                  : t("Check payment status")}
               </button>
             )}
             <a className="button secondary" href="#account/orders">
-              View orders
-            </a>
+              {t("View orders")}</a>
             <a
               className="text-button"
               href={
@@ -471,14 +470,13 @@ export function Store({
                   : "")
               }
             >
-              Contact support
-            </a>
+              {t("Contact support")}</a>
           </div>
         </section>
       )}
       {purchaseNotice && (
         <p className="purchase-notice" role="status">
-          {purchaseNotice}
+          {t(purchaseNotice)}
         </p>
       )}
       {loading ? (
@@ -487,15 +485,17 @@ export function Store({
         <>
           <section className="price-section" id="membership-plans">
             <div className="price-section-heading">
-              <h2>Membership plans</h2>
+              <h2>{t("Membership plans")}</h2>
               <p className="muted">
                 {mode === "subscription"
-                  ? "Choose your plan. Cancel renewal at any time."
-                  : "One payment for your selected access period."}
+                  ? t("Choose your plan. Cancel renewal at any time.")
+                  : t("One payment for your selected access period.")}
               </p>
             </div>
             <div className="membership-grid">
-              {plans.map((plan) => (
+              {plans.map((plan) => {
+                const display = planPriceDisplay(plan,plans,mode);
+                return (
                 <article
                   className={
                     "membership-card " +
@@ -504,46 +504,18 @@ export function Store({
                   key={plan.code}
                 >
                   {plan.benefits?.best && (
-                    <span className="purchase-badge">Most popular</span>
+                    <span className="purchase-badge">{t("Most popular")}</span>
                   )}
-                  <div className="plan-card-heading">
-                    <div>
-                      <h3>{plan.name_en || plan.name_zh}</h3>
-                      <span>
-                        {(plan.billing_mode || mode) === "subscription"
-                          ? "Auto-renewing"
-                          : "One-time pass"}
-                      </span>
-                      {(plan.billing_mode || mode) === "one_time" &&
-                        Number(plan.duration_days) > 0 && (
-                          <p className="plan-duration">
-                            Access for {plan.duration_days} days
-                          </p>
-                        )}
-                    </div>
-                    <strong>
-                      {money(plan.price_cents, plan.currency)}
-                      {(plan.billing_mode || mode) === "subscription" &&
-                        plan.recurring_interval && (
-                          <small className="plan-cadence">
-                            per {plan.recurring_interval}
-                          </small>
-                        )}
-                    </strong>
-                  </div>
+                  <div className="plan-card-heading"><div><h3>{locale === "zh" ? plan.name_zh || plan.name_en : plan.name_en || plan.name_zh}</h3><span>{Number(plan.duration_days)>0?t("{days} days",{days:number(Number(plan.duration_days))}):(plan.billing_mode||mode)==='subscription'?t("Auto-renewing"):t("One-time pass")}</span></div>{display.discountPercent != null && <span className="plan-discount-badge">{t("Save {percent}% vs monthly",{percent:number(display.discountPercent)})}</span>}</div>
+                  <div className="plan-price-row"><strong>{money(display.priceCents, plan.currency)}</strong><span>{display.subscription ? "/ "+t(display.interval || "billing period") : t("/ pass")}</span>{display.monthlyComparisonCents != null && <s className="plan-original-price">{money(display.monthlyComparisonCents,plan.currency)} / {t("month")}</s>}</div>
+                  <p className="plan-billing-note">{display.annualChargeCents != null ? t("Billed {price} / year",{price:money(display.annualChargeCents,plan.currency)}) : (plan.billing_mode||mode)==='subscription'?t(plan.recurring_interval === "week" ? "Billed every week" : plan.recurring_interval === "month" ? "Billed every month" : plan.recurring_interval === "year" ? "Billed every year" : "Billed every period"):t("One payment · no automatic renewal")}</p>
                   {Number(plan.base_coins) + Number(plan.bonus_coins) > 0 && (
                     <div className="plan-coin-strip">
                       <strong>
-                        +
-                        {(
-                          Number(plan.base_coins || 0) +
-                          Number(plan.bonus_coins || 0)
-                        ).toLocaleString()}{" "}
-                        coins included
+                        {t("+{count} coins included",{count:number(Number(plan.base_coins||0)+Number(plan.bonus_coins||0))})}
                       </strong>
                       <span>
-                        {plan.base_coins || 0} base + {plan.bonus_coins || 0}{" "}
-                        bonus
+                        {t("{base} base + {bonus} bonus",{base:number(plan.base_coins||0),bonus:number(plan.bonus_coins||0)})}
                       </span>
                     </div>
                   )}
@@ -556,7 +528,7 @@ export function Store({
                     ))}
                   </ul>
                   <button
-                    className="button secondary full-width"
+                    className={"button secondary full-width" + (plan.benefits?.best ? " plan-gold-button" : "")}
                     disabled={!!busy || !!activeRecovery || !channels.length}
                     onClick={() =>
                       requireAuth(() => {
@@ -565,60 +537,52 @@ export function Store({
                     }
                   >
                     {busy === "membership:" + plan.code
-                      ? "Opening checkout…"
+                      ? t("Opening checkout…")
                       : (plan.billing_mode || mode) === "subscription"
-                        ? "Subscribe"
-                        : "Buy pass"}
+                        ? t("Subscribe")
+                        : t("Buy pass")}
                   </button>
                 </article>
-              ))}
+              );})}
             </div>
             {!plans.length && (
               <p className="empty compact">
-                No membership plans are available right now.
-              </p>
+                {t("No membership plans are available right now.")}</p>
             )}
             <p className="section-footnote">
-              Episode access and any coin charges follow the rules shown on each
-              drama.
-            </p>
+              {t("Episode access and any coin charges follow the rules shown on each drama.")}</p>
           </section>
           <section className="price-section" id="coin-packs">
             <div className="price-section-heading">
-              <h2>Coin packs</h2>
+              <h2>{t("Coin packs")}</h2>
               <p className="muted">
-                Choose your top-up. Episode prices are shown before you unlock.
-              </p>
+                {t("Choose your top-up. Episode prices are shown before you unlock.")}</p>
             </div>
             <div className="coin-pack-grid">
               {packs.map((pack) => (
                 <article
-                  className={"coin-pack-card " + (pack.badge ? "featured" : "")}
+                  className={"coin-pack-card " + (["best", "best_value", "best value"].includes((pack.badge || "").trim().toLowerCase()) ? "featured" : (pack.badge || "").trim().toLowerCase() === "popular" ? "popular" : "")}
                   key={pack.code}
                 >
                   {pack.badge && (
                     <span className="purchase-badge">{pack.badge}</span>
                   )}
-                  <h3 className="sr-only">{pack.name_en || pack.name_zh}</h3>
+                  <h3 className="sr-only">{locale === "zh" ? pack.name_zh || pack.name_en : pack.name_en || pack.name_zh}</h3>
                   <div className="coin-pack-total">
-                    <strong>{pack.coins.toLocaleString()}</strong>
-                    <span>coins</span>
+                    <strong>{number(pack.coins)}</strong>
+                    <span>{t("coins")}</span>
                     {pack.bonus_coins > 0 && (
                       <span className="coin-bonus">
-                        +{pack.bonus_coins.toLocaleString()} bonus
+                        {t("+{count} bonus",{count:number(pack.bonus_coins)})}
                       </span>
                     )}
                   </div>
                   <p className="coin-breakdown">
-                    {pack.base_coins.toLocaleString()} base +{" "}
-                    {pack.bonus_coins.toLocaleString()} bonus coins
+                    {t("{base} base + {bonus} bonus coins",{base:number(pack.base_coins),bonus:number(pack.bonus_coins)})}
                   </p>
                   <p className="coin-unit-price">
                     {pack.coins > 0
-                      ? money(
-                          (pack.price_cents / pack.coins) * 100,
-                          pack.currency,
-                        ) + " per 100 coins"
+                      ? t("{price} per 100 coins",{price:money((pack.price_cents/pack.coins)*100,pack.currency)})
                       : ""}
                   </p>
                   <div className="coin-pack-footer">
@@ -633,8 +597,8 @@ export function Store({
                       }
                     >
                       {busy === "coin_pack:" + pack.code
-                        ? "Opening…"
-                        : "Buy coins"}
+                        ? t("Opening…")
+                        : t("Buy coins")}
                     </button>
                   </div>
                 </article>
@@ -642,21 +606,18 @@ export function Store({
             </div>
             {!packs.length && (
               <p className="empty compact">
-                No coin packs are available right now.
-              </p>
+                {t("No coin packs are available right now.")}</p>
             )}
             <a className="reward-callout" href="#rewards?return=price">
               <span>
-                <strong>No budget today?</strong> Check in and finish daily
-                tasks to earn coins.
+                <strong>{t("No budget today?")}</strong> {t("Check in and finish daily tasks to earn coins.")}
               </span>
-              <span>Go to Rewards →</span>
+              <span>{t("Go to Rewards →")}</span>
             </a>
           </section>
           {channels.length > 1 && (
             <label className="payment-channel">
-              Payment option
-              <select
+              {t("Payment option")}<select
                 value={account}
                 onChange={(e) => setAccount(e.target.value)}
               >
@@ -672,32 +633,27 @@ export function Store({
             <div className="payment-unavailable" role="status">
               <Icon name="lock" size={18} />
               <span>
-                Payments are currently unavailable. You can still earn coins
-                through daily tasks.
-              </span>
+                {t("Payments are currently unavailable. You can still earn coins through daily tasks.")}</span>
             </div>
           )}
           <footer className="price-footer">
             <div>
-              <a href="#account/orders">Order history</a>
-              <a href="#account/ledger">Coin ledger</a>
-              <a href="#support">Payment help</a>
+              <a href="#account/orders">{t("Order history")}</a>
+              <a href="#account/ledger">{t("Coin ledger")}</a>
+              <a href="#support">{t("Payment help")}</a>
             </div>
             <span>
-              <Icon name="lock" size={14} /> Secure checkout by Stripe
-            </span>
+              <Icon name="lock" size={14} /> {t("Secure checkout by Stripe")}</span>
           </footer>
         </>
       )}
       {cancelOpen && (
         <Modal
-          title="Cancel membership renewal?"
+          title={t("Cancel membership renewal?")}
           onClose={() => setCancelOpen(false)}
         >
           <p>
-            Your membership benefits remain available until the end of your paid
-            period.
-          </p>
+            {t("Your membership benefits remain available until the end of your paid period.")}</p>
           <button
             className="button primary"
             disabled={!!busy}
@@ -710,8 +666,7 @@ export function Store({
                 .finally(() => setBusy(""));
             }}
           >
-            Confirm cancellation
-          </button>
+            {t("Confirm cancellation")}</button>
         </Modal>
       )}
     </div>
@@ -724,6 +679,7 @@ export function CheckoutReturn({
   result: string;
   onDismiss?: () => void;
 }) {
+  const { t, number } = useLocale();
   const { refresh, user, status, openLogin } = useAuth();
   const [state, setState] = useState<
       "pending" | "confirmed" | "cancelled" | "failed" | "signin" | "unknown"
@@ -806,29 +762,27 @@ export function CheckoutReturn({
     <div className={"checkout-notice checkout-" + state} role="status">
       <Icon name={state === "confirmed" ? "check" : "coin"} />
       <span>
-        {message}
+        {t(message)}
         {state === "confirmed" && user
-          ? " Wallet: " + user.coins.toLocaleString() + " coins."
+          ? " " + t("Wallet: {count} coins.",{count:number(user.coins)})
           : ""}
       </span>
       <div className="checkout-actions">
         {state === "signin" ? (
           <button className="text-button" onClick={openLogin}>
-            Sign in
-          </button>
+            {t("Sign in")}</button>
         ) : state === "unknown" ? (
           <button
             className="text-button"
             onClick={() => setAttempt((a) => a + 1)}
           >
-            Check again
-          </button>
+            {t("Check again")}</button>
         ) : null}
-        <a href="#account/orders">View orders</a>
+        <a href="#account/orders">{t("View orders")}</a>
         {onDismiss && (
           <button
             className="icon-button"
-            aria-label="Dismiss payment notice"
+            aria-label={t("Dismiss payment notice")}
             onClick={onDismiss}
           >
             <Icon name="close" size={16} />

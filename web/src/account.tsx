@@ -1,3 +1,4 @@
+import { useLocale } from "./locale";
 import { useEffect, useRef, useState } from "react";
 import {
   authToken,
@@ -5,7 +6,6 @@ import {
   post,
   send,
   errorMessage,
-  money,
   type CatalogDrama,
   type HistoryItem,
   type LedgerEntry,
@@ -22,11 +22,7 @@ import {
   Modal,
   StatusTag,
 } from "./components";
-const tabs = [
-  ["history", "History"],
-  ["favorites", "Saved"],
-  ["likes", "Liked"],
-];
+
 interface AccountResult {
   items?: unknown[];
   has_more?: boolean;
@@ -48,6 +44,12 @@ interface DailyTasks {
   }>;
 }
 export function Account({ section = "history" }: { section?: string }) {
+  const { t, number, date, money } = useLocale();
+  const tabs = [
+    ["history", t("pages.history_16d2b3")],
+    ["favorites", t("pages.saved_248336")],
+    ["likes", t("pages.liked_1ce3a9")],
+  ];
   const { user, status, openLogin, requireAuth, refresh, logout } = useAuth();
   const [data, setData] = useState<AccountResult | null>(null),
     [error, setError] = useState(""),
@@ -169,13 +171,13 @@ export function Account({ section = "history" }: { section?: string }) {
             )}
           </div>
           <div>
-            <h1>{guest ? "Sign in to JJTV" : user.display_name}</h1>
+            <h1>{guest ? t("pages.sign_in_to_jjtv_a86a91") : user.display_name}</h1>
             <p>
               {guest
-                ? "Likes, favorites and watch history follow your account."
+                ? t("pages.likes_favorites_and_watch_history_follow_your_account_46bfde")
                 : identity
                   ? "ID " + identity
-                  : "Your JJTV account"}
+                  : t("pages.your_jjtv_account_946480")}
             </p>
           </div>
         </div>
@@ -185,12 +187,12 @@ export function Account({ section = "history" }: { section?: string }) {
             onClick={openLogin}
             disabled={status === "loading"}
           >
-            {status === "loading" ? "Restoring account…" : "Sign in"}
+            {status === "loading" ? t("pages.restoring_account_cc868a") : t("pages.sign_in_b6d422")}
           </button>
         ) : (
           <a className="member-edit" href="#account/overview">
             <Icon name="user" size={14} />
-            Edit profile
+            {t("pages.edit_profile_dfd87b")}
           </a>
         )}
         <a className="member-premium" href="#price">
@@ -199,31 +201,30 @@ export function Account({ section = "history" }: { section?: string }) {
           </span>
           <div>
             <strong>
-              {user?.membership?.active ? "Premium is active" : "JJTV Premium"}
+              {user?.membership?.active ? t("pages.premium_is_active_42c449") : "JJTV Premium"}
             </strong>
             <p>
               {user?.membership?.until
-                ? "Until " +
-                  new Date(user.membership.until).toLocaleDateString()
-                : "Find your plan and watch more."}
+                ? t("pages.until_date", { date: date(user.membership.until, { dateStyle: "medium" }) })
+                : t("pages.find_your_plan_and_watch_more_ca653d")}
             </p>
           </div>
-          <span>{user?.membership?.active ? "Manage" : "View plans"}</span>
+          <span>{user?.membership?.active ? t("pages.manage_34e34c") : t("pages.view_plans_9a6577")}</span>
         </a>
         <div className="member-quick-actions">
           <a href="#account/history">
             <span>
               <Icon name="history" />
             </span>
-            <strong>History</strong>
-            <small>Resume</small>
+            <strong>{t("pages.history_16d2b3")}</strong>
+            <small>{t("pages.resume_f1cefe")}</small>
           </a>
           <a href="#account/favorites">
             <span>
               <Icon name="bookmark" />
             </span>
-            <strong>My list</strong>
-            <small>Saved dramas</small>
+            <strong>{t("pages.my_list_f2d31f")}</strong>
+            <small>{t("pages.saved_dramas_c0657b")}</small>
           </a>
           <button
             disabled={checked || busy === "checkin"}
@@ -236,46 +237,46 @@ export function Account({ section = "history" }: { section?: string }) {
             <span>
               <Icon name="calendar" />
             </span>
-            <strong>Check-in</strong>
+            <strong>{t("pages.check_in_ec86d6")}</strong>
             <small>
               {busy === "checkin"
-                ? "Claiming…"
+                ? t("pages.claiming_201714")
                 : checked
-                  ? "Checked in"
-                  : "Claim"}
+                  ? t("pages.checked_in_6edf8e")
+                  : t("pages.claim_803138")}
             </small>
           </button>
         </div>
-        <nav className="member-actions" aria-label="Your account">
+        <nav className="member-actions" aria-label={t("pages.your_account_f2fc74")}>
           <a href="#rewards?return=account">
             <Icon name="gift" />
-            <strong>Daily tasks</strong>
-            <span>Earn coins ›</span>
+            <strong>{t("pages.daily_tasks_6ec40b")}</strong>
+            <span>{t("pages.earn_coins_48c51f")}</span>
           </a>
           <a href="#account/ledger">
             <Icon name="coin" />
-            <strong>Wallet</strong>
-            <span>{user?.coins.toLocaleString() ?? "0"} coins ›</span>
+            <strong>{t("pages.wallet_156e13")}</strong>
+            <span>{t("pages.coins_count", { count: number(user?.coins ?? 0) })} ›</span>
           </a>
           <a href="#account/orders">
             <Icon name="receipt" />
-            <strong>Orders</strong>
-            <span>View ›</span>
+            <strong>{t("pages.orders_7442e2")}</strong>
+            <span>{t("pages.view_0551cc")}</span>
           </a>
           <a href="#account/messages">
             <Icon name="message" />
-            <strong>Notifications</strong>
-            <span>View ›</span>
+            <strong>{t("pages.notifications_a274f4")}</strong>
+            <span>{t("pages.view_0551cc")}</span>
           </a>
           <a href="#support">
             <Icon name="support" />
-            <strong>Help & support</strong>
+            <strong>{t("pages.help_support_47a186")}</strong>
             <span>›</span>
           </a>
         </nav>
         {!guest && (
           <button className="text-button member-signout" onClick={logout}>
-            Sign out
+            {t("pages.sign_out_c87aac")}
           </button>
         )}
       </aside>
@@ -284,7 +285,7 @@ export function Account({ section = "history" }: { section?: string }) {
           <div
             className="library-tabs"
             role="navigation"
-            aria-label="Your library"
+            aria-label={t("pages.your_library_035adb")}
           >
             {tabs.map(([id, label]) => (
               <a
@@ -299,18 +300,18 @@ export function Account({ section = "history" }: { section?: string }) {
           </div>
         ) : (
           <div className="member-section-heading">
-            <a href="#account/history">← Your library</a>
+            <a href="#account/history">{t("pages.your_library_92f5fd")}</a>
             <h2>
               {{
-                overview: "Edit profile",
-                orders: "Order history",
-                ledger: "Coin ledger",
-                messages: "Notifications",
-              }[section] || "Your account"}
+                overview: t("pages.edit_profile_dfd87b"),
+                orders: t("pages.order_history_782c8b"),
+                ledger: t("pages.coin_ledger_10e3cc"),
+                messages: t("pages.notifications_a274f4"),
+              }[section] || t("pages.your_account_f2fc74")}
             </h2>
           </div>
         )}
-        {error && <Failure message={error} retry={load} />}
+        {error && <Failure message={t(error)} retry={load} />}
         {guest ? (
           <div className="member-guest-state">
             <span>
@@ -318,16 +319,16 @@ export function Account({ section = "history" }: { section?: string }) {
             </span>
             <h2>
               {library
-                ? "Sign in to like and save dramas"
-                : "Sign in to view your account"}
+                ? t("pages.sign_in_to_like_and_save_dramas_646fc5")
+                : t("pages.sign_in_to_view_your_account_060f9b")}
             </h2>
-            <p>Sync your likes, favorites and watch history.</p>
+            <p>{t("pages.sync_your_likes_favorites_and_watch_history_2cf423")}</p>
             <button
               className="button secondary"
               onClick={openLogin}
               disabled={status === "loading"}
             >
-              Sign in
+              {t("pages.sign_in_b6d422")}
             </button>
           </div>
         ) : loading ? (
@@ -342,13 +343,13 @@ export function Account({ section = "history" }: { section?: string }) {
               setSaved("");
               send("PATCH", "/v1/me", { display_name: name, bio })
                 .then(() => refresh())
-                .then(() => setSaved("Profile saved."))
+                .then(() => setSaved("pages.profile_saved_748f2c"))
                 .catch((e) => setError(errorMessage(e)))
                 .finally(() => setBusy(""));
             }}
           >
             <label>
-              Display name
+              {t("pages.display_name_bc9e27")}
               <input
                 required
                 maxLength={64}
@@ -358,11 +359,11 @@ export function Account({ section = "history" }: { section?: string }) {
               />
             </label>
             <label>
-              Email
-              <input value={user.email || "Not provided"} readOnly />
+              {t("pages.email_ce8ae9")}
+              <input value={user.email || t("pages.not_provided_34fac4")} readOnly />
             </label>
             <label>
-              About you
+              {t("pages.about_you_4f21e0")}
               <textarea
                 maxLength={500}
                 rows={4}
@@ -373,9 +374,9 @@ export function Account({ section = "history" }: { section?: string }) {
             </label>
             <div className="profile-save-row">
               <button className="button primary" disabled={!!busy}>
-                {busy === "profile" ? "Saving…" : "Save changes"}
+                {busy === "profile" ? t("pages.saving_eedf6b") : t("pages.save_changes_daa6b4")}
               </button>
-              {saved && <span role="status">{saved}</span>}
+              {saved && <span role="status">{t(saved)}</span>}
             </div>
           </form>
         ) : section === "favorites" ? (
@@ -386,7 +387,7 @@ export function Account({ section = "history" }: { section?: string }) {
                   <DramaCard drama={drama} />
                   <button
                     className="saved-remove"
-                    aria-label={"Remove " + drama.title + " from saved"}
+                    aria-label={t("pages.remove_saved", { title: drama.title })}
                     disabled={!!busy}
                     onClick={() => void removeSaved(drama)}
                   >
@@ -396,7 +397,7 @@ export function Account({ section = "history" }: { section?: string }) {
               ))}
             </div>
           ) : (
-            <Empty message="Save a drama from its watch page and find it here." />
+            <Empty message={t("pages.save_a_drama_from_its_watch_page_and_find_it_here_88a6b9")} />
           )
         ) : section === "likes" ? (
           liked.length ? (
@@ -406,7 +407,7 @@ export function Account({ section = "history" }: { section?: string }) {
               ))}
             </div>
           ) : (
-            <Empty message="The dramas you like will appear here." />
+            <Empty message={t("pages.the_dramas_you_like_will_appear_here_d48f96")} />
           )
         ) : section === "history" ? (
           (data?.items ?? []).length ? (
@@ -424,7 +425,7 @@ export function Account({ section = "history" }: { section?: string }) {
                       <img src={item.drama.cover_url} alt="" />
                     )}
                     <span className="history-episode">
-                      Episode {item.episode_number}
+                      {t("pages.episode_number", { number: number(item.episode_number) })}
                     </span>
                     <span className="history-resume">
                       <Icon name="play" />
@@ -438,13 +439,13 @@ export function Account({ section = "history" }: { section?: string }) {
                   <p>
                     {Math.floor(item.position_seconds / 60)}:
                     {String(item.position_seconds % 60).padStart(2, "0")}{" "}
-                    watched
+                    {t("pages.watched_e49e5c")}
                   </p>
                 </a>
               ))}
             </div>
           ) : (
-            <Empty message="Start a drama and pick up where you left off here." />
+            <Empty message={t("pages.start_a_drama_and_pick_up_where_you_left_off_here_1f6182")} />
           )
         ) : section === "orders" ? (
           <>
@@ -452,12 +453,12 @@ export function Account({ section = "history" }: { section?: string }) {
               <table className="order-table">
                 <thead>
                   <tr>
-                    <th>Order / Date</th>
-                    <th>Product</th>
-                    <th>Amount</th>
-                    <th>Status</th>
+                    <th>{t("pages.order_date_1fb756")}</th>
+                    <th>{t("pages.product_deb105")}</th>
+                    <th>{t("pages.amount_b2f406")}</th>
+                    <th>{t("pages.status_ec53a8")}</th>
                     <th>
-                      <span className="sr-only">Order actions</span>
+                      <span className="sr-only">{t("pages.order_actions_4d1f4a")}</span>
                     </th>
                   </tr>
                 </thead>
@@ -467,17 +468,17 @@ export function Account({ section = "history" }: { section?: string }) {
                       <td>
                         <strong>{order.order_no}</strong>
                         <small>
-                          {new Date(order.created_at).toLocaleString()}
+                          {date(order.created_at)}
                         </small>
                       </td>
                       <td>
                         {order.product_name || order.product_code}
                         <small>
                           {order.product_type === "coin_pack"
-                            ? (order.coins || 0).toLocaleString() + " coins"
+                            ? t("pages.coins_count", { count: number(order.coins || 0) })
                             : order.billing_mode === "subscription"
-                              ? "Membership subscription"
-                              : "Membership pass"}
+                              ? t("pages.membership_subscription_7f8423")
+                              : t("pages.membership_pass_9968f9")}
                         </small>
                       </td>
                       <td>{money(order.amount_cents, order.currency)}</td>
@@ -492,7 +493,7 @@ export function Account({ section = "history" }: { section?: string }) {
                             encodeURIComponent(order.order_no)
                           }
                         >
-                          Get help
+                          {t("pages.get_help_fabfc2")}
                         </a>
                       </td>
                     </tr>
@@ -500,7 +501,7 @@ export function Account({ section = "history" }: { section?: string }) {
                 </tbody>
               </table>
               {!data?.items?.length && (
-                <Empty message="Your purchases will appear here." />
+                <Empty message={t("pages.your_purchases_will_appear_here_69c8f2")} />
               )}
             </div>
             <div className="pagination">
@@ -509,19 +510,18 @@ export function Account({ section = "history" }: { section?: string }) {
                 disabled={!offset}
                 onClick={() => setOffset(Math.max(0, offset - 20))}
               >
-                Previous
+                {t("pages.previous_dd1f77")}
               </button>
               <button
                 className="button secondary"
                 disabled={!data?.has_more}
                 onClick={() => setOffset(offset + 20)}
               >
-                Next
+                {t("pages.next_10ac3d")}
               </button>
             </div>
             <p className="section-footnote">
-              Payment confirmation and refunds are reflected in the order
-              status.
+              {t("pages.payment_confirmation_and_refunds_are_reflected_in_the_order_status_b96799")}
             </p>
           </>
         ) : section === "ledger" ? (
@@ -529,11 +529,11 @@ export function Account({ section = "history" }: { section?: string }) {
             <div className="ledger-summary">
               <Icon name="coin" size={24} />
               <div>
-                <strong>{user.coins.toLocaleString()} coins</strong>
-                <p>Available balance</p>
+                <strong>{t("pages.coins_count", { count: number(user.coins) })}</strong>
+                <p>{t("pages.available_balance_9343d8")}</p>
               </div>
               <a className="button secondary" href="#coins">
-                Buy coins
+                {t("pages.buy_coins_7bcce5")}
               </a>
             </div>
             <div className="ledger-list">
@@ -541,19 +541,19 @@ export function Account({ section = "history" }: { section?: string }) {
                 <article key={index}>
                   <div>
                     <strong>{item.biz_type.replace(/_/g, " ")}</strong>
-                    <p>{new Date(item.created_at).toLocaleString()}</p>
+                    <p>{date(item.created_at)}</p>
                   </div>
                   <span className={item.amount > 0 ? "positive" : ""}>
                     {item.amount > 0 ? "+" : ""}
-                    {item.amount} coins
+                    {t("pages.coins_count", { count: number(item.amount) })}
                     <br />
-                    <small>Balance {item.balance_after}</small>
+                    <small>{t("pages.balance_99a808")} {item.balance_after}</small>
                   </span>
                 </article>
               ))}
             </div>
             {!data?.items?.length && (
-              <Empty message="Your coin transactions will appear here." />
+              <Empty message={t("pages.your_coin_transactions_will_appear_here_b6e97c")} />
             )}
           </div>
         ) : section === "messages" ? (
@@ -567,7 +567,7 @@ export function Account({ section = "history" }: { section?: string }) {
                     .catch((e) => setError(errorMessage(e)));
                 }}
               >
-                Mark all as read
+                {t("pages.mark_all_as_read_7542d6")}
               </button>
             )}
             <div className="notifications">
@@ -581,7 +581,7 @@ export function Account({ section = "history" }: { section?: string }) {
                 </article>
               ))}
             </div>
-            {!data?.items?.length && <Empty message="You're all caught up." />}
+            {!data?.items?.length && <Empty message={t("pages.you_re_all_caught_up_92fa5a")} />}
           </>
         ) : (
           <Empty />
@@ -595,18 +595,17 @@ export function Account({ section = "history" }: { section?: string }) {
                 disabled={!offset}
                 onClick={() => setOffset(Math.max(0, offset - pageSize))}
               >
-                Previous
+                {t("pages.previous_dd1f77")}
               </button>
               <span>
-                {offset + 1}–{Math.min(offset + pageSize, data?.total ?? 0)} of{" "}
-                {data?.total}
+                {t("pages.range_total", { from: number(offset + 1), to: number(Math.min(offset + pageSize, data?.total ?? 0)), total: number(data?.total ?? 0) })}
               </span>
               <button
                 className="button secondary"
                 disabled={offset + pageSize >= (data?.total ?? 0)}
                 onClick={() => setOffset(offset + pageSize)}
               >
-                Next
+                {t("pages.next_10ac3d")}
               </button>
             </div>
           )}
@@ -618,11 +617,12 @@ export function Rewards({
   panel = false,
   onClose,
 }: { panel?: boolean; onClose?: () => void } = {}) {
+  const { t, number } = useLocale();
   const { status, user, requireAuth, refresh } = useAuth();
   const [data, setData] = useState<DailyTasks | null>(null),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(""),
-    [notice, setNotice] = useState("");
+    [notice, setNotice] = useState<{ key: string; count?: number } | null>(null);
   const generation = useRef(0),
     submitting = useRef(false);
   const load = () => {
@@ -649,7 +649,7 @@ export function Rewards({
     submitting.current = true;
     setBusy(code);
     setError("");
-    setNotice("");
+    setNotice(null);
     try {
       const result = await post<{ amount: number; replayed?: boolean }>(
         code === "checkin"
@@ -659,11 +659,7 @@ export function Rewards({
       );
       await refresh();
       await load();
-      setNotice(
-        result.replayed
-          ? "This reward has already been claimed."
-          : "You earned " + result.amount + " coins.",
-      );
+      setNotice(result.replayed ? { key: "pages.this_reward_has_already_been_claimed_fa3250" } : { key: "pages.reward_earned", count: result.amount });
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -675,7 +671,7 @@ export function Rewards({
     <>
       {!data ? (
         error ? (
-          <Failure message={error} retry={() => void load()} />
+          <Failure message={t(error)} retry={() => void load()} />
         ) : (
           <Loading />
         )
@@ -683,18 +679,17 @@ export function Rewards({
         <>
           <div className="tasks-intro">
             <p>
-              Small actions, coins every day. Track your progress and claim
-              rewards here.
+              {t("pages.small_actions_coins_every_day_track_your_progress_and_claim_rewards_here_38b060")}
             </p>
             <span>
               <Icon name="coin" size={14} />
-              {data.balance.toLocaleString()} coins
+              {t("pages.coins_count", { count: number(data.balance) })}
             </span>
           </div>
-          {error && <Failure message={error} retry={() => void load()} />}
+          {error && <Failure message={t(error)} retry={() => void load()} />}
           {notice && (
             <p className="task-notice" role="status">
-              {notice}
+              {t(notice.key, { count: number(notice.count ?? 0) })}
             </p>
           )}
           <article className="task-row task-checkin">
@@ -702,11 +697,11 @@ export function Rewards({
               <Icon name="calendar" size={22} />
             </span>
             <div>
-              <h3>Day {data.checkin.streak} streak</h3>
+              <h3>{t("pages.day_streak", { count: number(data.checkin.streak) })}</h3>
               <p>
                 {data.checkin.checked_today
-                  ? "Checked in today"
-                  : "Check in for +" + data.checkin.amount + " coins"}
+                  ? t("pages.checked_in_today_513264")
+                  : t("pages.checkin_reward", { count: number(data.checkin.amount) })}
               </p>
             </div>
             <button
@@ -719,10 +714,10 @@ export function Rewards({
               }
             >
               {busy === "checkin"
-                ? "Claiming…"
+                ? t("pages.claiming_201714")
                 : data.checkin.checked_today
-                  ? "Checked in"
-                  : "Check in"}
+                  ? t("pages.checked_in_6edf8e")
+                  : t("pages.check_in_275d15")}
             </button>
           </article>
           {data.items.map((task) => (
@@ -743,23 +738,23 @@ export function Rewards({
                 <div className="task-title">
                   <h3>{task.name}</h3>
                   <span>
-                    <Icon name="coin" size={12} />+{task.amount}
+                    <Icon name="coin" size={12} />+{number(task.amount)}
                   </span>
                 </div>
                 <p>{task.description}</p>
                 <progress
-                  aria-label={task.name + " progress"}
+                  aria-label={t("{title} progress",{title:task.name})}
                   max={Math.max(task.target, 1)}
                   value={task.progress}
                 />
                 <small>
-                  {task.progress}/{task.target}
+                  {number(task.progress)}/{number(task.target)}
                 </small>
               </div>
               {task.claimed ? (
                 <span className="task-claimed">
                   <Icon name="check" size={16} />
-                  Claimed
+                  {t("pages.claimed_9d8b15")}
                 </span>
               ) : task.progress >= task.target ? (
                 <button
@@ -771,7 +766,7 @@ export function Rewards({
                     })
                   }
                 >
-                  {busy === task.code ? "Claiming…" : "Claim"}
+                  {busy === task.code ? t("pages.claiming_201714") : t("pages.claim_803138")}
                 </button>
               ) : (
                 <button
@@ -784,18 +779,18 @@ export function Rewards({
                     })
                   }
                 >
-                  Go
+                  {t("pages.go_5f075a")}
                 </button>
               )}
             </article>
           ))}
           <div className="task-topup">
             <div>
-              <h3>Need coins now?</h3>
-              <p>Buy a pack and keep your story going.</p>
+              <h3>{t("pages.need_coins_now_c48ec3")}</h3>
+              <p>{t("pages.buy_a_pack_and_keep_your_story_going_47f1cc")}</p>
             </div>
             <a className="button gold" href="#coins">
-              Buy coins
+              {t("pages.buy_coins_7bcce5")}
             </a>
           </div>
         </>
@@ -804,7 +799,7 @@ export function Rewards({
   );
   return panel ? (
     <Modal
-      title="Daily tasks"
+      title={t("pages.daily_tasks_6ec40b")}
       className="rewards-modal"
       onClose={
         onClose ??
@@ -818,8 +813,8 @@ export function Rewards({
   ) : (
     <div className="page-content tasks-page">
       <div className="member-section-heading">
-        <h1>Daily tasks</h1>
-        <p className="muted">Your daily rewards</p>
+        <h1>{t("pages.daily_tasks_6ec40b")}</h1>
+        <p className="muted">{t("pages.your_daily_rewards_dd967f")}</p>
       </div>
       <div className="tasks-panel">{body}</div>
     </div>
