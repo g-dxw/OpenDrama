@@ -13,7 +13,7 @@ import urllib.parse
 import urllib.request
 import urllib.error
 from datetime import datetime, timedelta, timezone
-from sqlalchemy import select, func
+from sqlalchemy import select, func, or_
 from sqlalchemy.orm import Session
 from app.modules.billing.models import Order, Plan, PlanVersion, Subscription
 from app.modules.billing.commerce_models import (CoinPack,CoinPackVersion,StripeAccount,StripePriceBinding,CoinSource,CoinAllocation,MembershipGrant,CommerceSettlement,CommerceRefund,StripeSubscriptionLifecycle)
@@ -557,6 +557,18 @@ def process_event(db,code,payload):
         if not line:raise BillingError(409,'invoice has no paid entitlement period')
         period=line['period'];start=datetime.fromtimestamp(period['start'],UTC);end=datetime.fromtimestamp(period['end'],UTC)
         if end<=start or int(obj.get('amount_paid',-1))!=order.amount_cents or str(obj.get('currency','')).upper()!=order.currency:raise BillingError(409,'invoice period or amount mismatch')
+        from app.modules.billing.stripe_invoice_payments import resolve_invoice_payment
+        credential=get_account(db,code)['secret_key']
+        mode=True if credential.startswith(('sk_live_','rk_live_')) else False if credential.startswith(('sk_test_','rk_test_')) else None
+        payment=resolve_invoice_payment(obj,fetch=lambda path:stripe_request(db,code,path,method='GET'),expected_amount=order.amount_cents,expected_currency=order.currency,livemode=mode)
+        context=order.checkout_context or {}
+        identities=set(context.get('invoice_payment_intent_ids') or ()) | set(payment.payment_intent_ids)
+        # Replayed older event versions must not erase proven shared/split facts.
+        manual=bool(context.get('invoice_payment_requires_manual_review')) or payment.requires_manual_review or len(identities)!=1
+        if order.payment_intent_id and payment.payment_intent_id and order.payment_intent_id!=payment.payment_intent_id:
+            identities.add(order.payment_intent_id);manual=True
+        order.payment_intent_id=None if manual else payment.payment_intent_id
+        order.checkout_context={**context,'invoice_payment_evidence':payment.evidence,'invoice_payment_intent_ids':sorted(identities),'invoice_payment_requires_manual_review':manual,'invoice_payment_review_reason':payment.reason or context.get('invoice_payment_review_reason','')}
         # Keep a merchant binding for cancellation while paid grants own access.
         sub=db.scalar(select(Subscription).where(Subscription.stripe_subscription_id==subscription,Subscription.account_code==code).with_for_update())
         if sub is not None and sub.user_id!=order.user_id:raise BillingError(409,'subscription owner does not match frozen order')
@@ -580,14 +592,21 @@ def process_event(db,code,payload):
         fact=db.get(StripeSubscriptionLifecycle,(code,subscription))
         if fact is not None:sub.canceled_at=fact.canceled_at if fact.deleted or fact.cancel_at_period_end else None
         sub.stripe_customer_id=obj.get('customer') or sub.stripe_customer_id
-        return settle_order(db,order,code+':invoice:'+obj['id'],start,end)
+        result=settle_order(db,order,code+':invoice:'+obj['id'],start,end)
+        if result.get('replayed'):db.commit()
+        return result
     if kind in {'refund.updated','refund.created','charge.refunded'}:
         query=select(CommerceRefund).join(Order,Order.id==CommerceRefund.order_id).where(Order.account_code==code)
         refund=db.scalar(query.where(CommerceRefund.refund_id==obj.get('id'))) if not kind.startswith('charge') else None
-        if refund is None and obj.get('payment_intent'):
-            refund=db.scalar(query.where(Order.payment_intent_id==obj['payment_intent']))
+        related=orders_for_payment_intent(db,code,obj.get('payment_intent'))
+        if refund is not None:
+            known_order=db.get(Order,refund.order_id)
+            if not related:related=orders_for_payment_intent(db,code,known_order.payment_intent_id) or [known_order]
+            elif all(item.id!=known_order.id for item in related):related.append(known_order)
+        if len(related)>1 or any(refund_payment_review_reason(db,item) for item in related):return external_refund_review(db,related,obj)
+        if refund is None and related:refund=db.scalar(query.where(Order.id==related[0].id))
         if refund is None:
-            external_order=db.scalar(select(Order).where(Order.account_code==code,Order.payment_intent_id==obj.get('payment_intent'))) if obj.get('payment_intent') else None
+            external_order=related[0] if related else None
             if external_order is None:return None
             wallet_lock(db,external_order.user_id)
             # Dashboard/other-provider initiated refunds are facts, but cannot
@@ -597,13 +616,15 @@ def process_event(db,code,payload):
             if existing:return dict(manual_review=existing.status=='manual_review',refund_status=existing.status)
             db.add(CommerceRefund(order_id=external_order.id,idempotency_key='external:'+external_order.order_no,status='manual_review',refund_id=obj.get('id') if kind!='charge.refunded' else None,reason='Provider initiated refund',error='Provider refund was not requested through the verified entitlement workflow; manual reconciliation required'))
             external_order.status='refund_review';db.commit();return dict(manual_review=True)
+        order=db.get(Order,refund.order_id)
+        order,refund=locked_refund(db,order,refund)
         if refund.status=='manual_review':return dict(manual_review=True,refund_status=refund.status)
+        if refund.status in {'succeeded','failed','canceled'}:return dict(refund_status=refund.status,replayed=True)
         if kind=='charge.refunded':
-            order=db.get(Order,refund.order_id)
-            if int(obj.get('amount_refunded',0))!=order.amount_cents:return dict(manual_review=True)
-            state='succeeded'
+            # Aggregate charge totals do not identify the original refund.
+            # Reconcile the exact refund before changing frozen sources.
+            db.commit();return reconcile_refund(db,order,refund)
         else:
-            order=db.get(Order,refund.order_id)
             if not matching_refund_object(db,order,refund,obj):db.commit();return dict(manual_review=True,refund_status=refund.status)
             if not refund.refund_id:refund.refund_id=obj.get('id')
             state=obj.get('status')
@@ -636,16 +657,97 @@ def verify_source_proof(db,order,source):
             if reserve is not None and reserve[0]==-debit.amount:continue
         raise BillingError(409,'unmatched legacy or administrative coin debit after purchase; manual refund review required')
 
+def orders_for_payment_intent(db,code,payment_intent):
+    if not isinstance(payment_intent,str) or not payment_intent:return []
+    return list(db.scalars(select(Order).where(Order.account_code==code,or_(Order.payment_intent_id==payment_intent,Order.checkout_context['invoice_payment_intent_ids'].contains([payment_intent]))).order_by(Order.id)))
+
+def refund_payment_review_reason(db,order):
+    context=order.checkout_context or {}
+    ids=context.get('invoice_payment_intent_ids') or []
+    if context.get('invoice_payment_requires_manual_review') or len(set(ids))>1:
+        return 'Invoice payment allocation is not a single verified full payment; manual refund reconciliation required'
+    if order.payment_intent_id and len(orders_for_payment_intent(db,order.account_code,order.payment_intent_id))>1:
+        return 'PaymentIntent is shared by multiple orders; manual refund reconciliation required'
+    return None
+
+def external_refund_review(db,orders,obj):
+    for user_id in sorted({order.user_id for order in orders}):wallet_lock(db,user_id)
+    for item in orders:
+        order=db.get(Order,item.id,with_for_update=True,populate_existing=True)
+        refund=db.scalar(select(CommerceRefund).where(CommerceRefund.order_id==order.id).with_for_update().execution_options(populate_existing=True))
+        if refund is None:
+            refund=CommerceRefund(order_id=order.id,idempotency_key='external:'+order.order_no,status='manual_review',reason='Provider refund on an ambiguous invoice payment',error='PaymentIntent is shared or split across invoice payments; manual reconciliation required');db.add(refund)
+        else:refund.status='manual_review';refund.error='PaymentIntent is shared or split across invoice payments; original sources remain frozen for manual reconciliation'
+        order.status='refund_review'
+    db.commit();return dict(manual_review=True,affected_orders=[order.order_no for order in orders])
+
+def locked_refund(db,order,refund):
+    wallet_lock(db,order.user_id)
+    order=db.get(Order,order.id,with_for_update=True,populate_existing=True)
+    refund=db.get(CommerceRefund,refund.id,with_for_update=True,populate_existing=True)
+    return order,refund
+
+def refund_metadata_matches(order,refund,remote):
+    metadata=remote.get('metadata') or {}
+    return isinstance(metadata,dict) and metadata.get('commerce_order_no')==order.order_no and metadata.get('commerce_refund_key')==refund.idempotency_key
+
+def uncertain_refund(db,order,refund,message):
+    order,refund=locked_refund(db,order,refund)
+    if refund.status not in {'succeeded','failed','canceled','manual_review'}:
+        refund.error=message[:500]
+    db.commit();return refund_out(refund)
+
+def reconcile_refund(db,order,refund):
+    """Read the original refund; never replay creation after an unknown result."""
+    try:
+        if refund.refund_id:
+            remote=stripe_request(db,order.account_code,'/refunds/'+urllib.parse.quote(refund.refund_id,safe=''),method='GET')
+        else:
+            items=[];cursor=None
+            for _ in range(10):
+                query={'payment_intent':order.payment_intent_id,'limit':100}
+                if cursor:query['starting_after']=cursor
+                page=stripe_request(db,order.account_code,'/refunds?'+urllib.parse.urlencode(query),method='GET')
+                if not isinstance(page,dict) or not isinstance(page.get('data'),list) or type(page.get('has_more')) is not bool:
+                    return uncertain_refund(db,order,refund,'Refund lookup was incomplete or ambiguous; sources remain frozen for manual reconciliation')
+                entries=page['data']
+                if any(not isinstance(item,dict) or not item.get('id') for item in entries):
+                    return uncertain_refund(db,order,refund,'Refund lookup contained an invalid object; sources remain frozen for manual reconciliation')
+                items.extend(entries)
+                if not page['has_more']:break
+                if not entries or entries[-1]['id']==cursor:
+                    return uncertain_refund(db,order,refund,'Refund lookup pagination was incomplete; sources remain frozen for manual reconciliation')
+                cursor=entries[-1]['id']
+            else:return uncertain_refund(db,order,refund,'Refund lookup exceeded its pagination limit; sources remain frozen for manual reconciliation')
+            if len(items)!=1 or not refund_metadata_matches(order,refund,items[0]):
+                return uncertain_refund(db,order,refund,'The original JJTV refund could not be uniquely identified; sources remain frozen for manual reconciliation')
+            remote=items[0]
+    except BillingError as exc:
+        return uncertain_refund(db,order,refund,'Original refund lookup failed; sources remain frozen. '+str(exc.detail))
+    if not isinstance(remote,dict) or not remote.get('id') or (refund.refund_id and remote['id']!=refund.refund_id) or remote.get('payment_intent')!=order.payment_intent_id or type(remote.get('amount')) is not int or remote['amount']!=order.amount_cents or str(remote.get('currency','')).upper()!=order.currency.upper() or remote.get('status') not in {'pending','requires_action','succeeded','failed','canceled'}:
+        return uncertain_refund(db,order,refund,'Original refund identity, full amount or status was not verified; sources remain frozen for manual reconciliation')
+    order,refund=locked_refund(db,order,refund)
+    if refund.status in {'succeeded','failed','canceled','manual_review'}:return refund_out(refund)
+    if not matching_refund_object(db,order,refund,remote):db.commit();return refund_out(refund)
+    refund.refund_id=remote['id'];refund.error=''
+    finalize_refund(db,refund,remote['status']);db.commit();return refund_out(refund)
+
 def request_refund(db,order_no,actor,reason,idempotency_key):
     order=db.scalar(select(Order).where(Order.order_no==order_no))
     if order is None:raise BillingError(404,'order not found')
     wallet=wallet_lock(db,order.user_id)
     order=db.get(Order,order.id,with_for_update=True,populate_existing=True)
-    existing=db.scalar(select(CommerceRefund).where(CommerceRefund.order_id==order.id))
+    existing=db.scalar(select(CommerceRefund).where(CommerceRefund.order_id==order.id).execution_options(populate_existing=True))
+    if existing and existing.status in {'succeeded','failed','canceled','manual_review'}:
+        db.commit();return refund_out(existing)
+    review_reason=refund_payment_review_reason(db,order)
+    if review_reason:
+        if existing and existing.status=='pending':
+            existing.status='manual_review';existing.error=review_reason;order.status='refund_review';db.commit();return refund_out(existing)
+        raise BillingError(409,review_reason)
     if existing:
         db.commit()
-        if existing.status in {'succeeded','failed','canceled','manual_review'}:return refund_out(existing)
-        refund=existing
+        return reconcile_refund(db,order,existing)
     else:
         if order.status!='paid' or not order.checkout_key and not order.invoice_id or not order.product_snapshot or not order.payment_intent_id:raise BillingError(409,'legacy or unverified payment requires manual refund review')
         source=db.scalar(select(CoinSource).where(CoinSource.order_id==order.id).with_for_update())
@@ -664,20 +766,29 @@ def request_refund(db,order_no,actor,reason,idempotency_key):
             db.add(CoinLedgerEntry(user_id=order.user_id,amount=-source.reserved,balance_after=wallet.balance,biz_type='refund_reserve',biz_key='refund_reserve:'+order.order_no,note=reason))
         if grant:grant.status='refund_pending'
         order.status='refund_pending';audit(db,actor,'commerce.refund.request',order.id,dict(reason=reason));db.commit()
-    # Unknown network outcomes deliberately retain reservations for the same-key retry.
-    try:remote=stripe_request(db,order.account_code,'/refunds',{'payment_intent':order.payment_intent_id,'amount':str(order.amount_cents)},idempotency_key=refund.idempotency_key)
+    # A new POST rejection never establishes the outcome of an earlier refund
+    # on this payment. Retries below only READ the original provider facts.
+    data={'payment_intent':order.payment_intent_id,'amount':str(order.amount_cents),'metadata[commerce_order_no]':order.order_no,'metadata[commerce_refund_key]':refund.idempotency_key}
+    try:remote=stripe_request(db,order.account_code,'/refunds',data,idempotency_key=refund.idempotency_key)
     except BillingError as exc:
-        refund.error=exc.detail
-        if getattr(exc,'definitive',False):finalize_refund(db,refund,'failed')
+        order,refund=locked_refund(db,order,refund)
+        if refund.status in {'succeeded','failed','canceled','manual_review'}:return refund_out(refund)
+        refund.error='Refund creation response did not establish its outcome; sources remain frozen. '+str(exc.detail)[:300]
         db.commit();raise
-    if not matching_refund_object(db,order,refund,remote):db.commit();return refund_out(refund)
+    order,refund=locked_refund(db,order,refund)
+    if refund.status in {'succeeded','failed','canceled','manual_review'}:return refund_out(refund)
+    if not matching_refund_object(db,order,refund,remote,trusted_create=True):db.commit();return refund_out(refund)
     refund.refund_id=remote['id'];finalize_refund(db,refund,remote.get('status','pending'));db.commit();return refund_out(refund)
 
-def matching_refund_object(db,order,refund,remote):
+def matching_refund_object(db,order,refund,remote,*,trusted_create=False):
     """Only the full refund we requested may settle frozen entitlement sources."""
-    mismatch=(refund.refund_id is not None and remote.get('id')!=refund.refund_id)
-    if remote.get('status')=='succeeded':
+    if refund.refund_id is None and not trusted_create and not refund_metadata_matches(order,refund,remote):
+        refund.error='Unidentified refund on this payment; original sources remain frozen for manual reconciliation';db.flush();return False
+    mismatch=(not isinstance(remote.get('id'),str) or not remote['id'] or (refund.refund_id is not None and remote['id']!=refund.refund_id))
+    if remote.get('payment_intent') is not None:mismatch=mismatch or remote['payment_intent']!=order.payment_intent_id
+    if remote.get('status') in {'succeeded','failed','canceled'}:
         mismatch=mismatch or type(remote.get('amount')) is not int or remote['amount']!=order.amount_cents
+        if not trusted_create:mismatch=mismatch or str(remote.get('currency','')).upper()!=order.currency.upper()
     if remote.get('currency') is not None:
         mismatch=mismatch or str(remote['currency']).upper()!=order.currency.upper()
     if mismatch:
@@ -770,6 +881,8 @@ def refund_eligibility(db,order):
     existing=db.scalar(select(CommerceRefund).where(CommerceRefund.order_id==order.id))
     if existing:
         return dict(eligible=False,reason=existing.error or ('退款处理中，可重试现有申请' if existing.status=='pending' else '该订单已有退款记录：'+existing.status))
+    review_reason=refund_payment_review_reason(db,order)
+    if review_reason:return dict(eligible=False,reason=review_reason)
     if order.status!='paid' or (not order.checkout_key and not order.invoice_id) or not order.product_snapshot or not order.payment_intent_id:return dict(eligible=False,reason='历史订单或支付来源不完整，需要人工核对')
     source=db.scalar(select(CoinSource).where(CoinSource.order_id==order.id))
     grant=db.scalar(select(MembershipGrant).where(MembershipGrant.order_id==order.id))
