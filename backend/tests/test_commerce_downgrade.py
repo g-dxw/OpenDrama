@@ -135,3 +135,34 @@ def test_offline_downgrade_cannot_skip_commercial_data_preflight(commercial_migr
         command.downgrade(config, "a1114commerce:a1114content", sql=True)
     with target.connect() as db:
         assert db.scalar(sa.text("SELECT version_num FROM alembic_version")) == "a1114commerce"
+
+
+@pytest.mark.parametrize(("product", "status", "binding"), [
+    ("coins", "created", "checkout"),
+    ("membership", "created", "checkout"),
+    ("coins", "failed", "checkout"),
+    ("membership", "failed", "checkout"),
+    ("coins", "created", "external_txn_id"),
+    ("membership", "failed", "external_txn_id"),
+    ("membership", "created", "payment_intent_id"),
+    ("membership", "failed", "subscription_ref"),
+    ("membership", "created", "invoice_id"),
+    ("membership", "failed", "checkout_key"),
+    ("membership", "created", "checkout_url"),
+    ("membership", "paid", "checkout_url"),
+])
+def test_unsettled_provider_checkout_blocks_downgrade(commercial_migration, product, status, binding):
+    target, config, ids = commercial_migration
+    with target.begin() as db:
+        order_id = db.scalar(sa.text("INSERT INTO orders(order_no,user_id,plan_version_id,amount_cents,currency,billing_mode,status,product_type) VALUES ('ORD-REMOTE-CHECKOUT',:user,:version,499,'USD','one_time',:status,:product) RETURNING id"), {"user": ids["user"], "version": ids["version"] if product == "membership" else None, "status": status, "product": product})
+        if binding == "checkout":
+            # A created Checkout is still payable remotely. A local failed
+            # result also cannot prove that Stripe did not create the session.
+            db.execute(sa.text("UPDATE orders SET checkout_key='checkout-idempotency-key',external_txn_id='cs_unsettled',checkout_url='https://checkout.stripe.com/c/pay/cs_unsettled',product_snapshot=CAST(:snapshot AS jsonb) WHERE id=:order"), {"snapshot": '{"amount_cents":499,"currency":"USD","base_coins":50,"days":30}', "order": order_id})
+        else:
+            # Test each surviving provider marker independently, including
+            # partially persisted responses with no complete snapshot yet.
+            values = {"checkout_key": "checkout-idempotency-key", "checkout_url": "https://checkout.stripe.com/c/pay/cs_unsettled", "external_txn_id": "cs_unsettled", "payment_intent_id": "pi_unsettled", "invoice_id": "in_unsettled", "subscription_ref": "sub_unsettled"}
+            assert binding in values
+            db.execute(sa.text("UPDATE orders SET " + binding + "=:value WHERE id=:order"), {"value": values[binding], "order": order_id})
+    _assert_refused_without_changes(target, config)

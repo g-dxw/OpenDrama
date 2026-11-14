@@ -47,12 +47,16 @@ def downgrade():
             OR EXISTS (SELECT 1 FROM subscriptions WHERE managed_commerce OR account_code <> 'env')
             OR EXISTS (
                 SELECT 1 FROM orders
-                WHERE status NOT IN ('created', 'failed') AND (
-                    plan_version_id IS NULL OR product_type <> 'membership'
-                    OR product_snapshot <> '{}'::jsonb OR account_code <> 'env'
-                    OR checkout_key IS NOT NULL OR payment_intent_id IS NOT NULL
-                    OR invoice_id IS NOT NULL OR subscription_ref IS NOT NULL
-                )
+                -- Local created/failed states do not prove that an external
+                -- Checkout cannot still settle. Preserve its frozen bindings.
+                WHERE checkout_key IS NOT NULL OR checkout_url IS NOT NULL
+                    OR payment_intent_id IS NOT NULL OR invoice_id IS NOT NULL
+                    OR subscription_ref IS NOT NULL
+                    OR (status IN ('created', 'failed') AND NULLIF(external_txn_id, '') IS NOT NULL)
+                    OR (status NOT IN ('created', 'failed') AND (
+                        plan_version_id IS NULL OR product_type <> 'membership'
+                        OR product_snapshot <> '{}'::jsonb OR account_code <> 'env'
+                    ))
             )
     """))
     if commercial_data:
