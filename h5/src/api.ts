@@ -260,20 +260,45 @@ export function membershipCheckoutIntent(planCode: string): string {
   }
   return intent;
 }
-/** Rotate only an explicitly expired intent still owned by this account and cache entry. */
+export function matchesMembershipCheckoutIntent(
+  planCode: string,
+  expectedIntent: string,
+  ownerToken: string,
+): boolean {
+  return (
+    authToken() === ownerToken &&
+    sessionStorage.getItem(membershipIntentKey(planCode)) === expectedIntent
+  );
+}
+/** Rotate only a terminal intent explicitly confirmed by the user, preserving newer attempts. */
 export function replaceExpiredMembershipIntent(
   planCode: string,
   expectedIntent: string,
   ownerToken: string,
 ): boolean {
   const key = membershipIntentKey(planCode);
-  if (
-    authToken() !== ownerToken ||
-    sessionStorage.getItem(key) !== expectedIntent
-  )
+  if (!matchesMembershipCheckoutIntent(planCode, expectedIntent, ownerToken))
     return false;
   sessionStorage.setItem(key, crypto.randomUUID());
   return true;
+}
+/** The caller has confirmed this exact order paid and settled before showing its explicit action. */
+export const replacePaidMembershipIntent = replaceExpiredMembershipIntent;
+export interface CheckoutOrderStatus {
+  order: {
+    order_no: string;
+    product_type: string;
+    product_code: string;
+    status: string;
+  };
+  settled: boolean;
+}
+export function getCheckoutOrder(
+  orderNo: string,
+): Promise<CheckoutOrderStatus> {
+  return getJson<CheckoutOrderStatus>(
+    "/v1/commerce/orders/" + encodeURIComponent(orderNo),
+  );
 }
 /** Uncertain retries keep the exact same payment intent. */
 export function startCheckout(

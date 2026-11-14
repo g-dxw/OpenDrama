@@ -80,9 +80,8 @@ function AppShell() {
     const params = new URLSearchParams(window.location.search);
     const result = params.get("checkout");
     if (!result) return;
-    for (const key of Object.keys(sessionStorage))
-      if (key.startsWith("jjtv_checkout_membership_"))
-        sessionStorage.removeItem(key);
+    // A return query is not payment evidence; retain every uncertain checkout intent.
+    // A confirmed paid order can be retired only by its explicit new-purchase action.
     params.delete("checkout");
     const query = params.toString();
     window.history.replaceState(

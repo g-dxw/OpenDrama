@@ -26,7 +26,10 @@ const server = await createServer({
               "/v1/billing/cancel",
               "/v1/dramas/1/play",
               "/v1/playback",
-            ].includes(new URL(request.url, "http://fixture").pathname)
+            ].includes(new URL(request.url, "http://fixture").pathname) &&
+            !/^\/v1\/commerce\/orders\/[^/]+$/.test(
+              new URL(request.url, "http://fixture").pathname,
+            )
           ) {
             next();
             return;
@@ -126,8 +129,10 @@ let activeMember = false,
   cancelHold = null,
   memberAccess = false,
   memberHold = null,
-  memberProfileBarrier = null;
+  memberProfileBarrier = null,
+  orderHold = null;
 const recoveryReplies = [];
+const checkoutFacts = new Map();
 const pending = [],
   inFlight = new Set();
 page.on("requestfinished", (request) => inFlight.delete(request));
@@ -150,7 +155,8 @@ await page.evaluateOnNewDocument(() => {
         "/v1/billing/cancel",
         "/v1/dramas/1/play",
         "/v1/playback",
-      ].includes(url.pathname)
+      ].includes(url.pathname) &&
+      !/^\/v1\/commerce\/orders\/[^/]+$/.test(url.pathname)
     )
       return nativeFetch(input, init);
     const id = String(++sequence),
@@ -203,6 +209,7 @@ function hold(kind, order = "H5-ORDER", delivery = "respond") {
   pending.push(item);
   if (kind === "checkout") checkoutHold = item;
   else if (kind === "cancel") cancelHold = item;
+  else if (kind === "order") orderHold = item;
   else memberHold = item;
   return item;
 }
@@ -525,7 +532,30 @@ page.on("request", async (req) => {
       }
     } else if (/^\/v1\/playback\/(start|progress|complete)$/.test(p))
       result = { ok: true };
-    else if (p === "/v1/commerce/checkout") {
+    else if (
+      /^\/v1\/commerce\/orders\/[^/]+$/.test(p) &&
+      req.method() === "GET"
+    ) {
+      const fact = checkoutFacts.get(decodeURIComponent(p.split("/").at(-1)));
+      status = fact ? 200 : 404;
+      result = fact
+        ? {
+            order: {
+              order_no: fact.order_no,
+              product_type: fact.product_type,
+              product_code: fact.product_code,
+              status: fact.status,
+            },
+            settled: fact.settled,
+          }
+        : { detail: "Order not found" };
+      if (orderHold && fact && orderHold.order === fact.order_no) {
+        const held = orderHold;
+        orderHold = null;
+        await fulfillHeld(req, held, result);
+        return;
+      }
+    } else if (p === "/v1/commerce/checkout") {
       if (recoveryReplies.length) {
         const reply = recoveryReplies.shift();
         status = reply.status;
@@ -538,6 +568,13 @@ page.on("request", async (req) => {
           status = 409;
           result = { detail: "Unexpected purchase" };
         } else {
+          checkoutFacts.set(held.order, {
+            order_no: held.order,
+            product_type: "membership",
+            product_code: "weekly",
+            status: "created",
+            settled: false,
+          });
           await fulfillHeld(req, held, {
             url: origin + "/?checkout=cancel&surface=h5#account/orders",
             session_id: "cs_fixture",
@@ -1335,6 +1372,228 @@ try {
   );
   pass(
     "uncertain and already-paid conflicts never rotate keys or offer a fresh automatic purchase",
+  );
+  const paidReply = (order, subscription = false) =>
+    subscription
+      ? {
+          status: 409,
+          body: {
+            detail: {
+              code: "checkout_already_paid",
+              action: "view_orders",
+              order_no: order,
+              message: "This order was already paid.",
+            },
+          },
+        }
+      : {
+          status: 200,
+          body: {
+            url: origin + "/?old_paid_checkout=1#account/orders",
+            session_id: "cs_paid",
+            order_no: order,
+            reused: true,
+          },
+        };
+  for (const subscription of [false, true]) {
+    const intent = subscription
+        ? "paid-subscription-intent"
+        : "paid-pass-intent",
+      order = subscription ? "PAID-SUBSCRIPTION" : "PAID-PASS";
+    await freshPlans(intent);
+    checkoutFacts.set(order, {
+      order_no: order,
+      product_type: "membership",
+      product_code: "weekly",
+      status: "paid",
+      settled: true,
+    });
+    const beforePaid = checkoutCalls().length;
+    recoveryReplies.push(paidReply(order, subscription));
+    await page.locator('[data-testid="premium-buy-weekly"]').click();
+    await page.waitForSelector('[data-testid="premium-paid-checkout"]');
+    assert.equal(new URL(page.url()).hash, "#price");
+    assert(!new URL(page.url()).searchParams.has("old_paid_checkout"));
+    assert.equal(
+      await page.evaluate(() =>
+        sessionStorage.getItem("jjtv_checkout_membership_weekly"),
+      ),
+      intent,
+    );
+    assert.equal(checkoutCalls().length, beforePaid + 1);
+    assert(await page.$('[data-testid="premium-paid-view-orders"]'));
+    if (!subscription) {
+      await resize(1440);
+      await surface("mobile");
+      await resize(390);
+      await page.locator('[data-testid="premium-paid-view-orders"]').click();
+      await page.waitForFunction(() => location.hash === "#account/orders");
+      await page.waitForSelector('[data-testid="orders-sheet"]');
+      await goto("#price");
+      await page.reload({ waitUntil: "networkidle0" });
+      await surface("mobile");
+      recoveryReplies.push(paidReply(order, subscription));
+      await page.locator('[data-testid="premium-buy-weekly"]').click();
+      await page.waitForSelector('[data-testid="premium-paid-checkout"]');
+      assert.equal(checkoutCalls().at(-1).body.idempotency_key, intent);
+    }
+    recoveryReplies.push(unknownReply);
+    await page
+      .locator('[data-testid="premium-paid-start-new-checkout"]')
+      .click();
+    await page.waitForFunction(
+      () =>
+        document.querySelector(".premium-error") &&
+        !document.querySelector('[data-testid="premium-buy-weekly"]').disabled,
+    );
+    const next = checkoutCalls().at(-1).body.idempotency_key;
+    assert.notEqual(next, intent);
+    assert.equal(
+      await page.evaluate(() =>
+        sessionStorage.getItem("jjtv_checkout_membership_weekly"),
+      ),
+      next,
+    );
+    await buyFailed(unknownReply);
+    assert.equal(checkoutCalls().at(-1).body.idempotency_key, next);
+    pass(
+      (subscription ? "subscription" : "one-time") +
+        " paid checkout without a success return offers explicit new intent; uncertain retries retain it",
+    );
+  }
+  for (const fact of [
+    { status: "paid", settled: false, product_code: "weekly" },
+    { status: "refunded", settled: true, product_code: "weekly" },
+    { status: "paid", settled: true, product_code: "monthly" },
+  ]) {
+    await freshPlans("unconfirmed-paid-intent");
+    checkoutFacts.set("UNCONFIRMED-PAID", {
+      order_no: "UNCONFIRMED-PAID",
+      product_type: "membership",
+      ...fact,
+    });
+    await buyFailed(paidReply("UNCONFIRMED-PAID", true));
+    assert.equal(
+      await page.$('[data-testid="premium-paid-start-new-checkout"]'),
+      null,
+    );
+    assert.equal(
+      await page.evaluate(() =>
+        sessionStorage.getItem("jjtv_checkout_membership_weekly"),
+      ),
+      "unconfirmed-paid-intent",
+    );
+  }
+  pass(
+    "unsettled, refunded and product-mismatched orders cannot authorize a fresh membership intent",
+  );
+  for (const flag of ["success", "cancel", "unknown"]) {
+    const intent = "return-proof-" + flag;
+    await freshPlans(intent);
+    await page.evaluate(() =>
+      sessionStorage.setItem(
+        "jjtv_checkout_membership_monthly",
+        "OTHER-UNCERTAIN-PLAN",
+      ),
+    );
+    await goto("?checkout=" + flag + "&surface=h5#price");
+    await surface("mobile");
+    await page.waitForFunction(
+      () => !new URLSearchParams(location.search).has("checkout"),
+    );
+    assert.equal(
+      await page.evaluate(() =>
+        sessionStorage.getItem("jjtv_checkout_membership_weekly"),
+      ),
+      intent,
+    );
+    assert.equal(
+      await page.evaluate(() =>
+        sessionStorage.getItem("jjtv_checkout_membership_monthly"),
+      ),
+      "OTHER-UNCERTAIN-PLAN",
+    );
+  }
+  pass(
+    "success, canceled and unknown return queries never retire unconfirmed membership intents",
+  );
+  for (const changeOwner of [false, true]) {
+    await freshPlans("late-paid-owner-intent");
+    checkoutFacts.set("LATE-PAID", {
+      order_no: "LATE-PAID",
+      product_type: "membership",
+      product_code: "weekly",
+      status: "paid",
+      settled: true,
+    });
+    const delayed = hold("order", "LATE-PAID");
+    recoveryReplies.push(paidReply("LATE-PAID", true));
+    await page.locator('[data-testid="premium-buy-weekly"]').click();
+    await delayed.started;
+    const beforePaidLate = checkoutCalls().length;
+    await page.evaluate((other) => {
+      if (other) localStorage.setItem("minitv_h5_token", "mobile-token-b");
+      sessionStorage.setItem(
+        "jjtv_checkout_membership_weekly",
+        "NEWER-OWNER-OR-ATTEMPT",
+      );
+    }, changeOwner);
+    await settleHeld(delayed);
+    await page.waitForFunction(() => window.__jjtvPendingFetches === 0);
+    assert.equal(new URL(page.url()).hash, "#price");
+    assert.equal(checkoutCalls().length, beforePaidLate);
+    assert.equal(
+      await page.evaluate(() =>
+        sessionStorage.getItem("jjtv_checkout_membership_weekly"),
+      ),
+      "NEWER-OWNER-OR-ATTEMPT",
+    );
+    assert.equal(await page.$('[data-testid="premium-paid-checkout"]'), null);
+  }
+  pass(
+    "late paid-order proof cannot replace another account or a newer cached purchase intent",
+  );
+  await freshPlans("quota-paid-intent");
+  checkoutFacts.set("QUOTA-PAID", {
+    order_no: "QUOTA-PAID",
+    product_type: "membership",
+    product_code: "weekly",
+    status: "paid",
+    settled: true,
+  });
+  recoveryReplies.push(paidReply("QUOTA-PAID", true));
+  await page.locator('[data-testid="premium-buy-weekly"]').click();
+  await page.waitForSelector('[data-testid="premium-paid-start-new-checkout"]');
+  const beforePaidQuota = checkoutCalls().length;
+  await page.evaluate(() => {
+    const proto = Object.getPrototypeOf(sessionStorage),
+      native = proto.setItem;
+    window.__restorePaidStorage = () => {
+      proto.setItem = native;
+    };
+    proto.setItem = function (key, value) {
+      if (this === sessionStorage && key === "jjtv_checkout_membership_weekly")
+        throw new DOMException("Fixture quota", "QuotaExceededError");
+      return native.call(this, key, value);
+    };
+  });
+  await page.locator('[data-testid="premium-paid-start-new-checkout"]').click();
+  await page.waitForFunction(() =>
+    [...document.querySelectorAll(".premium-error")].some((e) =>
+      e.textContent.includes("Could not start checkout"),
+    ),
+  );
+  assert.equal(checkoutCalls().length, beforePaidQuota);
+  assert.deepEqual(errors, []);
+  assert.equal(
+    await page.evaluate(() =>
+      sessionStorage.getItem("jjtv_checkout_membership_weekly"),
+    ),
+    "quota-paid-intent",
+  );
+  await page.evaluate(() => window.__restorePaidStorage());
+  pass(
+    "confirmed paid recovery reports storage failure without changing the old intent or creating a new checkout",
   );
   await freshPlans("quota-expired-intent");
   recoveryReplies.push(expiredReply());

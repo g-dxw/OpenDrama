@@ -7,6 +7,9 @@ import {
   startCheckout,
   membershipCheckoutIntent,
   replaceExpiredMembershipIntent,
+  replacePaidMembershipIntent,
+  matchesMembershipCheckoutIntent,
+  getCheckoutOrder,
   type MeProfile,
   type Plan,
 } from "../api";
@@ -19,11 +22,12 @@ import { setMobileCheckoutActive } from "../../../shared/consumer/surface";
 
 type Membership = NonNullable<MeProfile["membership"]>;
 type BillingMode = "subscription" | "one_time";
-type ExpiredCheckout = {
+type TerminalCheckout = {
   ownerToken: string;
   code: string;
   intent: string;
   message: string;
+  paidOrderNo?: string;
 };
 
 function formatDay(iso: string | null, locale: Locale): string {
@@ -59,9 +63,9 @@ export function PremiumSheet({
   const [showPlans, setShowPlans] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState("");
-  const [expired, setExpired] = useState<ExpiredCheckout | null>(null);
-  const expiredRef = useRef<ExpiredCheckout | null>(null);
-  const updateExpired = (value: ExpiredCheckout | null) => {
+  const [expired, setExpired] = useState<TerminalCheckout | null>(null);
+  const expiredRef = useRef<TerminalCheckout | null>(null);
+  const updateExpired = (value: TerminalCheckout | null) => {
     expiredRef.current = value;
     setExpired(value);
   };
@@ -158,6 +162,39 @@ export function PremiumSheet({
       else setMobileCheckoutActive(pinOwner.current, false);
     });
   };
+  async function reconcileCheckout(
+    request: { id: number; token: string },
+    code: string,
+    intent: string,
+    orderNo: string,
+  ): Promise<"paid" | "created" | "stale"> {
+    const result = await getCheckoutOrder(orderNo);
+    if (!isCurrent(request)) return "stale";
+    if (
+      !matchesMembershipCheckoutIntent(code, intent, request.token) ||
+      result.order.order_no !== orderNo ||
+      result.order.product_type !== "membership" ||
+      result.order.product_code !== code
+    )
+      throw new Error("Checkout identity changed");
+    if (result.order.status === "paid" && result.settled === true) {
+      updateExpired({
+        ownerToken: request.token,
+        code,
+        intent,
+        paidOrderNo: orderNo,
+        message:
+          locale === "zh"
+            ? "这笔订单已付款。请先查看订单，再决定是否开始新的购买。"
+            : "This order has already been paid. Review your orders before starting another purchase.",
+      });
+      finishRequest(request, true);
+      return "paid";
+    }
+    if (result.order.status !== "created")
+      throw new Error("Payment needs confirmation");
+    return "created";
+  }
   async function startSubscription(code: string) {
     const request = beginRequest(code);
     if (!request) return;
@@ -169,6 +206,24 @@ export function PremiumSheet({
         finishRequest(request);
         return;
       }
+      const reconciled = await reconcileCheckout(
+        request,
+        code,
+        intent,
+        result.order_no,
+      );
+      if (reconciled === "paid") return;
+      if (reconciled === "stale") {
+        finishRequest(request);
+        return;
+      }
+      // Recheck at the side-effect boundary after the nested async reconciliation.
+      if (!isCurrent(request)) {
+        finishRequest(request);
+        return;
+      }
+      if (!matchesMembershipCheckoutIntent(code, intent, request.token))
+        throw new Error("Checkout identity changed");
       sessionStorage.setItem("jjtv_h5_checkout_order", result.order_no);
       // Keep the owning mobile tree pinned until the checkout navigation unmounts it.
       window.location.assign(result.url);
@@ -203,6 +258,35 @@ export function PremiumSheet({
         finishRequest(request, true);
         return;
       }
+      if (
+        err instanceof ApiError &&
+        err.status === 409 &&
+        detail &&
+        typeof detail === "object" &&
+        "code" in detail &&
+        detail.code === "checkout_already_paid" &&
+        "action" in detail &&
+        detail.action === "view_orders" &&
+        "order_no" in detail &&
+        typeof detail.order_no === "string" &&
+        detail.order_no
+      ) {
+        try {
+          const reconciled = await reconcileCheckout(
+            request,
+            code,
+            intent,
+            detail.order_no,
+          );
+          if (reconciled === "paid") return;
+        } catch {
+          /* Unknown or unconfirmed orders retain the same intent. */
+        }
+        if (!isCurrent(request)) {
+          finishRequest(request);
+          return;
+        }
+      }
       finishRequest(request);
       if (err instanceof ApiError && err.status === 401)
         setError(t(locale, "premium_need_sign_in"));
@@ -221,11 +305,11 @@ export function PremiumSheet({
         return;
       }
       if (
-        !replaceExpiredMembershipIntent(
-          recovery.code,
-          recovery.intent,
-          recovery.ownerToken,
-        )
+        !(
+          recovery.paidOrderNo
+            ? replacePaidMembershipIntent
+            : replaceExpiredMembershipIntent
+        )(recovery.code, recovery.intent, recovery.ownerToken)
       ) {
         updateExpired(null);
         setMobileCheckoutActive(pinOwner.current, false);
@@ -419,16 +503,42 @@ export function PremiumSheet({
             <div
               className="premium-error"
               role="alert"
-              data-testid="premium-expired-checkout"
+              data-testid={
+                ownedExpired.paidOrderNo
+                  ? "premium-paid-checkout"
+                  : "premium-expired-checkout"
+              }
             >
               <p>{ownedExpired.message}</p>
+              {ownedExpired.paidOrderNo && (
+                <button
+                  className="premium-secondary"
+                  data-testid="premium-paid-view-orders"
+                  onClick={() => {
+                    onClose();
+                    window.location.hash = "account/orders";
+                  }}
+                >
+                  {locale === "zh" ? "查看订单" : "View orders"}
+                </button>
+              )}
               <button
                 className="premium-cta"
-                data-testid="premium-start-new-checkout"
+                data-testid={
+                  ownedExpired.paidOrderNo
+                    ? "premium-paid-start-new-checkout"
+                    : "premium-start-new-checkout"
+                }
                 onClick={startNewCheckout}
                 disabled={busy !== null}
               >
-                {locale === "zh" ? "重新发起支付" : "Start new checkout"}
+                {ownedExpired.paidOrderNo
+                  ? locale === "zh"
+                    ? "开始新的购买"
+                    : "Start a new purchase"
+                  : locale === "zh"
+                    ? "重新发起支付"
+                    : "Start new checkout"}
               </button>
             </div>
           )}
