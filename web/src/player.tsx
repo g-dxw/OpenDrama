@@ -7,6 +7,7 @@ import {
 import {
   get,
   post,
+  authToken,
   errorMessage,
   ApiError,
   type PlayPayload,
@@ -33,6 +34,7 @@ export function Watch({
     [error, setError] = useState(""),
     [unlockOpen, setUnlockOpen] = useState(false),
     [commentsOpen, setCommentsOpen] = useState(false),
+    [commentsEpisodeId, setCommentsEpisodeId] = useState<number | undefined>(),
     [shareOpen, setShareOpen] = useState(false),
     [copied, setCopied] = useState(false),
     [expanded, setExpanded] = useState(false),
@@ -174,8 +176,25 @@ export function Watch({
       if (owner === identityRef.current) setBusy(false);
     }
   }
+  const commentsModal =
+    commentsOpen && commentsEpisodeId != null ? (
+      <Modal
+        title="Comments"
+        className="watch-comments-modal"
+        onClose={() => setCommentsOpen(false)}
+      >
+        <Comments key={commentsEpisodeId} episodeId={commentsEpisodeId} />
+      </Modal>
+    ) : null;
   if (!data)
-    return error ? <Failure message={error} retry={load} /> : <Loading />;
+    return (
+      <div className="watch-page page-content">
+        <div>
+          {error ? <Failure message={error} retry={load} /> : <Loading />}
+        </div>
+        {commentsModal}
+      </div>
+    );
   const shareUrl = new URL(window.location.href);
   shareUrl.search = "";
   shareUrl.hash =
@@ -331,7 +350,10 @@ export function Watch({
             <button
               className="watch-action"
               disabled={!episode}
-              onClick={() => setCommentsOpen(true)}
+              onClick={() => {
+                setCommentsEpisodeId(episode?.id);
+                setCommentsOpen(true);
+              }}
             >
               <Icon name="message" />
               <span>Comment</span>
@@ -442,15 +464,7 @@ export function Watch({
           {error && <Failure message={error} />}
         </aside>
       </div>
-      {commentsOpen && episode && (
-        <Modal
-          title="Comments"
-          className="watch-comments-modal"
-          onClose={() => setCommentsOpen(false)}
-        >
-          <Comments key={episode.id} episodeId={episode.id} />
-        </Modal>
-      )}
+      {commentsModal}
       {shareOpen && (
         <Modal
           title="Share this drama"
@@ -543,6 +557,7 @@ export function Video({
   muted?: boolean;
   poster?: string;
 }) {
+  const ownerToken = useRef(authToken());
   const video = useRef<HTMLVideoElement>(null),
     hls = useRef<Hls | null>(null),
     latest = useRef({ onFinished, onDenied });
@@ -564,12 +579,13 @@ export function Video({
     setAuth(null);
     getAuth();
     async function getAuth() {
+      if (ownerToken.current !== authToken()) return;
       try {
         const result = await post<PlaybackAuth>("/v1/playback", {
           drama_id: dramaId,
           episode_id: episode.id,
         });
-        if (!alive) return;
+        if (!alive || ownerToken.current !== authToken()) return;
         if (!result.allowed || !result.url) {
           setError(
             result.reason === "region_blocked"
@@ -594,12 +610,14 @@ export function Video({
       finished = false,
       heartbeat = 0;
     const report = (kind: string) => {
+      if (ownerToken.current !== authToken()) return;
       void post("/v1/playback/" + kind, {
         episode_id: episode.id,
         position_seconds: Math.floor(el.currentTime || 0),
       }).catch(() => undefined);
     };
     const metadata = () => {
+      if (ownerToken.current !== authToken()) return;
       el.currentTime = Math.min(
         position.current,
         Number.isFinite(el.duration)
@@ -610,6 +628,7 @@ export function Video({
       void el.play().catch(() => undefined);
     };
     const playing = () => {
+      if (ownerToken.current !== authToken()) return;
       if (!started) {
         started = true;
         report("start");
@@ -619,6 +638,7 @@ export function Video({
       }
     };
     const ended = () => {
+      if (ownerToken.current !== authToken()) return;
       if (!finished) {
         finished = true;
         report("complete");
@@ -629,6 +649,7 @@ export function Video({
       position.current = el.currentTime;
     };
     const renew = () => {
+      if (ownerToken.current !== authToken()) return;
       if (!renewed.current) {
         renewed.current = true;
         setRetry((x) => x + 1);
