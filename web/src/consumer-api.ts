@@ -74,6 +74,7 @@ export interface Pack {
   bonus_coins: number;
   coins: number;
   version_id: number;
+  badge?: string;
 }
 export interface Plan {
   code: string;
@@ -83,6 +84,10 @@ export interface Plan {
   currency: string;
   benefits?: { items?: string[]; best?: boolean };
   billing_mode?: string;
+  duration_days?: number;
+  recurring_interval?: "week" | "month" | "year" | null;
+  base_coins?: number;
+  bonus_coins?: number;
 }
 export interface Order {
   order_no: string;

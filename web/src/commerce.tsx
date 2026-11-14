@@ -6,6 +6,7 @@ import {
   money,
   type Pack,
   type Plan,
+  type Order,
 } from "./consumer-api";
 import { useAuth } from "./auth";
 import { Failure, Icon, Loading, Modal } from "./components";
@@ -19,8 +20,7 @@ export function Store({
   sourceEpisodeId?: number;
 }) {
   const { user, requireAuth, refresh } = useAuth();
-  const [product, setProduct] = useState(kind),
-    [plans, setPlans] = useState<Plan[]>([]),
+  const [plans, setPlans] = useState<Plan[]>([]),
     [packs, setPacks] = useState<Pack[]>([]),
     [mode, setMode] = useState("one_time"),
     [channels, setChannels] = useState<
@@ -31,11 +31,12 @@ export function Store({
     [error, setError] = useState(""),
     [busy, setBusy] = useState(""),
     [cancelOpen, setCancelOpen] = useState(false);
-  const keys = useRef(new Map<string, string>());
+  const keys = useRef(new Map<string, string>()),
+    submitting = useRef(false);
   const load = () => {
     setLoading(true);
     setError("");
-    Promise.all([
+    Promise.allSettled([
       get<{ items: Plan[]; billing_mode?: string }>("/v1/plans"),
       get<{ items: Pack[] }>("/v1/coin-packs"),
       get<{ items: Array<{ code: string; name: string; enabled: boolean }> }>(
@@ -43,21 +44,52 @@ export function Store({
       ),
     ])
       .then(([p, c, ch]) => {
-        setPlans(p.items);
-        setMode(p.billing_mode ?? "one_time");
-        setPacks(c.items);
-        setChannels(ch.items.filter((i) => i.enabled));
-        setAccount(ch.items.find((i) => i.enabled)?.code || "");
+        const errors: string[] = [];
+        if (p.status === "fulfilled") {
+          setPlans(p.value.items);
+          setMode(p.value.billing_mode ?? "one_time");
+        } else errors.push("Membership plans: " + errorMessage(p.reason));
+        if (c.status === "fulfilled") setPacks(c.value.items);
+        else errors.push("Coin packs: " + errorMessage(c.reason));
+        if (ch.status === "fulfilled") {
+          const available = ch.value.items.filter((i) => i.enabled);
+          setChannels(available);
+          setAccount((previous) =>
+            available.some((i) => i.code === previous)
+              ? previous
+              : available[0]?.code || "",
+          );
+        } else {
+          setChannels([]);
+          errors.push("Payment options: " + errorMessage(ch.reason));
+        }
+        setError(errors.join(" "));
       })
-      .catch((e) => setError(errorMessage(e)))
       .finally(() => setLoading(false));
   };
   useEffect(load, []);
-  useEffect(() => setProduct(kind), [kind]);
-  async function purchase(code: string) {
-    setBusy(code);
+  useEffect(() => {
+    if (!loading && kind === "coin_pack")
+      document.getElementById("coin-packs")?.scrollIntoView({ block: "start" });
+  }, [kind, loading]);
+  function selectTab(next: "membership" | "coin_pack") {
+    const params = new URLSearchParams(
+      window.location.hash.split("?")[1] || "",
+    );
+    params.set("tab", next === "coin_pack" ? "coins" : "premium");
+    window.location.hash = "price?" + params.toString();
+    if (next === "membership")
+      document
+        .getElementById("membership-plans")
+        ?.scrollIntoView({ block: "start" });
+  }
+  async function purchase(product: "membership" | "coin_pack", code: string) {
+    if (submitting.current) return;
+    submitting.current = true;
+    const selection = product + ":" + code;
+    setBusy(selection);
     setError("");
-    const intent = product + ":" + code + ":" + account;
+    const intent = selection + ":" + account;
     let key = keys.current.get(intent);
     if (!key) {
       key = crypto.randomUUID();
@@ -89,35 +121,41 @@ export function Store({
     } catch (e) {
       setError(errorMessage(e));
       setBusy("");
+    } finally {
+      submitting.current = false;
     }
   }
+  const firstCurrency = plans[0]?.currency;
+  const minimum = plans
+    .filter((p) => p.currency === firstCurrency)
+    .reduce((lowest, p) => Math.min(lowest, p.price_cents), Infinity);
   return (
-    <div className="page-content store-page">
-      <div className="page-title">
-        <span className="eyebrow">More story. Less waiting.</span>
-        <h1>
-          {product === "membership"
-            ? "Your front-row pass"
-            : "Keep the story going"}
-        </h1>
-        <p className="muted">
-          {product === "membership"
-            ? "Choose the membership that fits you. Prices and benefits are set by JJTV."
-            : "Top up your wallet and unlock episodes at your own pace."}
-        </p>
+    <div className="page-content price-page">
+      <div className="price-heading">
+        <div>
+          <h1>Price</h1>
+          <p className="muted">
+            Membership plans and coin packs, all in one place.
+          </p>
+        </div>
+        {Number.isFinite(minimum) && (
+          <span className="price-from">
+            Premium from {money(minimum, firstCurrency)}
+          </span>
+        )}
       </div>
-      <div className="segmented" aria-label="Store category">
+      <div className="segmented price-tabs" aria-label="Store category">
         <button
-          aria-pressed={product === "membership"}
-          onClick={() => setProduct("membership")}
+          aria-pressed={kind === "membership"}
+          onClick={() => selectTab("membership")}
         >
-          Membership
+          Premium
         </button>
         <button
-          aria-pressed={product === "coin_pack"}
-          onClick={() => setProduct("coin_pack")}
+          aria-pressed={kind === "coin_pack"}
+          onClick={() => selectTab("coin_pack")}
         >
-          Coin packs
+          Coins
         </button>
       </div>
       {user?.membership?.active && (
@@ -144,90 +182,178 @@ export function Store({
             )}
         </div>
       )}
-      {error && <Failure message={error} retry={load} />}{" "}
+      {error && <Failure message={error} retry={load} />}
       {loading ? (
         <Loading />
       ) : (
         <>
-          <div className="purchase-grid">
-            {product === "membership"
-              ? plans.map((plan) => (
-                  <article
-                    className={
-                      "purchase-card " +
-                      (plan.benefits?.best ? "recommended" : "")
-                    }
-                    key={plan.code}
-                  >
-                    {plan.benefits?.best && (
-                      <span className="purchase-badge">Recommended</span>
-                    )}
-                    <Icon name="crown" size={30} />
-                    <h2>{plan.name_en || plan.name_zh}</h2>
-                    <div className="purchase-price">
+          <section className="price-section" id="membership-plans">
+            <div className="price-section-heading">
+              <h2>Membership plans</h2>
+              <p className="muted">
+                {mode === "subscription"
+                  ? "Choose your plan. Cancel renewal at any time."
+                  : "One payment for your selected access period."}
+              </p>
+            </div>
+            <div className="membership-grid">
+              {plans.map((plan) => (
+                <article
+                  className={
+                    "membership-card " +
+                    (plan.benefits?.best ? "recommended" : "")
+                  }
+                  key={plan.code}
+                >
+                  {plan.benefits?.best && (
+                    <span className="purchase-badge">Most popular</span>
+                  )}
+                  <div className="plan-card-heading">
+                    <div>
+                      <h3>{plan.name_en || plan.name_zh}</h3>
+                      <span>
+                        {(plan.billing_mode || mode) === "subscription"
+                          ? "Auto-renewing"
+                          : "One-time pass"}
+                      </span>
+                      {Number(plan.duration_days) > 0 && (
+                        <p className="plan-duration">
+                          Access for {plan.duration_days} days
+                        </p>
+                      )}
+                    </div>
+                    <strong>
                       {money(plan.price_cents, plan.currency)}
+                      {(plan.billing_mode || mode) === "subscription" &&
+                        plan.recurring_interval && (
+                          <small className="plan-cadence">
+                            per {plan.recurring_interval}
+                          </small>
+                        )}
+                    </strong>
+                  </div>
+                  {Number(plan.base_coins) + Number(plan.bonus_coins) > 0 && (
+                    <div className="plan-coin-strip">
+                      <strong>
+                        +
+                        {(
+                          Number(plan.base_coins || 0) +
+                          Number(plan.bonus_coins || 0)
+                        ).toLocaleString()}{" "}
+                        coins included
+                      </strong>
+                      <span>
+                        {plan.base_coins || 0} base + {plan.bonus_coins || 0}{" "}
+                        bonus
+                      </span>
                     </div>
-                    <p className="muted">
-                      {(plan.billing_mode || mode) === "subscription"
-                        ? "Auto-renewing subscription"
-                        : "One-time payment"}
-                    </p>
-                    <ul>
-                      {(plan.benefits?.items ?? []).map((text) => (
-                        <li key={text}>
-                          <Icon name="check" size={16} />
-                          {text}
-                        </li>
-                      ))}
-                    </ul>
-                    <button
-                      className="button primary"
-                      disabled={!!busy || !channels.length}
-                      onClick={() =>
-                        requireAuth(() => {
-                          void purchase(plan.code);
-                        })
-                      }
-                    >
-                      {busy === plan.code
-                        ? "Opening checkout…"
-                        : "Choose " + (plan.name_en || plan.name_zh)}
-                    </button>
-                  </article>
-                ))
-              : packs.map((pack) => (
-                  <article className="purchase-card" key={pack.code}>
-                    <Icon name="coin" size={30} />
-                    <h2>{pack.name_en || pack.name_zh}</h2>
-                    <div className="coin-total">
-                      {pack.coins.toLocaleString()}
-                      <span> coins</span>
-                    </div>
+                  )}
+                  <ul className="plan-benefit-list">
+                    {(plan.benefits?.items ?? []).map((text) => (
+                      <li key={text}>
+                        <Icon name="check" size={15} />
+                        {text}
+                      </li>
+                    ))}
+                  </ul>
+                  <button
+                    className="button secondary full-width"
+                    disabled={!!busy || !channels.length}
+                    onClick={() =>
+                      requireAuth(() => {
+                        void purchase("membership", plan.code);
+                      })
+                    }
+                  >
+                    {busy === "membership:" + plan.code
+                      ? "Opening checkout…"
+                      : (plan.billing_mode || mode) === "subscription"
+                        ? "Subscribe"
+                        : "Buy pass"}
+                  </button>
+                </article>
+              ))}
+            </div>
+            {!plans.length && (
+              <p className="empty compact">
+                No membership plans are available right now.
+              </p>
+            )}
+            <p className="section-footnote">
+              Episode access and any coin charges follow the rules shown on each
+              drama.
+            </p>
+          </section>
+          <section className="price-section" id="coin-packs">
+            <div className="price-section-heading">
+              <h2>Coin packs</h2>
+              <p className="muted">
+                Choose your top-up. Episode prices are shown before you unlock.
+              </p>
+            </div>
+            <div className="coin-pack-grid">
+              {packs.map((pack) => (
+                <article
+                  className={"coin-pack-card " + (pack.badge ? "featured" : "")}
+                  key={pack.code}
+                >
+                  {pack.badge && (
+                    <span className="purchase-badge">{pack.badge}</span>
+                  )}
+                  <h3 className="sr-only">{pack.name_en || pack.name_zh}</h3>
+                  <div className="coin-pack-total">
+                    <strong>{pack.coins.toLocaleString()}</strong>
+                    <span>coins</span>
                     {pack.bonus_coins > 0 && (
-                      <p className="bonus">
-                        Includes {pack.bonus_coins.toLocaleString()} bonus coins
-                      </p>
+                      <span className="coin-bonus">
+                        +{pack.bonus_coins.toLocaleString()} bonus
+                      </span>
                     )}
-                    <div className="purchase-price">
-                      {money(pack.price_cents, pack.currency)}
-                    </div>
+                  </div>
+                  <p className="coin-breakdown">
+                    {pack.base_coins.toLocaleString()} base +{" "}
+                    {pack.bonus_coins.toLocaleString()} bonus coins
+                  </p>
+                  <p className="coin-unit-price">
+                    {pack.coins > 0
+                      ? money(
+                          (pack.price_cents / pack.coins) * 100,
+                          pack.currency,
+                        ) + " per 100 coins"
+                      : ""}
+                  </p>
+                  <div className="coin-pack-footer">
+                    <strong>{money(pack.price_cents, pack.currency)}</strong>
                     <button
-                      className="button primary"
+                      className="button secondary"
                       disabled={!!busy || !channels.length}
                       onClick={() =>
                         requireAuth(() => {
-                          void purchase(pack.code);
+                          void purchase("coin_pack", pack.code);
                         })
                       }
                     >
-                      {busy === pack.code ? "Opening checkout…" : "Buy coins"}
+                      {busy === "coin_pack:" + pack.code
+                        ? "Opening…"
+                        : "Buy coins"}
                     </button>
-                  </article>
-                ))}
-          </div>
-          {!(product === "membership" ? plans : packs).length && (
-            <p className="empty">No products are available right now.</p>
-          )}
+                  </div>
+                </article>
+              ))}
+            </div>
+            {!packs.length && (
+              <p className="empty compact">
+                No coin packs are available right now.
+              </p>
+            )}
+            <a className="reward-callout" href="#rewards?return=price">
+              <span>
+                <strong>No budget today?</strong> Check in and finish daily
+                tasks to earn coins.
+              </span>
+              <span>Go to Rewards →</span>
+            </a>
+          </section>
           {channels.length > 1 && (
             <label className="payment-channel">
               Payment option
@@ -244,17 +370,24 @@ export function Store({
             </label>
           )}
           {!channels.length && (
-            <p className="error-text">
-              Payments are currently unavailable. Please try again later.
-            </p>
+            <div className="payment-unavailable" role="status">
+              <Icon name="lock" size={18} />
+              <span>
+                Payments are currently unavailable. You can still earn coins
+                through daily tasks.
+              </span>
+            </div>
           )}
-          <p className="fine-print">
-            Payments are securely processed by Stripe. You will review your
-            purchase before paying.{" "}
-            {product === "membership" && mode === "subscription"
-              ? "Cancel renewal from your account at any time."
-              : ""}
-          </p>
+          <footer className="price-footer">
+            <div>
+              <a href="#account/orders">Order history</a>
+              <a href="#account/ledger">Coin ledger</a>
+              <a href="#support">Payment help</a>
+            </div>
+            <span>
+              <Icon name="lock" size={14} /> Secure checkout by Stripe
+            </span>
+          </footer>
         </>
       )}
       {cancelOpen && (
@@ -285,61 +418,124 @@ export function Store({
     </div>
   );
 }
-export function CheckoutReturn({ result }: { result: string }) {
-  const { refresh, user } = useAuth();
-  const [state, setState] = useState("Checking your order…");
+export function CheckoutReturn({
+  result,
+  onDismiss,
+}: {
+  result: string;
+  onDismiss?: () => void;
+}) {
+  const { refresh, user, status, openLogin } = useAuth();
+  const [state, setState] = useState<
+      "pending" | "confirmed" | "cancelled" | "failed" | "signin" | "unknown"
+    >("pending"),
+    [message, setMessage] = useState("Checking your order…"),
+    [attempt, setAttempt] = useState(0);
   useEffect(() => {
     if (result !== "success") {
-      setState(
-        "Checkout was cancelled. You have not been charged by this page.",
+      setState("cancelled");
+      setMessage(
+        "Checkout was cancelled. Check your orders if you completed a payment.",
       );
       return;
     }
-    let active = true;
-    let tries = 0;
+    if (status === "loading") {
+      setState("pending");
+      setMessage("Restoring your account before checking payment…");
+      return;
+    }
+    if (status !== "user") {
+      setState("signin");
+      setMessage("Sign in to check your payment and updated balance.");
+      return;
+    }
+    const orderNumber = sessionStorage.getItem("jjtv_checkout_order");
+    if (!orderNumber) {
+      setState("unknown");
+      setMessage("Open your order history to check payment confirmation.");
+      return;
+    }
+    let active = true,
+      timer = 0,
+      tries = 0;
+    setState("pending");
+    setMessage("Waiting for payment confirmation…");
     const check = async () => {
       try {
-        await refresh();
-        const orders = await get<{
-          items: Array<{ order_no: string; status: string }>;
-        }>("/v1/commerce/orders?limit=100");
+        const orders = await get<{ items: Order[] }>(
+          "/v1/commerce/orders?limit=100",
+        );
         if (!active) return;
-        if (
-          orders.items.find(
-            (order) =>
-              order.order_no === sessionStorage.getItem("jjtv_checkout_order"),
-          )?.status === "paid"
-        ) {
-          setState("Payment confirmed. Your account has been updated.");
+        const order = orders.items.find((o) => o.order_no === orderNumber);
+        if (order?.status === "paid") {
+          await refresh();
+          if (!active) return;
+          setState("confirmed");
+          setMessage("Payment confirmed. Your account has been updated.");
+          return;
+        }
+        if (order && ["failed", "refunded"].includes(order.status)) {
+          setState("failed");
+          setMessage(
+            order.status === "refunded"
+              ? "This order has been refunded. See your order history for details."
+              : "Payment was not completed. You can try again from Price.",
+          );
           return;
         }
         if (tries++ < 5) timer = window.setTimeout(() => void check(), 2000);
-        else
-          setState(
-            "Your payment is still being confirmed. Check your orders for the latest status.",
+        else {
+          setState("unknown");
+          setMessage(
+            "Your payment is still being confirmed. Check your orders or retry shortly.",
           );
-      } catch {
-        if (active)
-          setState(
-            "Please sign in and check your orders for payment confirmation.",
-          );
+        }
+      } catch (e) {
+        if (active) {
+          setState("unknown");
+          setMessage(errorMessage(e));
+        }
       }
     };
-    let timer = 0;
     void check();
     return () => {
       active = false;
       clearTimeout(timer);
     };
-  }, [result]);
+  }, [result, status, user?.id, attempt, refresh]);
   return (
-    <div className="checkout-notice" role="status">
-      <Icon name="coin" />
+    <div className={"checkout-notice checkout-" + state} role="status">
+      <Icon name={state === "confirmed" ? "check" : "coin"} />
       <span>
-        {state}
-        {user ? " Wallet: " + user.coins.toLocaleString() + " coins." : ""}
+        {message}
+        {state === "confirmed" && user
+          ? " Wallet: " + user.coins.toLocaleString() + " coins."
+          : ""}
       </span>
-      <a href="#account/orders">View orders</a>
+      <div className="checkout-actions">
+        {state === "signin" ? (
+          <button className="text-button" onClick={openLogin}>
+            Sign in
+          </button>
+        ) : state === "unknown" ? (
+          <button
+            className="text-button"
+            onClick={() => setAttempt((a) => a + 1)}
+          >
+            Check again
+          </button>
+        ) : null}
+        <a href="#account/orders">View orders</a>
+        {onDismiss && (
+          <button
+            className="icon-button"
+            aria-label="Dismiss payment notice"
+            onClick={onDismiss}
+          >
+            <Icon name="close" size={16} />
+          </button>
+        )}
+      </div>
     </div>
   );
 }

@@ -11,6 +11,7 @@ import { Support } from "./support";
 import { get, post, errorMessage } from "./consumer-api";
 import { Failure, Icon, Loading } from "./components";
 import "./consumer.css";
+import "./details.css";
 export default function App() {
   return (
     <AuthProvider>
@@ -23,13 +24,14 @@ function Shell() {
   const [hash, setHash] = useState(window.location.hash.slice(1) || "home"),
     [search, setSearch] = useState(""),
     [menu, setMenu] = useState(false);
-  const [checkout] = useState(() =>
+  const [checkout, setCheckout] = useState<string | null>(() =>
     new URLSearchParams(window.location.search).get("checkout"),
   );
   useEffect(() => {
     const update = () => {
       setHash(window.location.hash.slice(1) || "home");
       setMenu(false);
+      setCheckout(null);
       window.scrollTo(0, 0);
     };
     window.addEventListener("hashchange", update);
@@ -60,9 +62,17 @@ function Shell() {
       );
     }
   }, []);
-  const [path, query = ""] = hash.split("?");
+  const [path, query = ""] = hash.replace(/^\/+/, "").split("?");
   const params = new URLSearchParams(query);
   const route = path.split("/");
+  const activeNavigation =
+    ["account", "me"].includes(route[0]) || path === "rewards"
+      ? "account"
+      : ["premium", "coins", "price"].includes(path)
+        ? "price"
+        : ["browse", "search", "shows", "preview"].includes(path)
+          ? "browse"
+          : path;
   let content;
   if (path === "home" || path === "") content = <Home />;
   else if (["browse", "search", "shows", "preview"].includes(path))
@@ -80,19 +90,35 @@ function Shell() {
       ) : (
         <Failure message="This drama link is invalid." />
       );
-  } else if (route[0] === "account")
+  } else if (route[0] === "account" || route[0] === "me")
     content = (
-      <Account key={route[1] || "overview"} section={route[1] || "overview"} />
+      <Account key={route[1] || "history"} section={route[1] || "history"} />
     );
-  else if (path === "premium" || path === "coins")
+  else if (path === "premium" || path === "coins" || path === "price")
     content = (
       <Store
-        kind={path === "coins" ? "coin_pack" : "membership"}
+        kind={
+          path === "coins" || params.get("tab") === "coins"
+            ? "coin_pack"
+            : "membership"
+        }
         sourceDramaId={Number(params.get("drama")) || undefined}
         sourceEpisodeId={Number(params.get("episode")) || undefined}
       />
     );
-  else if (path === "rewards") content = <Rewards />;
+  else if (path === "rewards")
+    content = (
+      <>
+        <Account section="history" />
+        <Rewards
+          panel
+          onClose={() => {
+            window.location.hash =
+              params.get("return") === "price" ? "price" : "account";
+          }}
+        />
+      </>
+    );
   else if (path === "support") content = <Support />;
   else if (route[0] === "legal") content = <Legal slug={route[1] || "terms"} />;
   else if (path === "about" || path === "download") content = <About />;
@@ -129,13 +155,14 @@ function Shell() {
             ["home", "Home"],
             ["browse", "Explore"],
             ["foryou", "For you"],
-            ["rewards", "Rewards"],
+            ["price", "Price"],
+            ["account", "Me"],
           ].map(([id, label]) => (
             <a
               key={id}
               href={"#" + id}
-              className={path === id ? "active" : ""}
-              aria-current={path === id ? "page" : undefined}
+              className={activeNavigation === id ? "active" : ""}
+              aria-current={activeNavigation === id ? "page" : undefined}
             >
               {label}
             </a>
@@ -206,7 +233,12 @@ function Shell() {
             </button>
           </div>
         )}
-        {checkout && <CheckoutReturn result={checkout} />}
+        {checkout && (
+          <CheckoutReturn
+            result={checkout}
+            onDismiss={() => setCheckout(null)}
+          />
+        )}
         <Suspense fallback={<Loading />}>{content}</Suspense>
       </main>
       <footer className="consumer-footer">

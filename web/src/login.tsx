@@ -114,6 +114,7 @@ export function Login() {
             <label>
               Verification code
               <input
+                autoFocus
                 inputMode="numeric"
                 autoComplete="one-time-code"
                 pattern="[0-9]{6}"
@@ -131,6 +132,21 @@ export function Login() {
                 ? "Sign in / Create account"
                 : "Send verification code"}
           </button>
+          {!sent && (
+            <button
+              type="button"
+              className="text-button"
+              disabled={busy}
+              onClick={() => {
+                setSent(true);
+                setCode("");
+                setError("");
+                setSeconds(0);
+              }}
+            >
+              I already have a code
+            </button>
+          )}
           {sent && (
             <button
               type="button"

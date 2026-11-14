@@ -39,6 +39,8 @@ page.on("pageerror", (e) => errors.push(e.message));
 let media = Buffer.alloc(0);
 const unknown = [];
 const requests = [];
+let tasksChecked = false,
+  orderState = "paid";
 let membersOnly = false,
   meFailures = 0,
   favoritesDelay = 0;
@@ -279,6 +281,9 @@ page.on("request", async (req) => {
             code: "weekly",
             name_en: "Weekly pass",
             name_zh: "周卡",
+            billing_mode: "subscription",
+            duration_days: 7,
+            recurring_interval: "week",
             price_cents: 499,
             currency: "USD",
             benefits: { items: ["Watch member episodes"] },
@@ -328,7 +333,7 @@ page.on("request", async (req) => {
             product_name: "Starter coins",
             amount_cents: 299,
             currency: "USD",
-            status: "paid",
+            status: orderState,
             paid_at: "2026-11-14T00:00:00Z",
             created_at: "2026-11-14T00:00:00Z",
             coins: 330,
@@ -366,11 +371,24 @@ page.on("request", async (req) => {
           },
         ],
       };
-    else if (p === "/v1/me/messages") result = { unread: 0, items: [] };
+    else if (p === "/v1/me/lists/likes")
+      result = {
+        total: 1,
+        items: [{ target_type: "drama", target_id: 1, drama: dramas[0] }],
+      };
+    else if (p === "/v1/me/checkin") {
+      if (!tasksChecked) coins += 10;
+      tasksChecked = true;
+      result = { amount: 10, balance: coins, replayed: false };
+    } else if (p === "/v1/me/messages") result = { unread: 0, items: [] };
     else if (p === "/v1/tasks" || p === "/v1/me/tasks")
       result = {
-        balance: coins,
-        checkin: { checked_today: false, streak: 1, amount: 10 },
+        balance: p === "/v1/me/tasks" ? coins : 0,
+        checkin: {
+          checked_today: p === "/v1/me/tasks" && tasksChecked,
+          streak: 1,
+          amount: 10,
+        },
         items: [
           {
             code: "watch_8",
@@ -387,6 +405,7 @@ page.on("request", async (req) => {
       result = {
         categories: [
           { code: "general", name_en: "General", name_zh: "一般", fields: [] },
+          { code: "billing", name_en: "Billing", name_zh: "付款", fields: [] },
         ],
       };
     else if (p === "/v1/support/tickets" && req.method() === "GET") {
@@ -452,11 +471,13 @@ page.on("request", async (req) => {
       ticket.csat_score = body.score;
       result = supportDetail();
     } else if (p === "/v1/support/tickets/T-1") result = supportDetail();
-    else if (
-      p === "/v1/reactions" ||
-      p.startsWith("/v1/playback/") ||
-      p.endsWith("/read")
-    )
+    else if (p === "/v1/reactions") {
+      if (body.kind === "favorite" && body.remove) {
+        const index = savedDramas.findIndex((d) => d.id === body.target_id);
+        if (index >= 0) savedDramas.splice(index, 1);
+      }
+      result = { ok: true };
+    } else if (p.startsWith("/v1/playback/") || p.endsWith("/read"))
       result = { ok: true };
     else if (p.startsWith("/v1/legal/"))
       result = { slug: "terms", title: "Terms", body: "Test legal document." };
@@ -578,6 +599,43 @@ try {
     "group and preview filters are sent and route changes reset stale filters",
   );
 
+  await page.type(".catalog-filters label:nth-child(2) input", "Romance");
+  await page.type(".catalog-filters label:nth-child(3) input", "en");
+  await page.select(".catalog-filters select", "popular");
+  await clickText("Apply filters");
+  await text("1 drama");
+  assert(
+    new URLSearchParams(page.url().split("?")[1]).get("tag") === "Romance",
+  );
+  await page.reload({ waitUntil: "networkidle0" });
+  assert.equal(
+    await page.$eval(".catalog-filters select", (el) => el.value),
+    "popular",
+  );
+  assert.equal(
+    await page.$eval(
+      ".catalog-filters label:nth-child(3) input",
+      (el) => el.value,
+    ),
+    "en",
+  );
+  await clickText("Clear filters");
+  await text("30 dramas");
+  assert(page.url().endsWith("#browse"));
+  pass("applied catalog filters survive reload and clear through the URL");
+  await go("#me");
+  await text("Sign in to like and save dramas");
+  assert(await page.$(".member-premium"));
+  assert.equal(
+    await page.$$(".member-actions a").then((items) => items.length),
+    5,
+  );
+  assert.equal(
+    await page.$$(".library-tabs a").then((items) => items.length),
+    3,
+  );
+  pass("guest account preserves the full overview and library navigation");
+
   media = Buffer.from(
     await page.evaluate(async () => {
       const canvas = document.createElement("canvas");
@@ -670,7 +728,7 @@ try {
     1,
   );
   await clickText("See memberships");
-  await text("Your front-row pass");
+  await text("Membership plans");
   membersOnly = false;
   pass("members-only episodes offer membership without a coin deduction");
   await page.screenshot({
@@ -679,6 +737,23 @@ try {
   });
   await go("#coins?drama=1&episode=11");
   await text("330");
+  await clickText("Coins");
+  await page.waitForFunction(() => location.hash.includes("tab=coins"));
+  await page.reload({ waitUntil: "networkidle0" });
+  assert.equal(
+    await page.$eval(".price-tabs button:nth-child(2)", (el) =>
+      el.getAttribute("aria-pressed"),
+    ),
+    "true",
+  );
+  assert(await page.$("#membership-plans"));
+  assert(await page.$("#coin-packs"));
+  await text("300 base + 30 bonus coins");
+  await text("Access for 7 days");
+  await text("per week");
+  pass(
+    "price tabs retain deep links and show configured base and bonus values",
+  );
   await clickText("Buy coins");
   await text("Payment confirmed.");
   const checkout = requests.find((r) => r.path === "/v1/commerce/checkout");
@@ -696,6 +771,8 @@ try {
     ).includes("episode=11"),
   );
   pass("history links to the watched episode");
+  assert.equal(await page.$(".checkout-notice"), null);
+  pass("payment return notice is cleared after navigation");
   await clickText("Next");
   await text("Episode 22");
   assert.equal(await page.$$(".history-item").then((items) => items.length), 1);
@@ -708,10 +785,26 @@ try {
   );
   await go("#account/favorites");
   await text("Saved drama 48");
+  assert.equal(
+    await page.$eval(
+      '.consumer-header nav a[aria-current="page"]',
+      (el) => el.textContent,
+    ),
+    "Me",
+  );
   await clickText("Next");
   await text("Saved drama 49");
   assert.equal(await page.$$(".drama-card").then((items) => items.length), 1);
   pass("older history and saved dramas remain accessible through paging");
+  await page.click('button[aria-label="Remove Saved drama 49 from saved"]');
+  await text("Saved drama 48");
+  assert.equal(savedDramas.length, 48);
+  assert.equal(await page.$$(".saved-card").then((items) => items.length), 48);
+  pass("removing the last saved item returns to the previous valid page");
+  await go("#account/likes");
+  await text("Test Story");
+  assert(await page.$(".drama-card"));
+  pass("liked dramas load from the account list endpoint");
   favoritesDelay = 350;
   await go("#account");
   await page.evaluate(() => (window.location.hash = "account/favorites"));
@@ -728,6 +821,21 @@ try {
   );
   favoritesDelay = 0;
   pass("a late account request cannot overwrite the selected section");
+  await clickText("Get help");
+  await page.waitForSelector('input[maxlength="200"]');
+  assert.equal(
+    await page.$eval(
+      " .support-main form label:nth-of-type(3) input",
+      (el) => el.value,
+    ),
+    "ORDER-FIXTURE",
+  );
+  assert.equal(
+    await page.$eval(".support-page select", (el) => el.value),
+    "billing",
+  );
+  pass("order support opens a billing ticket with the order number preserved");
+  await go("#account/orders");
   meFailures = 2;
   await page.reload({ waitUntil: "networkidle0" });
   await text("Your session is saved.");
@@ -738,7 +846,7 @@ try {
   await clickText("Retry account connection");
   await page.waitForSelector(".profile-button");
   await page.waitForFunction(() => !document.querySelector(".auth-notice"));
-  await go("#account");
+  await go("#account/overview");
   await page.waitForSelector(".profile-form");
   meFailures = 1;
   await clickText("Save changes");
@@ -781,18 +889,22 @@ try {
   await clickText("Send reply");
   await text("More details.");
   await clickText("Close ticket");
+  await clickText("Confirm close");
   await text("How was your support experience?");
   await clickText("5/5");
   await page.waitForFunction(
     () => !document.body.innerText.includes("How was your support experience?"),
   );
   assert.equal(ticket.csat_score, 5);
+  await text("Your rating: 5/5");
+  await page.reload({ waitUntil: "networkidle0" });
+  await text("Your rating: 5/5");
   pass("support create/reply/close/rating is wired to authenticated endpoints");
   await page.screenshot({
     path: path.join(OUT, "support-desktop.png"),
     fullPage: true,
   });
-  await go("#account");
+  await go("#account/overview");
   await clickText("Sign out");
   await page.click(".sign-in");
   await page.waitForSelector("[role=dialog]");
@@ -816,6 +928,103 @@ try {
     "Sign in",
   );
   pass("dialog Escape closes and restores keyboard focus");
+  await go("#rewards");
+  await page.waitForSelector(".task-checkin");
+  await clickText("Check in");
+  await page.waitForFunction(
+    () => document.querySelectorAll('[role="dialog"]').length === 2,
+  );
+  await page.keyboard.press("Escape");
+  assert.equal(
+    await page.$$('[role="dialog"]').then((items) => items.length),
+    1,
+  );
+  assert(await page.$(".rewards-modal"));
+  pass("Escape dismisses only the nested login while keeping daily tasks open");
+  await clickText("Check in");
+  await page.waitForSelector("input[type=email]");
+  await page.type("input[type=email]", "viewer@example.com");
+  const sendsBefore = requests.filter(
+    (r) => r.path === "/v1/auth/email/code",
+  ).length;
+  await clickText("I already have a code");
+  await page.type("input[autocomplete=one-time-code]", "123456");
+  const checkinsBefore = requests.filter(
+    (r) => r.path === "/v1/me/checkin",
+  ).length;
+  await clickText("Sign in / Create account");
+  await text("You earned 10 coins.");
+  assert.equal(
+    requests.filter((r) => r.path === "/v1/auth/email/code").length,
+    sendsBefore,
+  );
+  assert.equal(
+    requests.filter((r) => r.path === "/v1/me/checkin").length,
+    checkinsBefore + 1,
+  );
+  assert.equal(
+    await page.$eval(".tasks-intro span", (el) => el.textContent),
+    coins + " coins",
+  );
+  await text("Checked in today");
+  pass(
+    "an existing email code restores one check-in and refreshes private rewards",
+  );
+  for (const width of [1440, 390]) {
+    await page.setViewport({ width, height: 1000 });
+    for (const route of ["#account", "#price?tab=coins", "#rewards"]) {
+      await go(route);
+      await page.waitForSelector(
+        route === "#rewards"
+          ? ".task-row"
+          : route === "#account"
+            ? ".library-tabs"
+            : ".coin-pack-card",
+      );
+      assert(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth,
+        ),
+        route + " overflow at " + width,
+      );
+      await page.screenshot({
+        path: path.join(
+          OUT,
+          route.split("?")[0].slice(1) + "-detail-" + width + ".png",
+        ),
+        fullPage: true,
+      });
+    }
+  }
+  pass("account, price and reward details fit desktop and narrow screens");
+  await page.setViewport({ width: 1440, height: 1000 });
+  await go("#account/overview");
+  await clickText("Sign out");
+  await page.goto(origin + "/?checkout=success#account/orders", {
+    waitUntil: "networkidle0",
+  });
+  await text("Sign in to check your payment and updated balance.");
+  await page.click(".checkout-actions button");
+  await page.waitForSelector("input[type=email]");
+  await page.type("input[type=email]", "viewer@example.com");
+  await clickText("I already have a code");
+  await page.type("input[autocomplete=one-time-code]", "123456");
+  await clickText("Sign in / Create account");
+  await text("Payment confirmed.");
+  pass("payment return resumes exact order verification after signing back in");
+  orderState = "failed";
+  await page.goto(origin + "/?checkout=success#account/orders", {
+    waitUntil: "networkidle0",
+  });
+  await text("Payment was not completed.");
+  assert.equal(await page.$(".checkout-confirmed"), null);
+  await page.evaluate(() => sessionStorage.removeItem("jjtv_checkout_order"));
+  await page.goto(origin + "/?checkout=success#account/orders", {
+    waitUntil: "networkidle0",
+  });
+  await text("Open your order history to check payment confirmation.");
+  assert.equal(await page.$(".checkout-confirmed"), null);
+  pass("failed and unknown payment returns never claim a confirmed payment");
   assert.deepEqual(unknown, []);
   assert.deepEqual(errors, []);
   pass("no unknown API contracts or uncaught browser errors");

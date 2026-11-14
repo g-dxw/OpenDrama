@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { get, post, errorMessage } from "./consumer-api";
 import { useAuth } from "./auth";
-import { Empty, Failure, Loading } from "./components";
+import { Empty, Failure, Loading, StatusTag, Modal } from "./components";
 interface Category {
   code: string;
   name_en: string;
@@ -52,6 +52,7 @@ export function Support() {
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
     [loading, setLoading] = useState(false),
+    [confirmClose, setConfirmClose] = useState(false),
     [page, setPage] = useState(1),
     [total, setTotal] = useState(0);
   const pageSize = 10;
@@ -75,7 +76,12 @@ export function Support() {
     get<{ categories: Category[] }>("/v1/support/meta")
       .then((d) => {
         setCategories(d.categories);
-        if (d.categories.length) setCategory(d.categories[0].code);
+        if (d.categories.length)
+          setCategory((current) =>
+            d.categories.some((c) => c.code === current)
+              ? current
+              : d.categories[0].code,
+          );
       })
       .catch(() => undefined);
   }, []);
@@ -89,8 +95,14 @@ export function Support() {
     if (status !== "user") return;
     const followLink = () => {
       const query = window.location.hash.split("?")[1] || "";
-      const number = new URLSearchParams(query).get("ticket");
-      if (number) void open(number);
+      const params = new URLSearchParams(query);
+      const number = params.get("ticket");
+      if (params.get("new") === "1") {
+        setCreating(true);
+        setDetail(null);
+        setOrder(params.get("order") || "");
+        if (params.get("order")) setCategory("billing");
+      } else if (number) void open(number);
     };
     followLink();
     window.addEventListener("hashchange", followLink);
@@ -135,7 +147,14 @@ export function Support() {
         fields,
       });
       setDetail(d);
-      window.history.replaceState({},"",window.location.pathname+window.location.search+"#support?ticket="+encodeURIComponent(d.ticket.number));
+      window.history.replaceState(
+        {},
+        "",
+        window.location.pathname +
+          window.location.search +
+          "#support?ticket=" +
+          encodeURIComponent(d.ticket.number),
+      );
       setCreating(false);
       setPage(1);
       setSubject("");
@@ -160,14 +179,16 @@ export function Support() {
       else await open(detail.ticket.number);
       setReply("");
       load();
+      return true;
     } catch (e) {
       setError(errorMessage(e));
+      return false;
     } finally {
       setBusy(false);
     }
   }
   return (
-    <div className="page-content">
+    <div className="page-content support-page">
       <div className="page-title">
         <span className="eyebrow">We're here to help</span>
         <h1>Help & support</h1>
@@ -189,10 +210,22 @@ export function Support() {
             <aside className="support-sidebar">
               <button
                 className="button primary full-width"
+                disabled={busy}
                 onClick={() => {
                   setCreating(true);
                   setDetail(null);
-                  window.history.replaceState({},"",window.location.pathname+window.location.search+"#support");
+                  setSubject("");
+                  setBody("");
+                  setOrder("");
+                  setFields({});
+                  setError("");
+                  window.history.replaceState(
+                    {},
+                    "",
+                    window.location.pathname +
+                      window.location.search +
+                      "#support",
+                  );
                 }}
               >
                 New ticket
@@ -204,11 +237,12 @@ export function Support() {
                     (detail?.ticket.number === ticket.number ? "active" : "")
                   }
                   key={ticket.number}
+                  disabled={busy}
                   onClick={() => void open(ticket.number)}
                 >
                   <strong>{ticket.subject}</strong>
                   <span>
-                    #{ticket.number} · {ticket.status.replace(/_/g, " ")}
+                    #{ticket.number} <StatusTag status={ticket.status} />
                     {ticket.unread_count
                       ? " · " + ticket.unread_count + " new"
                       : ""}
@@ -254,6 +288,7 @@ export function Support() {
                   <label>
                     Subject
                     <input
+                      disabled={busy}
                       required
                       maxLength={200}
                       value={subject}
@@ -263,6 +298,7 @@ export function Support() {
                   <label>
                     Category
                     <select
+                      disabled={busy}
                       value={category}
                       onChange={(e) => {
                         setCategory(e.target.value);
@@ -279,6 +315,7 @@ export function Support() {
                   <label>
                     Order number (optional)
                     <input
+                      disabled={busy}
                       value={order}
                       onChange={(e) => setOrder(e.target.value)}
                     />
@@ -316,6 +353,7 @@ export function Support() {
                   <label>
                     How can we help?
                     <textarea
+                      disabled={busy}
                       required
                       maxLength={10000}
                       rows={6}
@@ -341,7 +379,7 @@ export function Support() {
                       <button
                         className="button secondary"
                         disabled={busy}
-                        onClick={() => void action("/close", {})}
+                        onClick={() => setConfirmClose(true)}
                       >
                         Close ticket
                       </button>
@@ -393,6 +431,7 @@ export function Support() {
                       <label>
                         Your reply
                         <textarea
+                          disabled={busy}
                           required
                           value={reply}
                           onChange={(e) => setReply(e.target.value)}
@@ -405,8 +444,19 @@ export function Support() {
                       </button>
                     </form>
                   )}
-                  {["closed", "resolved"].includes(detail.ticket.status) &&
-                    !detail.ticket.csat_score && (
+                  {detail.ticket.csat_score ? (
+                    <div
+                      className="satisfaction satisfaction-complete"
+                      role="status"
+                      aria-live="polite"
+                    >
+                      <strong>Your rating: {detail.ticket.csat_score}/5</strong>
+                      <p>
+                        Thank you for your feedback. Your rating has been saved.
+                      </p>
+                    </div>
+                  ) : (
+                    ["closed", "resolved"].includes(detail.ticket.status) && (
                       <div className="satisfaction">
                         <p>How was your support experience?</p>
                         {[1, 2, 3, 4, 5].map((score) => (
@@ -420,7 +470,8 @@ export function Support() {
                           </button>
                         ))}
                       </div>
-                    )}
+                    )
+                  )}
                 </>
               ) : (
                 !loading && (
@@ -430,6 +481,41 @@ export function Support() {
             </section>
           </div>
         </>
+      )}
+      {confirmClose && (
+        <Modal
+          title="Close this conversation?"
+          onClose={() => setConfirmClose(false)}
+        >
+          <p>
+            You can review the conversation after closing it. Start a new ticket
+            if you need further help.
+          </p>
+          {error && (
+            <p className="error-text" role="alert">
+              {error}
+            </p>
+          )}
+          <div className="button-row">
+            <button
+              className="button secondary"
+              onClick={() => setConfirmClose(false)}
+            >
+              Keep open
+            </button>
+            <button
+              className="button primary"
+              disabled={busy}
+              onClick={() => {
+                void action("/close", {}).then((closed) => {
+                  if (closed) setConfirmClose(false);
+                });
+              }}
+            >
+              Confirm close
+            </button>
+          </div>
+        </Modal>
       )}
     </div>
   );

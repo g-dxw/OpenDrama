@@ -2,6 +2,40 @@ import { useEffect, useRef, type ReactNode } from "react";
 import type { CatalogDrama } from "./consumer-api";
 export function Icon({ name, size = 20 }: { name: string; size?: number }) {
   const paths: Record<string, ReactNode> = {
+    history: (
+      <>
+        <path d="M3 11a9 9 0 1 1 3 7M3 4v7h7" />
+        <path d="M12 7v6l4 2" />
+      </>
+    ),
+    bookmark: <path d="M6 3h12v18l-6-4-6 4z" />,
+    calendar: (
+      <>
+        <rect x="3" y="5" width="18" height="16" rx="2" />
+        <path d="M7 3v4M17 3v4M3 10h18m-11 5 2 2 4-4" />
+      </>
+    ),
+    gift: (
+      <>
+        <rect x="3" y="8" width="18" height="4" />
+        <path d="M5 12v9h14v-9M12 8v13" />
+        <path d="M12 8H8a3 3 0 1 1 3-3l1 3h4a3 3 0 1 0-3-3z" />
+      </>
+    ),
+    receipt: (
+      <>
+        <path d="M5 3h14v18l-3-2-4 2-4-2-3 2zM8 7h8M8 11h8M8 15h4" />
+      </>
+    ),
+    message: <path d="M21 12a9 9 0 0 1-9 9H3l2-5a9 9 0 1 1 16-4z" />,
+    support: (
+      <>
+        <path d="M3 12a9 9 0 0 1 18 0v6a3 3 0 0 1-3 3h-4" />
+        <rect x="2" y="11" width="4" height="7" rx="2" />
+        <rect x="18" y="11" width="4" height="7" rx="2" />
+      </>
+    ),
+    star: <path d="m12 3 3 6 7 1-5 5 1 7-6-3-6 3 1-7-5-5 7-1z" />,
     search: (
       <>
         <circle cx="10.5" cy="10.5" r="6.5" />
@@ -56,61 +90,85 @@ export function Icon({ name, size = 20 }: { name: string; size?: number }) {
     </svg>
   );
 }
+const modalStack: HTMLElement[] = [];
+let bodyOverflowBeforeModals = "";
 export function Modal({
   title,
   onClose,
   children,
+  className = "",
 }: {
   title: string;
   onClose: () => void;
   children: ReactNode;
+  className?: string;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
+    const modal = ref.current;
+    if (!modal) return;
     const previous = document.activeElement as HTMLElement | null;
-    const old = document.body.style.overflow;
+    if (!modalStack.length)
+      bodyOverflowBeforeModals = document.body.style.overflow;
+    modalStack.push(modal);
     document.body.style.overflow = "hidden";
-    ref.current?.focus();
-    const key = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-      if (e.key === "Tab") {
-        const els = Array.from(
-          ref.current?.querySelectorAll<HTMLElement>(
-            'button:not(:disabled),a[href],input,select,textarea,[tabindex="0"]',
-          ) ?? [],
+    modal.focus();
+    const key = (event: KeyboardEvent) => {
+      if (modalStack[modalStack.length - 1] !== modal) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+      }
+      if (event.key === "Tab") {
+        const elements = Array.from(
+          modal.querySelectorAll<HTMLElement>(
+            'button:not(:disabled),a[href],input:not(:disabled),select:not(:disabled),textarea:not(:disabled),[tabindex="0"]',
+          ),
         );
-        const first = els[0],
-          last = els[els.length - 1];
+        const first = elements[0],
+          last = elements[elements.length - 1];
         if (
-          e.shiftKey &&
-          (document.activeElement === first ||
-            document.activeElement === ref.current)
+          event.shiftKey &&
+          (document.activeElement === first || document.activeElement === modal)
         ) {
-          e.preventDefault();
+          event.preventDefault();
           last?.focus();
-        } else if (!e.shiftKey && document.activeElement === last) {
-          e.preventDefault();
+        } else if (
+          !event.shiftKey &&
+          (document.activeElement === last || document.activeElement === modal)
+        ) {
+          event.preventDefault();
           first?.focus();
         }
       }
     };
     document.addEventListener("keydown", key);
     return () => {
-      document.body.style.overflow = old;
       document.removeEventListener("keydown", key);
-      previous?.focus();
+      const position = modalStack.indexOf(modal);
+      if (position >= 0) modalStack.splice(position, 1);
+      document.body.style.overflow = modalStack.length
+        ? "hidden"
+        : bodyOverflowBeforeModals;
+      if (previous?.isConnected) previous.focus();
+      const top = modalStack[modalStack.length - 1];
+      if (top && !top.contains(document.activeElement)) top.focus();
     };
   }, []);
   return (
     <div
       className="modal-backdrop"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
+      onMouseDown={(event) => {
+        if (
+          event.target === event.currentTarget &&
+          modalStack[modalStack.length - 1] === ref.current
+        )
+          onClose();
       }}
     >
       <div
         ref={ref}
-        className="modal"
+        className={"modal " + className}
         role="dialog"
         aria-modal="true"
         aria-label={title}
@@ -214,5 +272,25 @@ export function Cards({ items }: { items: CatalogDrama[] }) {
     </div>
   ) : (
     <Empty />
+  );
+}
+
+export function StatusTag({ status }: { status: string }) {
+  const labels: Record<string, string> = {
+    created: "Awaiting payment",
+    paid: "Paid",
+    failed: "Payment failed",
+    refunded: "Refunded",
+    open: "Open",
+    in_progress: "In progress",
+    waiting_customer: "Waiting for your reply",
+    resolved: "Resolved",
+    closed: "Closed",
+    merged: "Merged",
+  };
+  return (
+    <span className={"status-tag status-" + status}>
+      {labels[status] ?? status.replace(/_/g, " ")}
+    </span>
   );
 }

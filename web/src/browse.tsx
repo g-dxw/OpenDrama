@@ -135,54 +135,71 @@ export function Browse({
     [tag, setTag] = useState(params.get("tag") || ""),
     [language, setLanguage] = useState(params.get("language") || ""),
     [sort, setSort] = useState(params.get("sort") || "newest"),
-    [offset, setOffset] = useState(0),
     [data, setData] = useState<Catalog | null>(null),
     [error, setError] = useState(""),
-    [loading, setLoading] = useState(true);
-  const [revision, setRevision] = useState(0);
+    [loading, setLoading] = useState(true),
+    [revision, setRevision] = useState(0);
+  const offset = Math.max(0, Number(params.get("offset")) || 0);
   useEffect(() => {
     const next = new URLSearchParams(query);
     setQ(next.get("q") || "");
     setTag(next.get("tag") || "");
     setLanguage(next.get("language") || "");
     setSort(next.get("sort") || "newest");
-    setOffset(0);
   }, [query]);
   useEffect(() => {
-    let current = true;
+    let active = true;
     setLoading(true);
     setError("");
-    const filters = new URLSearchParams({
-      limit: "24",
-      offset: String(offset),
-      sort,
-    });
-    const group = new URLSearchParams(query).get("group");
-    if (group) filters.set("group", group);
-    if (preview) filters.set("free_only", "true");
-    if (q.trim()) filters.set("q", q.trim());
-    if (tag.trim()) filters.set("tag", tag.trim());
-    if (language.trim()) filters.set("language", language.trim());
-    get<Catalog>("/v1/catalog?" + filters)
+    const next = new URLSearchParams(query);
+    next.set("limit", "24");
+    next.set("offset", String(Math.max(0, Number(next.get("offset")) || 0)));
+    if (preview) next.set("free_only", "true");
+    get<Catalog>("/v1/catalog?" + next)
       .then((result) => {
-        if (current) setData(result);
+        if (active) setData(result);
       })
       .catch((e) => {
-        if (current) setError(errorMessage(e));
+        if (active) setError(errorMessage(e));
       })
       .finally(() => {
-        if (current) setLoading(false);
+        if (active) setLoading(false);
       });
     return () => {
-      current = false;
+      active = false;
     };
-  }, [q, tag, language, sort, offset, revision, query, preview]);
+  }, [query, preview, revision]);
+  function navigate(next: URLSearchParams) {
+    window.location.hash =
+      (preview ? "preview" : "browse") +
+      (next.size ? "?" + next.toString() : "");
+    window.scrollTo(0, 0);
+  }
+  function apply() {
+    const next = new URLSearchParams();
+    if (params.get("group")) next.set("group", params.get("group")!);
+    if (q.trim()) next.set("q", q.trim());
+    if (tag.trim()) next.set("tag", tag.trim());
+    if (language.trim()) next.set("language", language.trim());
+    if (sort !== "newest") next.set("sort", sort);
+    navigate(next);
+  }
+  function paginate(nextOffset: number) {
+    const next = new URLSearchParams(query);
+    if (nextOffset) next.set("offset", String(nextOffset));
+    else next.delete("offset");
+    navigate(next);
+  }
   return (
-    <div className="page-content">
+    <div className="page-content catalog-page">
       <div className="page-title">
         <span className="eyebrow">The JJTV collection</span>
         <h1>
-          {preview ? "Free Preview" : q ? "Search results" : "Explore dramas"}
+          {preview
+            ? "Free Preview"
+            : params.get("q")
+              ? "Search results"
+              : "Explore dramas"}
         </h1>
         <p className="muted">
           {preview
@@ -192,9 +209,9 @@ export function Browse({
       </div>
       <form
         className="catalog-filters"
-        onSubmit={(e) => {
-          e.preventDefault();
-          setOffset(0);
+        onSubmit={(event) => {
+          event.preventDefault();
+          apply();
         }}
       >
         <label className="search-filter">
@@ -203,10 +220,7 @@ export function Browse({
             aria-label="Search dramas"
             type="search"
             value={q}
-            onChange={(e) => {
-              setQ(e.target.value);
-              setOffset(0);
-            }}
+            onChange={(event) => setQ(event.target.value)}
             placeholder="Search title or story…"
           />
         </label>
@@ -214,10 +228,7 @@ export function Browse({
           Tag
           <input
             value={tag}
-            onChange={(e) => {
-              setTag(e.target.value);
-              setOffset(0);
-            }}
+            onChange={(event) => setTag(event.target.value)}
             placeholder="Any genre"
           />
         </label>
@@ -225,10 +236,7 @@ export function Browse({
           Language
           <input
             value={language}
-            onChange={(e) => {
-              setLanguage(e.target.value);
-              setOffset(0);
-            }}
+            onChange={(event) => setLanguage(event.target.value)}
             placeholder="All languages"
           />
         </label>
@@ -236,19 +244,40 @@ export function Browse({
           Sort
           <select
             value={sort}
-            onChange={(e) => {
-              setSort(e.target.value);
-              setOffset(0);
-            }}
+            onChange={(event) => setSort(event.target.value)}
           >
             <option value="newest">Recently added</option>
             <option value="popular">Most watched</option>
             <option value="title">Title A–Z</option>
           </select>
         </label>
+        <div className="catalog-filter-actions">
+          <button className="button primary" type="submit">
+            Apply filters
+          </button>
+          <button
+            className="text-button"
+            type="button"
+            onClick={() => {
+              setQ("");
+              setTag("");
+              setLanguage("");
+              setSort("newest");
+              navigate(new URLSearchParams());
+            }}
+          >
+            Clear filters
+          </button>
+          {params.get("group") && (
+            <span className="muted">Browsing a selected collection</span>
+          )}
+        </div>
       </form>
       {error ? (
-        <Failure message={error} retry={() => setRevision((x) => x + 1)} />
+        <Failure
+          message={error}
+          retry={() => setRevision((value) => value + 1)}
+        />
       ) : loading ? (
         <Loading />
       ) : (
@@ -262,10 +291,7 @@ export function Browse({
               <button
                 className="button secondary"
                 disabled={!offset}
-                onClick={() => {
-                  setOffset(Math.max(0, offset - 24));
-                  window.scrollTo(0, 0);
-                }}
+                onClick={() => paginate(Math.max(0, offset - 24))}
               >
                 Previous
               </button>
@@ -276,10 +302,7 @@ export function Browse({
               <button
                 className="button secondary"
                 disabled={offset + 24 >= data.total}
-                onClick={() => {
-                  setOffset(offset + 24);
-                  window.scrollTo(0, 0);
-                }}
+                onClick={() => paginate(offset + 24)}
               >
                 Next
               </button>
