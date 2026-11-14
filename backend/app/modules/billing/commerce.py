@@ -562,6 +562,14 @@ def process_event(db,code,payload):
         mode=True if credential.startswith(('sk_live_','rk_live_')) else False if credential.startswith(('sk_test_','rk_test_')) else None
         payment=resolve_invoice_payment(obj,fetch=lambda path:stripe_request(db,code,path,method='GET'),expected_amount=order.amount_cents,expected_currency=order.currency,livemode=mode)
         context=order.checkout_context or {}
+        reason=obj.get('billing_reason')
+        # Invoice origin is a signed provider fact, not webhook delivery order.
+        # Older event versions may omit it, but cannot erase or change it.
+        if reason in {'subscription_create','subscription_cycle'}:
+            known=context.get('invoice_billing_reason')
+            if known in {'subscription_create','subscription_cycle'} and known!=reason:
+                raise BillingError(409,'invoice billing reason conflicts with frozen origin')
+            context={**context,'invoice_billing_reason':reason}
         evidence=payment.evidence
         prior_evidence=context.get('invoice_payment_evidence') or {}
         if prior_evidence.get('source')=='invoice_payments' and evidence.get('source')!='invoice_payments':evidence=prior_evidence

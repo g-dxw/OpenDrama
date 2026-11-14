@@ -7,6 +7,7 @@ Rules (see docs/supplier-role-plan.md §6):
 * the share is the one effective at the moment that order was paid, so a
   mid-month change splits correctly;
 * refunded orders drop out on the next regeneration;
+* renewal invoice receipts never enter the first-order ranking;
 * confirmed/paid statements are never overwritten.
 """
 
@@ -15,7 +16,7 @@ from __future__ import annotations
 from calendar import monthrange
 from datetime import date, datetime, time, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, not_, or_, select
 from sqlalchemy.orm import Session
 
 from app.modules.billing.models import Order
@@ -54,8 +55,21 @@ def _share_at(history: list[SupplierShareHistory], at: datetime, fallback: int) 
 def first_orders_for_supplier(
     session: Session, supplier_id: int, start: date, end: date
 ) -> list[Order]:
-    """First-ever paid order per user, paid inside the window, from this supplier."""
+    """First non-renewal paid order per user, inside the window, from this supplier."""
     drama_ids = select(Drama.id).where(Drama.supplier_id == supplier_id)
+    # Prefer signed invoice origin, since a renewal may arrive before the create
+    # invoice. For older receipts without it, only later managed invoice orders
+    # lack a Checkout key. Legacy ordinary orders have no managed invoice ID.
+    origin = func.coalesce(Order.checkout_context["invoice_billing_reason"].astext, "")
+    renewal = or_(
+        origin == "subscription_cycle",
+        and_(
+            origin != "subscription_create",
+            Order.checkout_key.is_(None),
+            Order.invoice_id.is_not(None),
+            Order.subscription_ref.is_not(None),
+        ),
+    )
     ranked = (
         select(
             Order.id.label("id"),
@@ -63,7 +77,7 @@ def first_orders_for_supplier(
             .over(partition_by=Order.user_id, order_by=(Order.paid_at.asc(), Order.id.asc()))
             .label("rn"),
         )
-        .where(Order.status == "paid", Order.refunded_at.is_(None))
+        .where(Order.status == "paid", Order.refunded_at.is_(None), not_(renewal))
         .subquery()
     )
     stmt = (
