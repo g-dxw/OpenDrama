@@ -98,7 +98,7 @@ jobs:
         env:
           CHROME_PATH: /usr/bin/google-chrome
           SHOTS_DIR: ${{ runner.temp }}/jjtv-pc-acceptance
-        run: npm run accept:consumer && npm run accept:subtitles
+        run: npm run accept:client && npm run accept:consumer && npm run accept:subtitles && npm run accept:visual
       - name: Check preserved H5 account and player flows
         if: matrix.frontend == 'h5'
         working-directory: h5
