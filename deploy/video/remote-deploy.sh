@@ -175,6 +175,79 @@ if [[ -n $(docker ps --filter label=com.docker.compose.project=jjtv --filter lab
   exit 1
 fi
 printf 'JJTV API stopped for guarded schema upgrade. Failure leaves it stopped; no old-code rollback.\n'
+
+# Provision the managed-settings key only after all JJTV API writers stop.
+# Missing keys are safe to create only before any persistent commercial config;
+# never guess a replacement for encrypted settings restored without their key.
+python3 - "$ROOT/shared/.env" <<'PY'
+import base64
+import os
+from pathlib import Path
+import secrets
+import subprocess
+import sys
+import tempfile
+
+target = Path(sys.argv[1])
+os.chmod(target, 0o600)
+original = target.read_text()
+values = {}
+for line in original.splitlines():
+    if line.strip() and not line.lstrip().startswith("#") and "=" in line:
+        name, value = line.split("=", 1)
+        values[name.strip()] = value.strip().strip("\"'")
+key = values.get("SETTINGS_ENCRYPTION_KEY", "")
+if key:
+    try:
+        valid = len(base64.b64decode(key.encode("ascii"), altchars=b"-_", validate=True)) == 32
+    except (ValueError, TypeError):
+        valid = False
+    if not valid:
+        raise SystemExit("Existing SETTINGS_ENCRYPTION_KEY is invalid; refusing automatic key rotation.")
+    print("JJTV managed-settings encryption key ready; existing key retained.")
+else:
+    def database_flag(sql):
+        try:
+            result = subprocess.run([
+                "docker", "exec", "jjtv-postgres-1", "psql", "-U", "jjtv", "-d", "jjtv",
+                "-X", "-A", "-t", "-v", "ON_ERROR_STOP=1", "-c", sql,
+            ], stdin=subprocess.DEVNULL, capture_output=True, text=True, check=True, timeout=15)
+        except (OSError, subprocess.SubprocessError):
+            raise SystemExit("Cannot verify existing commercial configuration; settings key was not generated.") from None
+        value = (result.stdout or "").strip()
+        if value not in {"t", "f"}:
+            raise SystemExit("Cannot verify existing commercial configuration; settings key was not generated.")
+        return value == "t"
+
+    for table in ("managed_settings", "stripe_accounts", "attribution_pixels"):
+        if database_flag("SELECT to_regclass('public." + table + "') IS NOT NULL"):
+            # A nonempty older schema may keep ciphertext in a different field.
+            # Prove the configuration empty rather than guessing credential names.
+            if database_flag("SELECT EXISTS (SELECT 1 FROM public." + table + " LIMIT 1)"):
+                raise SystemExit("Missing SETTINGS_ENCRYPTION_KEY with existing commercial configuration; restore the original settings key before deployment.")
+    key = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode()
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile("w", dir=target.parent, prefix=".env-settings-", delete=False) as handle:
+            temporary = Path(handle.name)
+            os.chmod(temporary, 0o600)
+            handle.write(original.rstrip("\n") + "\nSETTINGS_ENCRYPTION_KEY=" + key + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+        if os.name == "posix":
+            directory = os.open(target.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+    except OSError:
+        raise SystemExit("Cannot persist the private settings key; deployment stopped.") from None
+    finally:
+        if temporary is not None and temporary.exists():
+            temporary.unlink()
+    print("JJTV managed-settings encryption key generated; existing commercial configuration is empty.")
+PY
 cp -p "$ROOT/shared/.env" "$BACKUP_DIR/runtime.env"
 chmod 600 "$BACKUP_DIR/runtime.env"
 if [[ -d $ROOT/shared/india-client ]]; then
