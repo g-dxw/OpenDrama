@@ -16,6 +16,7 @@ const browser=await puppeteer.launch({executablePath,headless:true,args:['--no-f
 const page=await browser.newPage();await page.setViewport({width:1440,height:1000});
 const requests=[],errors=[],checks=[];let readOnly=false,refundAttempts=0,packSaveFailures=1,stripeTestFailures=1;
 let refundState=null,orderDetailFailures=0;
+let membershipResolution=null,resolutionAttempts=0,resolutionMode="unknown",releaseResolution=null;
 const refundUnknownError='Fixture refund outcome unknown; sources remain frozen';
 const pendingRefundReason='Original provider refund is not identifiable; keep frozen for manual reconciliation';
 const manualRefundReason='Refund identity or full amount does not match the frozen request; manual reconciliation required';
@@ -28,7 +29,7 @@ const account={code:'fixture',name:'Stripe fixture',status:'active',is_default:t
 const planVariants=[{...plan,code:'yearly',name_en:'Yearly',name_zh:'年度会员',status:'retired',duration_days:365,benefits:{...plan.benefits,best:false}},{...plan,code:'weekly',name_en:'Weekly',name_zh:'周度会员',duration_days:7},{...plan,duration_days:30},{...plan,code:'quarterly_fixture',name_en:'Quarterly fixture',name_zh:'季度示例',duration_days:90,benefits:{...plan.benefits,best:false}}];
 let billingMode='one_time';
 const order={order_no:'TEST-ORDER',product_type:'coin_pack',product_code:'starter',product_name:'Starter coins',plan_name_zh:'测试金币包',amount_cents:499,currency:'USD',status:'paid',billing_mode:'one_time',account_code:'fixture',created_at:'2026-11-14T00:00:00Z',paid_at:'2026-11-14T00:01:00Z',coins:550,user_id:42,user:{id:42,display_name:'Viewer fixture',email:'viewer@example.com',public_id:'viewer-42'},external_txn_id:'cs_fixture'};
-const orderDetail=()=>({order:{...order,snapshot:{name:'Starter coins',name_zh:'测试金币包',price_cents:499,currency:'USD',base_coins:500,bonus_coins:50},version_id:2,source_drama_id:null,payment_intent_id:'pi_fixture',invoice_id:null,subscription_ref:null},customer:order.user,refund:refundState,entitlement_sources:{coins:{original:550,remaining:refundState?0:550,reserved:refundState?550:0},membership:null},refund_eligibility:{eligible:!refundState,reason:refundState?(refundState.error||'退款处理中，可重试现有申请'):'可申请未消费权益的全额退款'}});
+const orderDetail=()=>({membership_refund_resolution:membershipResolution,order:{...order,snapshot:{name:'Starter coins',name_zh:'测试金币包',price_cents:499,currency:'USD',base_coins:500,bonus_coins:50},version_id:2,source_drama_id:null,payment_intent_id:'pi_fixture',invoice_id:null,subscription_ref:null},customer:order.user,refund:refundState,entitlement_sources:{coins:{original:550,remaining:refundState?0:550,reserved:refundState?550:0},membership:null},refund_eligibility:{eligible:!refundState,reason:refundState?(refundState.error||'退款处理中，可重试现有申请'):'可申请未消费权益的全额退款'}});
 await page.setRequestInterception(true);page.on('pageerror',error=>errors.push(error.message));
 page.on('request',async request=>{const url=new URL(request.url()),p=url.pathname;if(!p.startsWith('/admin/v1/')&&!p.startsWith('/tenant/v1/')){if(url.origin===origin||url.protocol==='data:'||url.protocol==='about:')await request.continue();else await request.abort();return;}
  let body={};try{body=JSON.parse(request.postData()||'{}');}catch{}requests.push({path:p,method:request.method(),query:Object.fromEntries(url.searchParams),body,headers:request.headers()});let result,status=200;
@@ -45,13 +46,21 @@ page.on('request',async request=>{const url=new URL(request.url()),p=url.pathnam
  else if(p==='/admin/v1/commerce/plans')result={items:planVariants,billing_mode:billingMode};
  else if(p==='/admin/v1/commerce/plans/monthly/price'){Object.assign(plan,body);result=plan;}
  else if(p==='/admin/v1/billing/settings'){billingMode=body.billing_mode;result=body;}
- else if(p==='/admin/v1/commerce/orders')result={items:[order],has_more:true,total:125,summary:{orders:125,paid_orders:100,gross_cents:50000,refunded_orders:2,refunded_cents:1000,net_cents:49000,pending_orders:25,pending_cents:12500,pending_refund_orders:refundAttempts,review_orders:0,currency:'USD',currencies:[{currency:'USD',gross_cents:50000,refunded_cents:1000,net_cents:49000}]}};
+ else if(p==='/admin/v1/commerce/orders')result={items:membershipResolution?[order,{...order,order_no:'OTHER-ORDER',product_name:'Other fixture order'}]:[order],has_more:true,total:125,summary:{orders:125,paid_orders:100,gross_cents:50000,refunded_orders:2,refunded_cents:1000,net_cents:49000,pending_orders:25,pending_cents:12500,pending_refund_orders:refundAttempts,review_orders:0,currency:'USD',currencies:[{currency:'USD',gross_cents:50000,refunded_cents:1000,net_cents:49000}]}};
+ else if(p==='/admin/v1/commerce/orders/OTHER-ORDER')result={...orderDetail(),order:{...orderDetail().order,order_no:'OTHER-ORDER',product_name:'Other fixture order'},membership_refund_resolution:null};
  else if(p==='/admin/v1/commerce/orders/TEST-ORDER'){if(orderDetailFailures>0){orderDetailFailures--;status=503;result={detail:'Fixture order detail temporarily unavailable'};}else result=orderDetail();}
  else if(p==='/admin/v1/finance/orders/TEST-ORDER/refund'){
   refundAttempts++;order.status='refund_pending';
   if(refundAttempts===1){refundState={id:1,status:'pending',refund_id:null,error:refundUnknownError};status=503;result={detail:refundUnknownError};}
   else if(refundAttempts===4){order.status='refund_review';refundState={id:1,status:'manual_review',refund_id:'re_fixture',error:manualRefundReason};orderDetailFailures=1;result=refundState;}
   else{refundState={id:1,status:'pending',refund_id:'re_fixture',error:refundAttempts===2?pendingRefundReason:''};result=refundState;}
+ }
+ else if(p==='/admin/v1/finance/orders/TEST-ORDER/membership-refund-resolution'){
+   resolutionAttempts++;
+   if(resolutionMode==='held'){await new Promise(resolve=>releaseResolution=resolve);}
+   if(resolutionMode==='success'){membershipResolution={...membershipResolution,required:false,resolved:true,can_resolve:false};result={order_no:'TEST-ORDER',resolved:true,restored:membershipResolution.disposition==='restore_remaining',released_coins:550,starts_at:'2026-11-14T12:00:00Z',ends_at:'2026-11-14T13:30:00Z',replayed:false};membershipResolution.result=result;}
+   else if(resolutionMode==='changed'){membershipResolution={...membershipResolution,revision:'2'.repeat(64),remaining_seconds:5400};status=409;result={detail:{code:'membership_resolution_changed',action:'review_again',committed:false,message:'Fixture resolution facts changed; review again'}};}
+   else{status=resolutionMode==='unknown409'?409:503;result={detail:'Fixture resolution result unknown; keep original request'};}
  }
  else if(p==='/admin/v1/coins/records')result={items:[{id:1,user_id:42,biz_type:'unlock',amount:-20,balance_after:530,note:'Episode unlock',created_at:'2026-11-14T00:00:00Z'}],has_more:false};
  else if(p==='/admin/v1/coins/summary')result={balance:530,items:[{biz_type:'purchase',amount:550},{biz_type:'unlock',amount:-20}]};
@@ -210,6 +219,80 @@ try {
     refund_id: "re_fixture",
     error: "",
   };
+ membershipResolution={required:true,kind:'one_time_refund_window',provider_status:null,remaining_seconds:7200,can_resolve:false,blocked_reason:'Fixture provider terminal state is not confirmed',revision:'1'.repeat(64),disposition:'restore_remaining'};
+ Object.assign(order,{product_type:'membership',product_code:'monthly',product_name:'Monthly fixture',plan_name_zh:'月度会员'});
+ await go('/finance');await click('详情 / 退款');
+ await page.waitForSelector('[data-testid="membership-refund-resolution-card"]');
+ await text('Fixture provider terminal state is not confirmed');
+ assert.equal(await page.$eval('[data-testid="membership-refund-resolution-open"]',b=>b.disabled),true);
+ assert.equal(resolutionAttempts,0);
+ pass('membership refund resolution exposes provider evidence and blocks action until its source can be resolved');
+ const resolutionPosts=()=>requests.filter(r=>r.path.endsWith('/membership-refund-resolution'));
+ const resolutionModal='.membership-refund-resolution-modal';
+ const resolutionConfirm=()=>page.locator(resolutionModal+' .ant-modal-footer .ant-btn-primary');
+ const resolutionOpen=async()=>{await page.locator('[data-testid="membership-refund-resolution-open"]').click();await page.waitForSelector('[data-testid="membership-refund-resolution-reason"]',{visible:true});};
+ const resolutionClose=async()=>{await page.locator(resolutionModal+' .ant-modal-close').click();await page.waitForSelector(resolutionModal+' .ant-modal',{hidden:true});};
+ const closeDrawer=async()=>{await page.locator('.ant-drawer-open .ant-drawer-close').click();await page.waitForFunction(()=>!document.querySelector('.ant-drawer-open'));};
+ const resolutionReason=async value=>{await page.locator('[data-testid="membership-refund-resolution-reason"]').click();await page.type('[data-testid="membership-refund-resolution-reason"]',value);};
+ const settleResolution=async()=>{const response=page.waitForResponse(r=>r.url().endsWith('/membership-refund-resolution'));releaseResolution();await (await response).buffer();await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));};
+ readOnly=true;await go('/finance');await click('详情 / 退款');await page.waitForSelector('[data-testid="membership-refund-resolution-card"]');
+ assert.equal(await page.$('[data-testid="membership-refund-resolution-open"]'),null);assert.equal(resolutionPosts().length,0);
+ pass('read-only finance roles can inspect resolution evidence without any resolution write control');
+ readOnly=false;membershipResolution={...membershipResolution,provider_status:'failed',can_resolve:true,blocked_reason:null};
+ await go('/finance');await click('详情 / 退款');await resolutionOpen();
+ await resolutionConfirm().click();await text('请填写处理原因');assert.equal(resolutionPosts().length,0);
+ await resolutionReason('Fixture preserve frozen membership window');
+ resolutionMode='held';await resolutionConfirm().click();await until(()=>resolutionAttempts===1);
+ const firstResolution=resolutionPosts()[0].body;assert.equal(firstResolution.expected_revision,'1'.repeat(64));assert.equal(firstResolution.reason,'Fixture preserve frozen membership window');assert(firstResolution.idempotency_key.length>=8);
+ const busyPoint=await page.$eval(resolutionModal+' .ant-modal-footer .ant-btn-primary',b=>{const r=b.getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2};});
+ await page.mouse.click(busyPoint.x,busyPoint.y);await page.mouse.click(busyPoint.x,busyPoint.y);
+ assert.equal(resolutionPosts().length,1);
+ resolutionMode='unknown';await settleResolution();await text('Fixture resolution result unknown; keep original request');
+ assert((await page.$eval(resolutionModal,e=>e.innerText)).includes('从本次确认时起恢复 7,200 秒'));
+ assert.equal(await page.$eval('[data-testid="membership-refund-resolution-reason"]',e=>e.value),firstResolution.reason);
+ pass('resolution requires an audit reason, confirms the exact frozen seconds and blocks duplicate submits while preserving an unknown request');
+ await resolutionClose();await closeDrawer();await click('详情 / 退款');await resolutionOpen();
+ assert.equal(await page.$eval('[data-testid="membership-refund-resolution-reason"]',e=>e.readOnly),true);
+ assert.equal(await page.$eval('[data-testid="membership-refund-resolution-reason"]',e=>e.value),firstResolution.reason);
+ resolutionMode='unknown409';await resolutionConfirm().click();await until(()=>resolutionAttempts===2);await text('Fixture resolution result unknown; keep original request');await page.waitForFunction(()=>!document.querySelector('.membership-refund-resolution-modal .ant-btn-loading'));
+ assert.deepEqual(resolutionPosts()[1].body,firstResolution);assert.equal(await page.$('[data-testid="membership-refund-resolution-review"]'),null);
+ pass('closing and reopening an uncertain resolution retains its exact reason, revision and key; an unclassified 409 cannot restart it');
+ resolutionMode='changed';await resolutionConfirm().click();await until(()=>resolutionAttempts===3);await text('Fixture resolution facts changed; review again');
+ await page.waitForFunction(()=>document.querySelector('[data-testid="membership-refund-resolution-review"]')&&!document.querySelector('[data-testid="membership-refund-resolution-review"]').disabled);
+ assert.deepEqual(resolutionPosts()[2].body,firstResolution);
+ assert.equal(await page.$eval(resolutionModal+' .ant-modal-footer .ant-btn-primary',e=>e.disabled),true);
+ const beforeReview=resolutionPosts().length;await page.locator('[data-testid="membership-refund-resolution-review"]').click();
+ assert.equal(resolutionPosts().length,beforeReview);assert.equal(await page.$eval('[data-testid="membership-refund-resolution-reason"]',e=>e.readOnly),false);
+ const beforeRefreshes=requests.filter(r=>r.path==='/admin/v1/commerce/orders'||r.path==='/admin/v1/commerce/orders/TEST-ORDER').length;
+ resolutionMode='success';orderDetailFailures=1;await resolutionConfirm().click();await until(()=>resolutionAttempts===4);await closed();await text('权益结案已完成');await text('Fixture order detail temporarily unavailable');
+ assert.equal(await page.$('[data-testid="membership-refund-resolution-card"]'),null);
+ await page.waitForSelector('[data-testid="membership-refund-resolution-card"]',{hidden:true});
+ const restarted=resolutionPosts()[3].body;assert.notEqual(restarted.idempotency_key,firstResolution.idempotency_key);assert.equal(restarted.expected_revision,'2'.repeat(64));
+ assert(requests.filter(r=>r.path==='/admin/v1/commerce/orders'||r.path==='/admin/v1/commerce/orders/TEST-ORDER').length>=beforeRefreshes+2);
+ pass('only an explicit review after a guaranteed uncommitted 409 creates a new resolution intent; success refreshes detail and list while a detail outage cannot reopen an already confirmed action');
+ membershipResolution={required:true,kind:'one_time_refund_window',provider_status:'canceled',remaining_seconds:0,can_resolve:true,blocked_reason:null,revision:'3'.repeat(64),disposition:'release_revoked'};
+ await go('/finance');await click('详情 / 退款');await resolutionOpen();
+ const revokedText=await page.$eval(resolutionModal,e=>e.innerText);assert(revokedText.includes('仅释放本订单冻结金币，会员权益保持收回'));assert(!revokedText.includes('恢复 0 秒'));
+ await resolutionReason('Fixture release coins without reviving revoked access');resolutionMode='held';await resolutionConfirm().click();await until(()=>resolutionAttempts===5);
+ const revokedIntent=resolutionPosts()[4].body;
+ await resolutionClose();await closeDrawer();await rowClick('OTHER-ORDER','详情 / 退款');await text('OTHER-ORDER');
+ const detailReadsBeforeLate=requests.filter(r=>r.path.startsWith('/admin/v1/commerce/orders/')).length;
+ await page.evaluate(()=>localStorage.setItem('jjtv_tenant_token:jjtv','other-admin-token'));
+ resolutionMode='success';await settleResolution();
+ assert.equal(requests.filter(r=>r.path.startsWith('/admin/v1/commerce/orders/')).length,detailReadsBeforeLate);
+ assert.equal(await page.$('[data-testid="membership-refund-resolution-card"]'),null);assert((await page.$eval('.ant-drawer-body',e=>e.innerText)).includes('OTHER-ORDER'));
+ assert.equal(await page.$(resolutionModal),null);
+ pass('release-only confirmation preserves revoked membership and a late old-owner response cannot close or refresh another order');
+ await page.evaluate(()=>localStorage.setItem('jjtv_tenant_token:jjtv','fixture-admin-token'));
+ membershipResolution={...membershipResolution,required:false,resolved:false,result:null};
+ await closeDrawer();await rowClick('TEST-ORDER','详情 / 退款');await text('TEST-ORDER');
+ const cachedBeforeProof=await page.evaluate(()=>Object.keys(sessionStorage).filter(k=>k.startsWith('jjtv_membership_refund_resolution:')).map(k=>({key:k,value:JSON.parse(sessionStorage.getItem(k))})));
+ assert(cachedBeforeProof.some(v=>v.value.key===revokedIntent.idempotency_key));
+ membershipResolution={...membershipResolution,resolved:true,result:{order_no:'TEST-ORDER',resolved:true,restored:false,released_coins:550,starts_at:null,ends_at:null,replayed:true}};
+ await click('刷新','.ant-drawer');
+ await page.waitForFunction(key=>!Object.keys(sessionStorage).filter(k=>k.startsWith('jjtv_membership_refund_resolution:')).some(k=>JSON.parse(sessionStorage.getItem(k)).key===key),{},revokedIntent.idempotency_key);
+ assert.equal(resolutionPosts().length,5);
+ pass('required=false alone preserves an unknown intent; explicit same-order resolved evidence retires it without a new write');
  readOnly=true;await go('/plans');await text('月度会员');assert.equal(await page.$$('.admin-plan-card .ant-switch').then(x=>x.length),0);assert.equal(await page.$$('.admin-plan-card .ant-btn-block').then(x=>x.length),0);pass('read-only membership cards have no status or edit controls');await go('/coin-packs');await text('测试金币包');assert.equal(await page.evaluate(()=>[...document.querySelectorAll('button')].some(e=>e.textContent.trim()==='新增金币包')),false);await go('/finance');await click('详情 / 退款');await text('本订单权益来源');assert.equal(await page.evaluate(()=>[...document.querySelectorAll('button')].some(e=>e.textContent.trim()==='查询 / 重试本笔退款')),false);pass('read-only role sees evidence without create or refund controls');
  assert.deepEqual(errors,[]);assert(requests.filter(r=>r.method==='POST'||r.method==='PATCH').every(r=>r.headers.authorization==='Bearer fixture-admin-token'&&r.headers['x-jjtv-tenant']==='jjtv'));pass('all actions are authenticated and tenant scoped; no browser errors');
  await fs.writeFile(path.join(OUT,'commerce-results.json'),JSON.stringify({checks,apiMode:'explicit fixtures; no real provider writes',screenshots:OUT},null,2));console.log(JSON.stringify({passed:checks.length,screenshots:OUT}));
