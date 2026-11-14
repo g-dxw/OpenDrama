@@ -12,8 +12,61 @@ const out =
 await fs.mkdir(out, { recursive: true });
 const port = Number(process.env.SURFACE_ACCEPT_PORT || 5194),
   origin = "http://127.0.0.1:" + port;
+const delayedResponses = new Map();
 const server = await createServer({
   root,
+  plugins: [
+    {
+      name: "surface-held-http",
+      configureServer(server) {
+        server.middlewares.use((request, response, next) => {
+          if (
+            !["/v1/commerce/checkout", "/v1/billing/cancel"].includes(
+              new URL(request.url, "http://fixture").pathname,
+            )
+          ) {
+            next();
+            return;
+          }
+          const key =
+              request.headers["x-surface-document"] +
+              ":" +
+              request.headers["x-surface-request"],
+            held = delayedResponses.get(key);
+          if (!held) {
+            response.statusCode = 500;
+            response.end("Unregistered fixture request");
+            return;
+          }
+          request.resume();
+          held.notify();
+          response.on("finish", () =>
+            held.completeNetwork("finished", "server_response_finished"),
+          );
+          response.on("close", () => {
+            if (!response.writableEnded) {
+              held.completeNetwork("failed", "client_connection_closed");
+              held.handled();
+            }
+          });
+          void held.gate.then(() => {
+            try {
+              if (response.destroyed) return;
+              if (held.delivery === "abort") {
+                response.destroy();
+                return;
+              }
+              response.setHeader("Content-Type", "application/json");
+              response.end(JSON.stringify(held.result));
+            } finally {
+              held.handled();
+              delayedResponses.delete(key);
+            }
+          });
+        });
+      },
+    },
+  ],
   server: { host: "127.0.0.1", port, strictPort: true },
   logLevel: "error",
 });
@@ -46,30 +99,187 @@ let activeMember = false,
   media = Buffer.alloc(0),
   checkoutHold = null,
   cancelHold = null;
-const pending = [];
-function hold(kind, order = "H5-ORDER") {
-  let release, notify;
+const pending = [],
+  inFlight = new Set();
+page.on("requestfinished", (request) => inFlight.delete(request));
+page.on("requestfailed", (request) => inFlight.delete(request));
+// Observe the real application fetch and its JSON consumption without replacing its result.
+// A document id distinguishes a settled old request from an optimizer-triggered reload.
+await page.evaluateOnNewDocument(() => {
+  const nativeFetch = window.fetch.bind(window);
+  const trace = { documentId: crypto.randomUUID(), requests: {} };
+  let sequence = 0;
+  window.__surfaceFetch = trace;
+  window.fetch = async (input, init) => {
+    const url = new URL(
+      input instanceof Request ? input.url : String(input),
+      location.href,
+    );
+    if (!["/v1/commerce/checkout", "/v1/billing/cancel"].includes(url.pathname))
+      return nativeFetch(input, init);
+    const id = String(++sequence),
+      headers = new Headers(init?.headers);
+    headers.set("X-Surface-Request", id);
+    headers.set("X-Surface-Document", trace.documentId);
+    const record = (trace.requests[id] = { phase: "pending" });
+    try {
+      const response = await nativeFetch(input, { ...init, headers }),
+        readJson = response.json.bind(response);
+      response.json = async () => {
+        try {
+          const result = await readJson();
+          record.phase = "body_finished";
+          return result;
+        } catch (error) {
+          record.phase = "body_failed";
+          throw error;
+        }
+      };
+      return response;
+    } catch (error) {
+      record.phase = "failed";
+      throw error;
+    }
+  };
+});
+function hold(kind, order = "H5-ORDER", delivery = "respond") {
+  let release, notify, handled;
   const gate = new Promise((resolve) => {
       release = resolve;
     }),
     started = new Promise((resolve) => {
       notify = resolve;
+    }),
+    fixtureDone = new Promise((resolve) => {
+      handled = resolve;
     });
-  const item = { release, notify, gate, started, order };
+  const item = {
+    release,
+    notify,
+    gate,
+    started,
+    order,
+    delivery,
+    fixtureDone,
+    handled,
+  };
   pending.push(item);
   if (kind === "checkout") checkoutHold = item;
   else cancelHold = item;
   return item;
 }
-const settled = async () => {
-  await page.waitForNetworkIdle({ idleTime: 200 });
-  await page.evaluate(
-    () =>
-      new Promise((resolve) =>
-        requestAnimationFrame(() => requestAnimationFrame(resolve)),
-      ),
+async function fulfillHeld(request, item, result) {
+  assert.equal(
+    new URL(request.url()).origin,
+    origin,
+    "held HTTP fixtures must stay local",
   );
-};
+  item.request = request;
+  item.documentId = request.headers()["x-surface-document"];
+  item.requestId = request.headers()["x-surface-request"];
+  assert(
+    item.documentId && item.requestId,
+    "held call must be the observed application fetch",
+  );
+  item.state = "pending";
+  item.networkDone = new Promise((resolve) => {
+    const finish = (completed) => {
+      if (completed === request) done("finished", "browser_requestfinished");
+    };
+    const fail = (failed) => {
+      if (failed === request) done("failed", "browser_requestfailed");
+    };
+    const done = (state, evidence) => {
+      if (item.state !== "pending") return;
+      item.state = state;
+      item.evidence = evidence;
+      item.failure = request.failure()?.errorText;
+      page.off("requestfinished", finish);
+      page.off("requestfailed", fail);
+      resolve();
+    };
+    item.completeNetwork = done;
+    page.on("requestfinished", finish);
+    page.on("requestfailed", fail);
+  });
+  // Continue into a real delayed HTTP response. Keeping CDP interception paused
+  // across document disposal can orphan the request without any terminal event.
+  item.result = result;
+  delayedResponses.set(item.documentId + ":" + item.requestId, item);
+  await request.continue();
+}
+async function settleHeld(item) {
+  // Subscribe when the request is first intercepted, before the sheet can unmount.
+  // Chromium may finish OR cancel it; neither terminal event requires a response event.
+  item.release();
+  let timer;
+  try {
+    await Promise.race([
+      Promise.all([item.networkDone, item.fixtureDone]),
+      new Promise((_, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(
+              new Error(
+                "No terminal network event for held " +
+                  item.order +
+                  " (" +
+                  item.state +
+                  ")",
+              ),
+            ),
+          10000,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+  await page.waitForFunction(
+    async ({ documentId, requestId }) => {
+      const trace = window.__surfaceFetch;
+      if (!trace) return false;
+      if (
+        trace.documentId === documentId &&
+        !["body_finished", "body_failed", "failed"].includes(
+          trace.requests[requestId]?.phase,
+        )
+      )
+        return false;
+      const currentDocument = trace.documentId;
+      await new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      );
+      return window.__surfaceFetch?.documentId === currentDocument;
+    },
+    { timeout: 10000 },
+    { documentId: item.documentId, requestId: item.requestId },
+  );
+  const client = await page.evaluate(
+    ({ documentId, requestId }) => ({
+      documentChanged: window.__surfaceFetch.documentId !== documentId,
+      phase:
+        window.__surfaceFetch.documentId === documentId
+          ? window.__surfaceFetch.requests[requestId]?.phase
+          : "old_document_disposed",
+      surface: document.documentElement.dataset.jjtvSurface,
+    }),
+    { documentId: item.documentId, requestId: item.requestId },
+  );
+  console.log(
+    "TRACE held request " +
+      JSON.stringify({
+        order: item.order,
+        network: item.state,
+        evidence: item.evidence,
+        failure: item.failure,
+        ...client,
+        pending: [...inFlight].map(
+          (request) => new URL(request.url()).pathname,
+        ),
+      }),
+  );
+}
 const drama = {
   id: 1,
   title: "Surface fixture story",
@@ -108,6 +318,7 @@ const profile = (token) => ({
 });
 await page.setRequestInterception(true);
 page.on("request", async (req) => {
+  inFlight.add(req);
   const url = new URL(req.url());
   if (url.pathname === "/fixtures/clip.webm") {
     await req.respond({ status: 200, contentType: "video/webm", body: media });
@@ -223,13 +434,12 @@ page.on("request", async (req) => {
         status = 409;
         result = { detail: "Unexpected purchase" };
       } else {
-        held.notify();
-        await held.gate;
-        result = {
+        await fulfillHeld(req, held, {
           url: origin + "/?checkout=cancel&surface=h5#account/orders",
           session_id: "cs_fixture",
           order_no: held.order,
-        };
+        });
+        return;
       }
     } else if (p === "/v1/billing/cancel") {
       const held = cancelHold;
@@ -239,9 +449,8 @@ page.on("request", async (req) => {
         status = 409;
         result = { detail: "Unexpected cancellation" };
       } else {
-        held.notify();
-        await held.gate;
-        result = { ok: true };
+        await fulfillHeld(req, held, { ok: true });
+        return;
       }
     } else if (p === "/v1/plans")
       result = {
@@ -666,6 +875,7 @@ try {
   );
   await resize(390);
   await goto("#price");
+  await page.reload({ waitUntil: "networkidle0" });
   await surface("mobile");
   await page.waitForSelector('[data-testid="premium-buy-weekly"]');
   const purchase = hold("checkout", "H5-PINNED-ORDER");
@@ -690,24 +900,28 @@ try {
   );
   await resize(390);
   await goto("#price");
+  await page.reload({ waitUntil: "networkidle0" });
   await surface("mobile");
   await page.waitForSelector('[data-testid="premium-buy-weekly"]');
-  const abandoned = hold("checkout", "ABANDONED-ORDER");
+  const abandoned = hold(
+    "checkout",
+    "ABANDONED-ORDER",
+    process.env.SURFACE_LATE_DELIVERY || "respond",
+  );
   await page.click('[data-testid="premium-buy-weekly"]');
   await abandoned.started;
   await page.click('[data-testid="premium-sheet"] .close-btn');
   await page.waitForSelector('[data-testid="premium-sheet"]', { hidden: true });
   await resize(1440);
   await surface("desktop");
+  if (process.env.SURFACE_LATE_RELOAD === "1") {
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await surface("desktop");
+  }
   await page.evaluate(() =>
     sessionStorage.setItem("jjtv_h5_checkout_order", "NEW-OWNER-ORDER"),
   );
-  const abandonedResponse = page.waitForResponse(
-    (response) => new URL(response.url()).pathname === "/v1/commerce/checkout",
-  );
-  abandoned.release();
-  await (await abandonedResponse).buffer();
-  await settled();
+  await settleHeld(abandoned);
   assert(new URL(page.url()).hash.startsWith("#account/"));
   assert.equal(
     await page.evaluate(() => sessionStorage.getItem("jjtv_h5_checkout_order")),
@@ -718,6 +932,7 @@ try {
   );
   await resize(390);
   await goto("#price");
+  await page.reload({ waitUntil: "networkidle0" });
   await surface("mobile");
   await page.waitForSelector('[data-testid="premium-buy-weekly"]');
   const changedOwner = hold("checkout", "OLD-TOKEN-ORDER");
@@ -727,12 +942,7 @@ try {
     localStorage.setItem("minitv_h5_token", "mobile-token-b");
     sessionStorage.setItem("jjtv_h5_checkout_order", "OTHER-MOBILE-ORDER");
   });
-  const changedResponse = page.waitForResponse(
-    (response) => new URL(response.url()).pathname === "/v1/commerce/checkout",
-  );
-  changedOwner.release();
-  await (await changedResponse).buffer();
-  await settled();
+  await settleHeld(changedOwner);
   assert.equal(new URL(page.url()).hash, "#price");
   assert.equal(
     await page.evaluate(() => sessionStorage.getItem("jjtv_h5_checkout_order")),
@@ -749,6 +959,7 @@ try {
   );
   await resize(390);
   await goto("#price");
+  await page.reload({ waitUntil: "networkidle0" });
   await surface("mobile");
   await page.waitForSelector('[data-testid="premium-cancel"]');
   const cancellation = hold("cancel");
@@ -762,12 +973,7 @@ try {
     (call) =>
       call.path === "/v1/me" && call.headers["x-device-id"]?.startsWith("h5-"),
   ).length;
-  const canceledResponse = page.waitForResponse(
-    (response) => new URL(response.url()).pathname === "/v1/billing/cancel",
-  );
-  cancellation.release();
-  await (await canceledResponse).buffer();
-  await settled();
+  await settleHeld(cancellation);
   assert.equal(
     calls.filter(
       (call) =>
@@ -858,7 +1064,9 @@ try {
   );
   console.log(JSON.stringify({ passed: checks.length, screenshots: out }));
 } catch (error) {
-  await page.screenshot({ path: path.join(out, "surface-failure.png"), fullPage: true }).catch(() => {});
+  await page
+    .screenshot({ path: path.join(out, "surface-failure.png"), fullPage: true })
+    .catch(() => {});
   console.error(JSON.stringify({ route: page.url(), errors, unknown }));
   throw error;
 } finally {
