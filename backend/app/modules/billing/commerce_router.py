@@ -83,6 +83,17 @@ class RefundIn(BaseModel):
     reason:str=Field(min_length=1,max_length=500)
     idempotency_key:str=Field(min_length=8,max_length=100)
 
+class MembershipRefundResolutionIn(RefundIn):
+    expected_revision:str=Field(pattern='^[0-9a-f]{64}$')
+class MembershipRefundResolutionOut(BaseModel):
+    order_no:str
+    resolved:bool
+    restored:bool
+    released_coins:int=Field(ge=0)
+    starts_at:str|None
+    ends_at:str|None
+    replayed:bool
+
 @public_router.get('/coin-packs')
 def coin_packs(db:Session=Depends(get_db)):return {'items':service.list_packs(db)}
 @public_router.get('/billing/channels')
@@ -236,3 +247,8 @@ def order_detail(order_no:str,user=Depends(require_admin),db:Session=Depends(get
 @admin_router.post('/finance/orders/{order_no}/refund')
 def refund(order_no:str,body:RefundIn,request:Request,user=Depends(require_admin),db:Session=Depends(get_db)):
     require_permission(request,'finance.refund');return call(db,service.request_refund,db,order_no,user.id,body.reason,body.idempotency_key)
+
+@admin_router.post('/finance/orders/{order_no}/membership-refund-resolution',response_model=MembershipRefundResolutionOut)
+def membership_refund_resolution(order_no:str,body:MembershipRefundResolutionIn,request:Request,user=Depends(require_admin),db:Session=Depends(get_db)):
+    require_permission(request,'finance.refund')
+    return call(db,service.resolve_membership_refund,db,order_no,user.id,body.reason,body.idempotency_key,body.expected_revision)

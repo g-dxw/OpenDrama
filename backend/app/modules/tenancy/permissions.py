@@ -224,7 +224,7 @@ def authorize_native_request(request,tenant,grants):
             if module not in {'staff','api_keys','roles'} and module not in business_modules.enabled_modules(request.state.db_for_tenant,tenant): deny((module+'.view',))
             read=request.method in ('GET','HEAD','OPTIONS')
             special = None
-            if module=='finance' and path.endswith('/refund'): special='finance.refund'
+            if module=='finance' and (path.endswith('/refund') or (request.method=='POST' and re.fullmatch(r'finance/orders/[^/]+/membership-refund-resolution',path))): special='finance.refund'
             elif module=='coins': special='coins.export' if path.endswith('/export') else 'coins.view' if read else 'coin_packs.manage'
             elif module=='support': special='support.settings' if path.startswith('support/settings') else 'support.reports' if path.startswith('support/reports') else 'support.view' if read else 'support.manage'
             if special:
