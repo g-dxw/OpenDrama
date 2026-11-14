@@ -196,11 +196,15 @@ def test_modern_shared_payment_evidence_survives_older_legacy_event_replay(sessi
     modern=invoice_object([allocation()])
     c.process_event(session,'env',{'type':'invoice.paid','data':{'object':modern}})
     assert order.payment_intent_id is None and order.checkout_context['invoice_payment_requires_manual_review']
+    import copy
+    modern_evidence=copy.deepcopy(order.checkout_context['invoice_payment_evidence'])
+    assert modern_evidence['payment_intents'][0]['invoice_ids']==['in_basil','in_other']
     legacy={key:value for key,value in modern.items() if key!='payments'};legacy['payment_intent']='pi_basil'
     c.process_event(session,'env',{'type':'invoice.paid','data':{'object':legacy}});session.expire_all()
     order=session.get(Order,order.id)
     assert order.payment_intent_id is None and order.checkout_context['invoice_payment_requires_manual_review']
     assert order.checkout_context['invoice_payment_intent_ids']==['pi_basil']
+    assert order.checkout_context['invoice_payment_evidence']==modern_evidence
     assert not c.refund_eligibility(session,order)['eligible']
     assert session.get(WalletAccount,user.id).balance==25
 
@@ -218,3 +222,18 @@ def test_stale_lookup_response_cannot_overwrite_success_webhook_during_reconcili
     result=c.request_refund(session,order.order_no,actor.id,'retry','race-retry')
     assert result['status']=='succeeded' and order.status=='refunded'
     assert session.get(WalletAccount,user.id).balance==0
+
+
+def test_expanded_legacy_invoice_pointer_is_resolved_before_any_database_string_bind(session,commercial):
+    from app.modules.billing import service as billing
+    from tests.test_stripe_invoice_payments import invoice_object,payment_intent
+    user,_,_=commercial
+    billing.get_billing_settings(session).billing_mode='subscription';session.commit()
+    order=membership_order(session,user);order.subscription_ref='sub_basil';session.commit()
+    invoice=invoice_object(payment_intent=payment_intent())
+    c.process_event(session,order.account_code,{'type':'invoice.paid','data':{'object':invoice}})
+    session.refresh(order)
+    assert order.status=='paid' and order.payment_intent_id=='pi_basil'
+    assert order.checkout_context['invoice_payment_evidence']['source']=='legacy_invoice_pointer'
+    assert session.get(WalletAccount,user.id).balance==25
+    assert c.refund_eligibility(session,order)['eligible']

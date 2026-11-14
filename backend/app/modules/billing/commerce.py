@@ -551,7 +551,7 @@ def process_event(db,code,payload):
             else:
                 order=Order(order_no=secrets.token_hex(12),user_id=initial.user_id,plan_version_id=initial.plan_version_id,product_type='membership',product_snapshot=dict(initial.product_snapshot),amount_cents=initial.product_snapshot['price_cents'],currency=initial.product_snapshot['currency'],account_code=code,billing_mode='subscription',status='created',subscription_ref=subscription,attribution_pid=initial.attribution_pid,source_drama_id=initial.source_drama_id)
                 db.add(order);db.flush()
-            order.invoice_id=obj['id'];order.payment_intent_id=obj.get('payment_intent');order.subscription_ref=subscription
+            order.invoice_id=obj['id'];order.subscription_ref=subscription
         lines=(obj.get('lines') or {}).get('data') or []
         line=next((x for x in lines if x.get('period')),None)
         if not line:raise BillingError(409,'invoice has no paid entitlement period')
@@ -562,13 +562,16 @@ def process_event(db,code,payload):
         mode=True if credential.startswith(('sk_live_','rk_live_')) else False if credential.startswith(('sk_test_','rk_test_')) else None
         payment=resolve_invoice_payment(obj,fetch=lambda path:stripe_request(db,code,path,method='GET'),expected_amount=order.amount_cents,expected_currency=order.currency,livemode=mode)
         context=order.checkout_context or {}
+        evidence=payment.evidence
+        prior_evidence=context.get('invoice_payment_evidence') or {}
+        if prior_evidence.get('source')=='invoice_payments' and evidence.get('source')!='invoice_payments':evidence=prior_evidence
         identities=set(context.get('invoice_payment_intent_ids') or ()) | set(payment.payment_intent_ids)
         # Replayed older event versions must not erase proven shared/split facts.
         manual=bool(context.get('invoice_payment_requires_manual_review')) or payment.requires_manual_review or len(identities)!=1
         if order.payment_intent_id and payment.payment_intent_id and order.payment_intent_id!=payment.payment_intent_id:
             identities.add(order.payment_intent_id);manual=True
         order.payment_intent_id=None if manual else payment.payment_intent_id
-        order.checkout_context={**context,'invoice_payment_evidence':payment.evidence,'invoice_payment_intent_ids':sorted(identities),'invoice_payment_requires_manual_review':manual,'invoice_payment_review_reason':payment.reason or context.get('invoice_payment_review_reason','')}
+        order.checkout_context={**context,'invoice_payment_evidence':evidence,'invoice_payment_intent_ids':sorted(identities),'invoice_payment_requires_manual_review':manual,'invoice_payment_review_reason':payment.reason or context.get('invoice_payment_review_reason','')}
         # Keep a merchant binding for cancellation while paid grants own access.
         sub=db.scalar(select(Subscription).where(Subscription.stripe_subscription_id==subscription,Subscription.account_code==code).with_for_update())
         if sub is not None and sub.user_id!=order.user_id:raise BillingError(409,'subscription owner does not match frozen order')
