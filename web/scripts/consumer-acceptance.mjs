@@ -48,6 +48,13 @@ let unlocked = false,
   coins = 120,
   ticket = null,
   replyMessages = [];
+let expireSupportA = false,
+  holdOldSupport = false,
+  holdSecondSupport = false;
+let releaseOldSupport,
+  releaseSecondSupport,
+  oldSupportStarted,
+  secondSupportStarted;
 const poster =
   "data:image/svg+xml," +
   encodeURIComponent(
@@ -69,11 +76,11 @@ const dramas = Array.from({ length: 30 }, (_, i) => ({
   liked: false,
   favorited: false,
 }));
-const profile = () => ({
-  id: 42,
-  public_id: "test-viewer",
-  email: "viewer@example.com",
-  display_name: "Test viewer",
+const profile = (second = false) => ({
+  id: second ? 84 : 42,
+  public_id: second ? "second-viewer" : "test-viewer",
+  email: second ? "second@example.com" : "viewer@example.com",
+  display_name: second ? "Second viewer" : "Test viewer",
   avatar_url: "",
   bio: "",
   coins,
@@ -186,6 +193,8 @@ page.on("request", async (req) => {
     let result = { ok: true },
       status = 200;
     const p = url.pathname;
+    const secondUser =
+      req.headers().authorization === "Bearer browser-fixture-token-b";
     if (p === "/v1/attr/visit") result = { pid: body.pid, active: true };
     else if (p === "/v1/home/groups")
       result = {
@@ -237,16 +246,20 @@ page.on("request", async (req) => {
     else if (p === "/v1/auth/email/code") result = { sent: true };
     else if (p === "/v1/auth/email/authenticate")
       result = {
-        token: "browser-fixture-token",
-        user_id: 42,
-        public_id: "test-viewer",
+        token:
+          body.email === "second@example.com"
+            ? "browser-fixture-token-b"
+            : "browser-fixture-token",
+        user_id: body.email === "second@example.com" ? 84 : 42,
+        public_id:
+          body.email === "second@example.com" ? "second-viewer" : "test-viewer",
       };
     else if (p === "/v1/me") {
       if (req.method() === "GET" && meFailures > 0) {
         meFailures--;
         status = 503;
         result = { detail: "Temporary account outage" };
-      } else result = profile();
+      } else result = profile(secondUser);
     } else if (p === "/v1/dramas/1/play") result = play();
     else if (p === "/v1/playback")
       result = {
@@ -422,16 +435,31 @@ page.on("request", async (req) => {
     else if (p === "/v1/support/tickets" && req.method() === "GET") {
       const pageNumber = Number(url.searchParams.get("page") || 1),
         pageSize = Number(url.searchParams.get("page_size") || 25);
-      const all = [...(ticket ? [ticket] : []), mergedTicket, ...archives];
+      const all = secondUser
+        ? []
+        : [...(ticket ? [ticket] : []), mergedTicket, ...archives];
       result = {
         items: all.slice((pageNumber - 1) * pageSize, pageNumber * pageSize),
         total: all.length,
         page: pageNumber,
         page_size: pageSize,
       };
+      if (secondUser) {
+        status = 503;
+        result = { detail: "Second account support list unavailable" };
+      }
+    } else if (p === "/v1/support/tickets/T-NOT-FOUND") {
+      status = 404;
+      result = { detail: "Ticket not found" };
     } else if (p === "/v1/support/tickets/T-MERGED")
       result = { ticket: mergedTicket, messages: [] };
-    else if (p === "/v1/support/tickets/T-MAIN")
+    else if (p === "/v1/support/tickets/T-MAIN") {
+      if (holdOldSupport && !secondUser) {
+        oldSupportStarted?.();
+        await new Promise((resolve) => {
+          releaseOldSupport = resolve;
+        });
+      }
       result = {
         ticket: mainTicket,
         messages: [
@@ -443,7 +471,7 @@ page.on("request", async (req) => {
           },
         ],
       };
-    else if (p === "/v1/support/tickets" && req.method() === "POST") {
+    } else if (p === "/v1/support/tickets" && req.method() === "POST") {
       ticket = {
         id: 1,
         number: "T-1",
@@ -481,8 +509,21 @@ page.on("request", async (req) => {
     } else if (p === "/v1/support/tickets/T-1/csat") {
       ticket.csat_score = body.score;
       result = supportDetail();
-    } else if (p === "/v1/support/tickets/T-1") result = supportDetail();
-    else if (p === "/v1/reactions") {
+    } else if (p === "/v1/support/tickets/T-1") {
+      if (secondUser) {
+        if (holdSecondSupport) {
+          secondSupportStarted?.();
+          await new Promise((resolve) => {
+            releaseSecondSupport = resolve;
+          });
+        }
+        status = 404;
+        result = { detail: "Ticket not found" };
+      } else if (expireSupportA) {
+        status = 401;
+        result = { detail: "Session expired" };
+      } else result = supportDetail();
+    } else if (p === "/v1/reactions") {
       if (body.kind === "favorite" && body.remove) {
         const index = savedDramas.findIndex((d) => d.id === body.target_id);
         if (index >= 0) savedDramas.splice(index, 1);
@@ -1046,6 +1087,99 @@ try {
   await text("Open your order history to check payment confirmation.");
   assert.equal(await page.$(".checkout-confirmed"), null);
   pass("failed and unknown payment returns never claim a confirmed payment");
+  await go("#support?ticket=T-1");
+  await text("An episode needs help.");
+  await page.evaluate(() => {
+    location.hash = "support?ticket=T-NOT-FOUND";
+  });
+  await text("Ticket not found");
+  assert.equal(await page.$(".messages .message"), null);
+  assert(
+    !(await page.$eval(".support-main", (el) => el.innerText)).includes(
+      "An episode needs help.",
+    ),
+  );
+  pass("a support detail 404 clears the previously opened conversation");
+  await page.evaluate(() => {
+    location.hash = "support?ticket=T-1";
+  });
+  await text("An episode needs help.");
+  await clickText("New ticket");
+  await page.type('input[maxlength="200"]', "PRIVATE DRAFT FROM ACCOUNT A");
+  await page.type("textarea", "PRIVATE BODY FROM ACCOUNT A");
+  holdOldSupport = true;
+  const oldStarted = new Promise((resolve) => {
+    oldSupportStarted = resolve;
+  });
+  await page.evaluate(() => {
+    location.hash = "support?ticket=T-MAIN";
+  });
+  await oldStarted;
+  expireSupportA = true;
+  await page.evaluate(() => {
+    location.hash = "support?ticket=T-1";
+  });
+  await text("Sign in to create a ticket and follow your conversations.");
+  holdSecondSupport = true;
+  const secondStarted = new Promise((resolve) => {
+    secondSupportStarted = resolve;
+  });
+  await page.click(".sign-in");
+  await page.waitForSelector("input[type=email]");
+  await page.type("input[type=email]", "second@example.com");
+  await clickText("I already have a code");
+  await page.type("input[autocomplete=one-time-code]", "123456");
+  await clickText("Sign in / Create account");
+  await page.waitForFunction(
+    () => document.querySelector(".profile-button")?.textContent === "S",
+  );
+  await secondStarted;
+  const assertPrivateSupportAbsent = async () => {
+    const state = await page.evaluate(() => ({
+      text: document.querySelector(".support-page")?.textContent || "",
+      draft: document.querySelector('input[maxlength="200"]')?.value || "",
+    }));
+    for (const privateText of [
+      "An episode needs help.",
+      "Original combined message",
+      "Earlier conversation",
+      "PRIVATE DRAFT FROM ACCOUNT A",
+      "PRIVATE BODY FROM ACCOUNT A",
+    ])
+      assert(
+        !state.text.includes(privateText) && !state.draft.includes(privateText),
+        "Previous account data remained: " + privateText,
+      );
+  };
+  await assertPrivateSupportAbsent();
+  const oldResponse = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/v1/support/tickets/T-MAIN",
+  );
+  releaseOldSupport();
+  await oldResponse;
+  await page.evaluate(
+    () =>
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      ),
+  );
+  await assertPrivateSupportAbsent();
+  assert(page.url().includes("ticket=T-1"));
+  releaseSecondSupport();
+  await text("Ticket not found");
+  await assertPrivateSupportAbsent();
+  assert.equal(await page.$$(".ticket-link").then((items) => items.length), 0);
+  assert.equal(await page.$(".messages .message"), null);
+  await clickText("New ticket");
+  assert.equal(
+    await page.$eval('input[maxlength="200"]', (input) => input.value),
+    "",
+  );
+  assert.equal(await page.$eval("textarea", (input) => input.value), "");
+  pass(
+    "support account switching discards private caches, drafts and late responses despite 404 and list failures",
+  );
   assert.deepEqual(unknown, []);
   assert.deepEqual(errors, []);
   pass("no unknown API contracts or uncaught browser errors");
@@ -1068,6 +1202,8 @@ try {
   });
   throw error;
 } finally {
+  releaseOldSupport?.();
+  releaseSecondSupport?.();
   await browser.close();
   await server.close();
 }

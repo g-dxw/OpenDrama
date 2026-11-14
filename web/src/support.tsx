@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { get, post, errorMessage } from "./consumer-api";
+import { get, post, errorMessage, authToken, ApiError } from "./consumer-api";
 import { useAuth } from "./auth";
 import { Empty, Failure, Loading, StatusTag, Modal } from "./components";
 interface Category {
@@ -38,6 +38,15 @@ interface Detail {
   }>;
 }
 export function Support() {
+  const { status, user } = useAuth();
+  // Private state belongs to one authenticated account, including drafts and errors.
+  return (
+    <SupportSession
+      key={status === "user" && user ? "user:" + user.id : "guest"}
+    />
+  );
+}
+function SupportSession() {
   const { status, openLogin } = useAuth();
   const [items, setItems] = useState<Ticket[]>([]),
     [categories, setCategories] = useState<Category[]>([]),
@@ -57,24 +66,52 @@ export function Support() {
     [total, setTotal] = useState(0);
   const pageSize = 10;
   const listRequest = useRef(0),
-    detailRequest = useRef(0);
+    detailRequest = useRef(0),
+    mutationRequest = useRef(0),
+    lifecycle = useRef(0),
+    mounted = useRef(true),
+    sessionToken = useRef(authToken()),
+    submitting = useRef(false);
+  const isCurrent = (life: number) =>
+    mounted.current &&
+    lifecycle.current === life &&
+    sessionToken.current === authToken();
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      lifecycle.current++;
+      listRequest.current++;
+      detailRequest.current++;
+      mutationRequest.current++;
+    };
+  }, []);
   const load = () => {
-    const request = ++listRequest.current;
+    if (status !== "user") return;
+    const life = lifecycle.current,
+      request = ++listRequest.current;
     get<{ items: Ticket[]; total: number; page: number; page_size: number }>(
       "/v1/support/tickets?page=" + page + "&page_size=" + pageSize,
     )
       .then((d) => {
-        if (request === listRequest.current) {
+        if (isCurrent(life) && request === listRequest.current) {
           setItems(d.items);
           setTotal(d.total);
         }
       })
-      .catch((e) => setError(errorMessage(e)))
-      .finally(() => undefined);
+      .catch((e) => {
+        if (isCurrent(life) && request === listRequest.current) {
+          setItems([]);
+          setTotal(0);
+          setError(errorMessage(e));
+        }
+      });
   };
   useEffect(() => {
+    const life = lifecycle.current;
     get<{ categories: Category[] }>("/v1/support/meta")
       .then((d) => {
+        if (!isCurrent(life)) return;
         setCategories(d.categories);
         if (d.categories.length)
           setCategory((current) =>
@@ -91,32 +128,57 @@ export function Support() {
       listRequest.current++;
     };
   }, [status, page]);
+  function startDraft(orderNumber = "") {
+    detailRequest.current++;
+    setLoading(false);
+    setCreating(true);
+    setDetail(null);
+    setReply("");
+    setConfirmClose(false);
+    setSubject("");
+    setBody("");
+    setOrder(orderNumber);
+    setFields({});
+    setCategory(orderNumber ? "billing" : categories[0]?.code || "general");
+    setError("");
+  }
   useEffect(() => {
     if (status !== "user") return;
     const followLink = () => {
-      const query = window.location.hash.split("?")[1] || "";
-      const params = new URLSearchParams(query);
+      const params = new URLSearchParams(
+        window.location.hash.split("?")[1] || "",
+      );
       const number = params.get("ticket");
-      if (params.get("new") === "1") {
-        setCreating(true);
+      if (params.get("new") === "1") startDraft(params.get("order") || "");
+      else if (number) void open(number);
+      else {
+        detailRequest.current++;
         setDetail(null);
-        setOrder(params.get("order") || "");
-        if (params.get("order")) setCategory("billing");
-      } else if (number) void open(number);
+        setReply("");
+        setCreating(false);
+        setConfirmClose(false);
+        setLoading(false);
+      }
     };
     followLink();
     window.addEventListener("hashchange", followLink);
     return () => window.removeEventListener("hashchange", followLink);
   }, [status]);
   async function open(number: string) {
+    const life = lifecycle.current,
+      request = ++detailRequest.current;
     setError("");
-    const request = ++detailRequest.current;
+    setDetail(null);
+    setCreating(false);
+    setReply("");
+    setConfirmClose(false);
     setLoading(true);
     try {
-      const d = await get<Detail>("/v1/support/tickets/" + number);
-      if (request !== detailRequest.current) return;
+      const d = await get<Detail>(
+        "/v1/support/tickets/" + encodeURIComponent(number),
+      );
+      if (!isCurrent(life) || request !== detailRequest.current) return;
       setDetail(d);
-      setCreating(false);
       window.history.replaceState(
         {},
         "",
@@ -126,16 +188,26 @@ export function Support() {
           encodeURIComponent(number),
       );
       if (d.ticket.unread_count)
-        void post("/v1/support/tickets/" + number + "/read", {}).catch(
-          () => undefined,
-        );
+        void post(
+          "/v1/support/tickets/" + encodeURIComponent(number) + "/read",
+          {},
+        ).catch(() => undefined);
     } catch (e) {
-      if (request === detailRequest.current) setError(errorMessage(e));
+      if (isCurrent(life) && request === detailRequest.current) {
+        setDetail(null);
+        setError(errorMessage(e));
+      }
     } finally {
-      if (request === detailRequest.current) setLoading(false);
+      if (isCurrent(life) && request === detailRequest.current)
+        setLoading(false);
     }
   }
   async function create() {
+    if (submitting.current || status !== "user") return;
+    submitting.current = true;
+    const life = lifecycle.current,
+      request = ++mutationRequest.current,
+      view = detailRequest.current;
     setBusy(true);
     setError("");
     try {
@@ -146,6 +218,12 @@ export function Support() {
         order_no: order || undefined,
         fields,
       });
+      if (
+        !isCurrent(life) ||
+        request !== mutationRequest.current ||
+        view !== detailRequest.current
+      )
+        return;
       setDetail(d);
       window.history.replaceState(
         {},
@@ -161,30 +239,67 @@ export function Support() {
       setBody("");
       load();
     } catch (e) {
-      setError(errorMessage(e));
+      if (
+        isCurrent(life) &&
+        request === mutationRequest.current &&
+        view === detailRequest.current
+      )
+        setError(errorMessage(e));
     } finally {
-      setBusy(false);
+      if (isCurrent(life) && request === mutationRequest.current) {
+        submitting.current = false;
+        setBusy(false);
+      }
     }
   }
   async function action(path: string, payload: unknown) {
-    if (!detail) return;
+    if (!detail || submitting.current || status !== "user") return false;
+    submitting.current = true;
+    const life = lifecycle.current,
+      request = ++mutationRequest.current,
+      view = detailRequest.current,
+      number = detail.ticket.number;
     setBusy(true);
     setError("");
     try {
       const d = await post<Detail>(
-        "/v1/support/tickets/" + detail.ticket.number + path,
+        "/v1/support/tickets/" + encodeURIComponent(number) + path,
         payload,
       );
+      if (
+        !isCurrent(life) ||
+        request !== mutationRequest.current ||
+        view !== detailRequest.current
+      )
+        return false;
       if (d?.ticket) setDetail(d);
-      else await open(detail.ticket.number);
+      else await open(number);
+      if (!isCurrent(life)) return false;
       setReply("");
       load();
       return true;
     } catch (e) {
-      setError(errorMessage(e));
+      if (
+        isCurrent(life) &&
+        request === mutationRequest.current &&
+        view === detailRequest.current
+      ) {
+        if (e instanceof ApiError && (e.status === 403 || e.status === 404)) {
+          setDetail(null);
+          setReply("");
+          setConfirmClose(false);
+          setItems((current) =>
+            current.filter((item) => item.number !== number),
+          );
+        }
+        setError(errorMessage(e));
+      }
       return false;
     } finally {
-      setBusy(false);
+      if (isCurrent(life) && request === mutationRequest.current) {
+        submitting.current = false;
+        setBusy(false);
+      }
     }
   }
   return (
@@ -212,13 +327,7 @@ export function Support() {
                 className="button primary full-width"
                 disabled={busy}
                 onClick={() => {
-                  setCreating(true);
-                  setDetail(null);
-                  setSubject("");
-                  setBody("");
-                  setOrder("");
-                  setFields({});
-                  setError("");
+                  startDraft();
                   window.history.replaceState(
                     {},
                     "",
