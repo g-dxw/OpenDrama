@@ -214,29 +214,33 @@ export function PremiumSheet({
   const startNewCheckout = () => {
     const recovery = expiredRef.current;
     if (!mounted.current || !recovery || busy !== null) return;
-    if (authToken() !== recovery.ownerToken) {
+    try {
+      if (authToken() !== recovery.ownerToken) {
+        updateExpired(null);
+        setMobileCheckoutActive(pinOwner.current, false);
+        return;
+      }
+      if (
+        !replaceExpiredMembershipIntent(
+          recovery.code,
+          recovery.intent,
+          recovery.ownerToken,
+        )
+      ) {
+        updateExpired(null);
+        setMobileCheckoutActive(pinOwner.current, false);
+        setError(
+          locale === "zh"
+            ? "支付意图已改变，请重新打开会员方案。"
+            : "This payment attempt changed. Reopen your membership plans.",
+        );
+        return;
+      }
       updateExpired(null);
-      setMobileCheckoutActive(pinOwner.current, false);
-      return;
+      void startSubscription(recovery.code);
+    } catch {
+      setError(t(locale, "premium_failed"));
     }
-    if (
-      !replaceExpiredMembershipIntent(
-        recovery.code,
-        recovery.intent,
-        recovery.ownerToken,
-      )
-    ) {
-      updateExpired(null);
-      setMobileCheckoutActive(pinOwner.current, false);
-      setError(
-        locale === "zh"
-          ? "支付意图已改变，请重新打开会员方案。"
-          : "This payment attempt changed. Reopen your membership plans.",
-      );
-      return;
-    }
-    updateExpired(null);
-    void startSubscription(recovery.code);
   };
   async function stopRenewing() {
     const request = beginRequest("cancel");

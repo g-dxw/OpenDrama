@@ -1126,6 +1126,66 @@ try {
   pass(
     "uncertain and already-paid conflicts never rotate keys or offer a fresh automatic purchase",
   );
+  await freshPlans("quota-expired-intent");
+  recoveryReplies.push(expiredReply());
+  await page.click('[data-testid="premium-buy-weekly"]');
+  await page.waitForSelector('[data-testid="premium-start-new-checkout"]');
+  const beforeQuota = checkoutCalls().length;
+  await page.evaluate(() => {
+    const prototype = Object.getPrototypeOf(sessionStorage),
+      native = prototype.setItem;
+    window.__restoreSurfaceStorage = () => {
+      prototype.setItem = native;
+      delete window.__restoreSurfaceStorage;
+    };
+    prototype.setItem = function (key, value) {
+      if (this === sessionStorage && key === "jjtv_checkout_membership_weekly")
+        throw new DOMException(
+          "Fixture session storage quota exceeded",
+          "QuotaExceededError",
+        );
+      return native.call(this, key, value);
+    };
+  });
+  await page.click('[data-testid="premium-start-new-checkout"]');
+  await page.waitForFunction(
+    () =>
+      [...document.querySelectorAll(".premium-error")].some((element) =>
+        element.textContent.includes("Could not start checkout"),
+      ),
+    { timeout: 5000 },
+  );
+  assert.equal(checkoutCalls().length, beforeQuota);
+  assert.equal(
+    await page.evaluate(() =>
+      sessionStorage.getItem("jjtv_checkout_membership_weekly"),
+    ),
+    "quota-expired-intent",
+  );
+  assert.deepEqual(errors, []);
+  assert.equal(
+    await page.$eval(
+      '[data-testid="premium-start-new-checkout"]',
+      (button) => button.disabled,
+    ),
+    false,
+  );
+  await page.evaluate(() => window.__restoreSurfaceStorage());
+  recoveryReplies.push(unknownReply);
+  await page.click('[data-testid="premium-start-new-checkout"]');
+  await page.waitForFunction(
+    () =>
+      document.querySelector(".premium-error") &&
+      !document.querySelector('[data-testid="premium-buy-weekly"]').disabled,
+  );
+  assert.equal(checkoutCalls().length, beforeQuota + 1);
+  assert.notEqual(
+    checkoutCalls().at(-1).body.idempotency_key,
+    "quota-expired-intent",
+  );
+  pass(
+    "expired checkout storage failure stays visible without changing intent or sending a request, and remains retryable",
+  );
   await freshPlans("stale-expired-intent");
   recoveryReplies.push(expiredReply());
   await page.click('[data-testid="premium-buy-weekly"]');
