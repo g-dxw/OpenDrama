@@ -24,22 +24,29 @@ export function createConsumerClient(options: ClientOptions) {
     headers: Record<string, string> = {},
   ): Promise<T> => {
     let response: Response;
+    let requestToken: string | null = null;
+    let authenticated = false;
     try {
-      const token = options.tokenStore.get();
+      requestToken = options.tokenStore.get();
       const rawPid = options.attributionPid?.();
       const pid =
         rawPid && /^[A-Za-z0-9_-]{1,128}$/.test(rawPid) ? rawPid : null;
+      const requestHeaders = {
+        "Content-Type": "application/json",
+        "X-Device-Id": options.deviceId(),
+        ...(pid ? { "X-JJTV-Attribution": pid } : {}),
+        ...(requestToken ? { Authorization: "Bearer " + requestToken } : {}),
+        ...headers,
+      };
+      authenticated =
+        Boolean(requestToken) &&
+        new Headers(requestHeaders).get("Authorization") ===
+          "Bearer " + requestToken;
       response = await (options.fetch ?? fetch)(
         options.apiBase.replace(/\/$/, "") + path,
         {
           method,
-          headers: {
-            "Content-Type": "application/json",
-            "X-Device-Id": options.deviceId(),
-            ...(pid ? { "X-JJTV-Attribution": pid } : {}),
-            ...(token ? { Authorization: "Bearer " + token } : {}),
-            ...headers,
-          },
+          headers: requestHeaders,
           body: body === undefined ? undefined : JSON.stringify(body),
         },
       );
@@ -57,7 +64,12 @@ export function createConsumerClient(options: ClientOptions) {
           : detail && typeof detail === "object" && "message" in detail
             ? String(detail.message)
             : "Request failed (" + response.status + ")";
-      if (response.status === 401 && !path.startsWith("/v1/auth/"))
+      if (
+        response.status === 401 &&
+        authenticated &&
+        requestToken === options.tokenStore.get() &&
+        !path.startsWith("/v1/auth/")
+      )
         unauthorized?.();
       throw new ApiError(response.status, message, payload);
     }
