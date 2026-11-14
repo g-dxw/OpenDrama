@@ -131,7 +131,10 @@ def test_same_request_second_is_not_proof_of_a_new_resume_cycle(session, cancell
     cancel(session, user, actor, "user")
     assert calls[-1][1] == original_key
     # A later accepted resume can still retire the old confirmed intent.
-    c.process_event(session, "env", lifecycle(order, kind="customer.subscription.updated", created=stamp+1, cancel=False))
+    c.process_event(session, "env", lifecycle(
+        order, kind="customer.subscription.updated",
+        created=row.cancellation_context["verified_at"] + 1, cancel=False,
+    ))
     cancel(session, user, actor, "user")
     assert calls[-1][1] != original_key
 
