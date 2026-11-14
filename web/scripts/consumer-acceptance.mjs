@@ -48,6 +48,15 @@ let unlocked = false,
   coins = 120,
   ticket = null,
   replyMessages = [];
+let restoredLikeScenario = false,
+  restoredFeedSnapshotLiked = false,
+  feedServerLiked = false,
+  releaseRestoredFeed,
+  restoredFeedStarted;
+let feedCursorScenario = false,
+  expireFeedOwner = false,
+  feedGuestFirstFailed = false;
+const invalidFeedCursors = [];
 let privateComments = false,
   holdOldComments = false,
   expireCommentOwner = false,
@@ -288,14 +297,28 @@ page.on("request", async (req) => {
         limit: 24,
         offset,
       };
-    } else if (p === "/v1/feed")
+    } else if (p === "/v1/feed") {
+      const authorization = req.headers().authorization;
       result = {
         session_id: "fixture-feed-session",
         page_size: Number(url.searchParams.get("limit") || 12),
         items: dramas
           .slice(0, Number(url.searchParams.get("limit") || 12))
           .map((drama, index) => ({
-            drama: index === 2 ? { ...drama, free_episode_count: 0 } : drama,
+            drama: {
+              ...drama,
+              ...(index === 2 ? { free_episode_count: 0 } : {}),
+              ...(restoredLikeScenario && index === 0
+                ? {
+                    liked: authorization ? restoredFeedSnapshotLiked : false,
+                    like_count:
+                      1 +
+                      Number(
+                        Boolean(authorization) && restoredFeedSnapshotLiked,
+                      ),
+                  }
+                : {}),
+            },
             episode: {
               id: index === 0 ? 10 : 1000 + index,
               episode_number: 1,
@@ -313,7 +336,35 @@ page.on("request", async (req) => {
         has_more: false,
         preload: { fetch_when_remaining: 3 },
       };
-    else if (p === "/v1/auth/providers")
+      if (feedCursorScenario) {
+        const cursor = url.searchParams.get("cursor");
+        if (
+          cursor &&
+          (cursor !== "OWNER_A_CURSOR" ||
+            authorization !== "Bearer browser-fixture-token")
+        ) {
+          invalidFeedCursors.push({
+            cursor,
+            authenticated: Boolean(authorization),
+          });
+          status = 409;
+          result = { detail: "Feed cursor belongs to another viewer" };
+        } else if (!authorization && !feedGuestFirstFailed) {
+          feedGuestFirstFailed = true;
+          status = 503;
+          result = { detail: "Feed first page temporarily unavailable" };
+        } else if (authorization) {
+          result.next_cursor = "OWNER_A_CURSOR";
+          result.has_more = true;
+        }
+      }
+      if (restoredLikeScenario && authorization) {
+        restoredFeedStarted?.();
+        await new Promise((resolve) => {
+          releaseRestoredFeed = resolve;
+        });
+      }
+    } else if (p === "/v1/auth/providers")
       result = {
         email: { enabled: true },
         google: { enabled: false, client_id: null },
@@ -652,10 +703,26 @@ page.on("request", async (req) => {
       } else result = supportDetail();
     } else if (p === "/v1/reactions") {
       if (body.kind === "favorite" && body.remove) {
-        const index = savedDramas.findIndex((d) => d.id === body.target_id);
+        const index = savedDramas.findIndex(
+          (drama) => drama.id === body.target_id,
+        );
         if (index >= 0) savedDramas.splice(index, 1);
       }
-      result = { ok: true };
+      if (
+        restoredLikeScenario &&
+        body.kind === "like" &&
+        body.target_id === 1
+      ) {
+        feedServerLiked = true;
+        result = { active: true };
+      } else if (
+        feedCursorScenario &&
+        expireFeedOwner &&
+        req.headers().authorization
+      ) {
+        status = 401;
+        result = { detail: "Feed owner session expired" };
+      } else result = { ok: true };
     } else if (p.startsWith("/v1/playback/") || p.endsWith("/read"))
       result = { ok: true };
     else if (p.startsWith("/v1/legal/"))
@@ -673,9 +740,8 @@ page.on("request", async (req) => {
     return;
   }
   if (
-    url.protocol === "http:" ||
-    url.protocol === "data:" ||
-    url.protocol === "about:"
+    url.origin === origin ||
+    ["data:", "about:", "blob:"].includes(url.protocol)
   )
     await req.continue();
   else await req.abort();
@@ -1731,6 +1797,111 @@ try {
   pass(
     "pending comments and drafts stay private across account changes, a new-owner 404 and late old replies",
   );
+  for (const alreadyLiked of [false, true]) {
+    await page.keyboard.press("Escape");
+    await go("#account/overview");
+    await page.waitForSelector(".member-signout");
+    await clickText("Sign out");
+    restoredLikeScenario = true;
+    restoredFeedSnapshotLiked = alreadyLiked;
+    feedServerLiked = alreadyLiked;
+    releaseRestoredFeed = undefined;
+    const feedHeld = new Promise((resolve) => {
+      restoredFeedStarted = resolve;
+    });
+    await go("#foryou");
+    await page.waitForFunction(
+      () => document.querySelector(".for-you-page video")?.currentTime > 0.1,
+    );
+    await page.$eval(".for-you-page video", (video) => video.pause());
+    const reactionsBefore = requests.filter(
+      (request) =>
+        request.path === "/v1/reactions" &&
+        request.body.kind === "like" &&
+        request.body.target_id === 1,
+    ).length;
+    await page.click(
+      '.feed-item[data-index="0"] button[aria-label="Like drama"]',
+    );
+    await page.waitForSelector("input[type=email]");
+    await page.type("input[type=email]", "viewer@example.com");
+    await clickText("I already have a code");
+    await page.type("input[autocomplete=one-time-code]", "123456");
+    const reactionResponse = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === "/v1/reactions" &&
+        response.request().method() === "POST",
+    );
+    await clickText("Sign in / Create account");
+    await feedHeld;
+    await reactionResponse;
+    await page.evaluate(
+      () =>
+        new Promise((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve)),
+        ),
+    );
+    assert.equal(await page.$$(".feed-item").then((items) => items.length), 0);
+    assert.equal(feedServerLiked, true);
+    releaseRestoredFeed();
+    await page.waitForSelector(
+      '.feed-item[data-index="0"] button[aria-label="Unlike drama"]',
+    );
+    assert.equal(
+      await page.$eval(
+        '.feed-item[data-index="0"] button[aria-label="Unlike drama"] small',
+        (counter) => counter.textContent,
+      ),
+      "2",
+    );
+    assert.equal(
+      requests.filter(
+        (request) =>
+          request.path === "/v1/reactions" &&
+          request.body.kind === "like" &&
+          request.body.target_id === 1,
+      ).length,
+      reactionsBefore + 1,
+    );
+    restoredLikeScenario = false;
+  }
+  pass(
+    "restored feed likes survive delayed unliked or already-liked snapshots and increment the counter once",
+  );
+  feedCursorScenario = true;
+  expireFeedOwner = false;
+  feedGuestFirstFailed = false;
+  await page.reload({ waitUntil: "networkidle0" });
+  await page.waitForSelector(".profile-button");
+  await page.waitForFunction(
+    () => document.querySelectorAll(".feed-item").length === 6,
+  );
+  await page.evaluate(
+    () =>
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      ),
+  );
+  expireFeedOwner = true;
+  await page.click(
+    '.feed-item[data-index="0"] button[aria-label="Like drama"]',
+  );
+  await page.waitForSelector(".sign-in");
+  await text("Feed first page temporarily unavailable");
+  const feedRetry = page.waitForRequest(
+    (request) => new URL(request.url()).pathname === "/v1/feed",
+  );
+  await clickText("Try again");
+  const retryRequest = await feedRetry;
+  assert.equal(new URL(retryRequest.url()).searchParams.get("cursor"), null);
+  assert.equal(retryRequest.headers().authorization, undefined);
+  await page.waitForSelector(".feed-item");
+  assert.deepEqual(invalidFeedCursors, []);
+  pass(
+    "a new identity retries its failed first feed page without the previous viewer's pagination cursor",
+  );
+  feedCursorScenario = false;
+  expireFeedOwner = false;
   assert.deepEqual(unknown, []);
   assert.deepEqual(errors, []);
   pass("no unknown API contracts or uncaught browser errors");
@@ -1756,6 +1927,7 @@ try {
   releaseOldSupport?.();
   releaseSecondSupport?.();
   releaseOldComments?.();
+  releaseRestoredFeed?.();
   await browser.close();
   await server.close();
 }
