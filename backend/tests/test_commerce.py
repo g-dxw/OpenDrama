@@ -24,14 +24,22 @@ def commercial(session,make,monkeypatch):
     monkeypatch.setenv('SETTINGS_ENCRYPTION_KEY',Fernet.generate_key().decode())
     actor=make.admin(role='admin');user=make.user(coins=0)
     calls=[]
+    sessions={}
     def remote(db,code,path,data=None,method='POST',idempotency_key=None):
         calls.append((code,path,data,method,idempotency_key))
         if path=='/prices':return {'id':'price_'+str(len(calls))}
-        if path=='/checkout/sessions':return {'id':'cs_'+idempotency_key[-12:],'url':'https://checkout.stripe.com/test/'+idempotency_key[-12:]}
+        if path=='/checkout/sessions':
+            result={'id':'cs_'+idempotency_key[-12:],'url':'https://checkout.stripe.com/test/'+idempotency_key[-12:],'status':'open','payment_status':'unpaid'}
+            sessions.setdefault(result['id'],result);return dict(sessions[result['id']])
+        if path.startswith('/checkout/sessions/'):
+            session_id=path.split('/')[3]
+            if path.endswith('/expire'):sessions[session_id]['status']='expired'
+            return dict(sessions[session_id])
         if path=='/refunds':return {'id':'re_'+hashlib.sha256(idempotency_key.encode()).hexdigest()[:12],'status':'succeeded','amount':int(data['amount']),'currency':'usd'}
         if path=='/account':return {'id':'acct_unit','country':'US'}
         return {}
     monkeypatch.setattr(c,'stripe_request',remote)
+    monkeypatch.setattr(c,'_stripe_identity',lambda secret:('acct_unit',secret.startswith(('sk_live_','rk_live_')),{'id':'acct_unit','country':'US'}))
     c.save_pack(session,'starter',dict(name_en='Starter',price_cents=500,base_coins=100,bonus_coins=20),actor.id)
     return user,actor,calls
 

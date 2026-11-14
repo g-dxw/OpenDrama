@@ -119,6 +119,7 @@ class Order(Base):
     product_type: Mapped[str] = mapped_column(String(16), nullable=False, default="membership", server_default="membership")
     product_snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
     account_code: Mapped[str] = mapped_column(String(32), nullable=False, default="env", server_default="env")
+    checkout_context: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default='{}')
     checkout_url: Mapped[str | None] = mapped_column(String(2000), nullable=True)
     checkout_key: Mapped[str | None] = mapped_column(String(100), nullable=True, unique=True)
     payment_intent_id: Mapped[str | None] = mapped_column(String(100), nullable=True)

@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 from app.modules.billing.models import Order, Plan, PlanVersion, Subscription
-from app.modules.billing.commerce_models import (CoinPack,CoinPackVersion,StripeAccount,StripePriceBinding,CoinSource,CoinAllocation,MembershipGrant,CommerceSettlement,CommerceRefund)
+from app.modules.billing.commerce_models import (CoinPack,CoinPackVersion,StripeAccount,StripePriceBinding,CoinSource,CoinAllocation,MembershipGrant,CommerceSettlement,CommerceRefund,StripeSubscriptionLifecycle)
 from app.modules.wallet.models import WalletAccount,CoinLedgerEntry
 from app.modules.common.models import AuditLog
 from app.modules.billing.service import BillingError
@@ -145,11 +145,10 @@ def select_account(db,user_id,code=None):
     if chosen is None:raise BillingError(503,'no configured Stripe payment channel')
     return get_account(db,chosen['code'],True)
 
-def stripe_request(db,code,path,data=None,method='POST',idempotency_key=None):
-    account=get_account(db,code)
+def _stripe_http(secret,path,data=None,method='POST',idempotency_key=None):
     payload=None if data is None else urllib.parse.urlencode(data).encode()
     request=urllib.request.Request('https://api.stripe.com/v1'+path,data=payload,method=method)
-    request.add_header('Authorization','Bearer '+account['secret_key'])
+    request.add_header('Authorization','Bearer '+secret)
     if payload is not None:request.add_header('Content-Type','application/x-www-form-urlencoded')
     if idempotency_key:request.add_header('Idempotency-Key',idempotency_key)
     try:
@@ -161,26 +160,83 @@ def stripe_request(db,code,path,data=None,method='POST',idempotency_key=None):
         raise error from exc
     except (urllib.error.URLError,TimeoutError) as exc:raise BillingError(503,'Stripe response uncertain; retry the same operation') from exc
 
+def stripe_request(db,code,path,data=None,method='POST',idempotency_key=None):
+    return _stripe_http(get_account(db,code)['secret_key'],path,data,method,idempotency_key)
+
+def _stripe_identity(secret):
+    # /account proves the merchant; the authenticated key namespace proves mode.
+    if secret.startswith(('sk_live_','rk_live_')):live=True
+    elif secret.startswith(('sk_test_','rk_test_')):live=False
+    else:raise BillingError(422,'use a Stripe secret or restricted key with an explicit test/live mode')
+    result=_stripe_http(secret,'/account',method='GET')
+    if not str(result.get('id','')).startswith('acct_'):raise BillingError(502,'Stripe did not return a merchant identity')
+    if 'livemode' in result and bool(result['livemode'])!=live:raise BillingError(409,'Stripe credential mode does not match merchant response')
+    return result['id'],live,result
+
+def _account_lock(db,code):
+    from sqlalchemy import text
+    key=int.from_bytes(hashlib.sha256(('stripe-account:'+code).encode()).digest()[:8],'big') & ((1<<63)-1)
+    db.execute(text('SELECT pg_advisory_xact_lock(:key)'),{'key':key})
+
+def _account_has_history(db,code):
+    return any(db.scalar(select(model).where(field==code).limit(1)) is not None for model,field in ((Order,Order.account_code),(Subscription,Subscription.account_code),(StripePriceBinding,StripePriceBinding.account_code)))
+
+def _identity_conflict():
+    return BillingError(409,dict(code='stripe_merchant_mismatch',message='This channel is bound to a different Stripe merchant or mode. Create a new channel instead.'))
+
 def save_account(db,code,data,actor):
-    row=db.get(StripeAccount,code)
-    if row is None:row=StripeAccount(code=code,name=data.get('name',code),status='draft');db.add(row)
-    for field in ('name','status','is_default'):
+    _account_lock(db,code)
+    row=db.get(StripeAccount,code,populate_existing=True)
+    previous=account_config(db,code)
+    candidate=dict(previous)
+    for field in ('secret_key','webhook_secret'):
+        if data.get('clear_'+field):candidate.pop(field,None)
+        elif isinstance(data.get(field),str) and data[field].strip():candidate[field]=data[field].strip()
+    status=data.get('status') or (row.status if row else 'draft')
+    if status not in {'draft','active','disabled'}:raise BillingError(422,'invalid account status')
+    history=_account_has_history(db,code)
+    if history and any(previous.get(field) and not candidate.get(field) for field in ('secret_key','webhook_secret')):
+        raise BillingError(409,'Historical payments require their original channel credentials; disable new purchases instead of clearing credentials')
+    if status=='active' and (not candidate.get('secret_key') or not candidate.get('webhook_secret')):
+        raise BillingError(422,'configure Stripe key and webhook signing secret before activating')
+    expected=(row.remote_id,row.livemode) if row and row.remote_id else None
+    # Existing business facts must be tied to the OLD credential before a change.
+    # A failed candidate validation must never mutate either stored credential.
+    if history and expected is None:
+        if not previous.get('secret_key'):raise BillingError(409,'Original Stripe merchant identity is unavailable; manual channel recovery required')
+        remote_id,live,_=_stripe_identity(previous['secret_key']);expected=(remote_id,live)
+    verified=None
+    if candidate.get('secret_key') and (expected is None or candidate['secret_key']!=previous.get('secret_key')):
+        remote_id,live,_=_stripe_identity(candidate['secret_key']);verified=(remote_id,live)
+        if expected is not None and verified!=expected:raise _identity_conflict()
+    identity=verified or expected
+    changes={k:v for k,v in data.items() if k in {'secret_key','webhook_secret','clear_secret_key','clear_webhook_secret'}}
+    if candidate.get('webhook_secret') and previous.get('webhook_secret') and candidate['webhook_secret']!=previous['webhook_secret']:
+        try:retained=json.loads(previous.get('webhook_secrets_history') or '[]')
+        except (ValueError,TypeError):retained=[]
+        retained=[x for x in retained if isinstance(x,dict) and x.get('expires_at',0)>time.time()]
+        retained.append(dict(secret=previous['webhook_secret'],expires_at=int(time.time())+86400))
+        changes['webhook_secrets_history']=json.dumps(retained[-3:])
+    if row is None:row=StripeAccount(code=code,name=data.get('name',code),status=status);db.add(row)
+    for field in ('name','is_default'):
         if field in data and data[field] is not None:setattr(row,field,data[field])
-    if row.status not in {'draft','active','disabled'}:raise BillingError(422,'invalid account status')
-    save_config(db,'stripe:'+code,{k:v for k,v in data.items() if k in {'secret_key','webhook_secret','clear_secret_key','clear_webhook_secret'}},secret_fields=('secret_key','webhook_secret'))
+    row.status=status
+    if identity:row.remote_id,row.livemode=identity
+    save_config(db,'stripe:'+code,changes,secret_fields=('secret_key','webhook_secret','webhook_secrets_history'))
     if row.is_default:
         for other in db.scalars(select(StripeAccount).where(StripeAccount.code!=code)):other.is_default=False
-    if row.status=='active':
-        credentials=account_config(db,code)
-        if not credentials.get('webhook_secret') or not credentials.get('secret_key'):raise BillingError(422,'configure Stripe key and webhook signing secret before activating')
-    audit(db,actor,'stripe_account.save',payload=dict(code=code,status=row.status));db.commit()
+    audit(db,actor,'stripe_account.save',payload=dict(code=code,status=row.status,remote_id=row.remote_id,livemode=row.livemode));db.commit()
     return next(x for x in account_list(db) if x['code']==code)
 
 def test_account(db,code):
-    result=stripe_request(db,code,'/account',method='GET')
+    _account_lock(db,code)
+    config=get_account(db,code)
+    remote_id,live,result=_stripe_identity(config['secret_key'])
     row=db.get(StripeAccount,code)
-    if row:row.remote_id=result.get('id');row.livemode=get_account(db,code)['secret_key'].startswith('sk_live_');db.commit()
-    return dict(ok=True,account_id=result.get('id'),country=result.get('country'),livemode=get_account(db,code)['secret_key'].startswith('sk_live_'))
+    if row and row.remote_id and (row.remote_id,row.livemode)!=(remote_id,live):raise _identity_conflict()
+    if row is None:row=StripeAccount(code=code,name=config['name'],status=config['status'],is_default=config['is_default']);db.add(row)
+    row.remote_id=remote_id;row.livemode=live;db.commit()
+    return dict(ok=True,account_id=remote_id,country=result.get('country'),livemode=live)
 
 def return_url(value,kind):
     base=os.environ.get('H5_PUBLIC_BASE_URL','https://jjtv-h5.8jj.net').rstrip('/')
@@ -224,39 +280,127 @@ def ensure_price(db,account,snapshot):
         price=stripe_request(db,account,'/prices',data,idempotency_key=key)['id']
     db.add(StripePriceBinding(**values,price_id=price));db.commit();return price
 
+def checkout_conflict(order,code,message,action,include_url=False):
+    detail=dict(code=code,message=message,order_no=order.order_no,action=action)
+    if include_url and order.checkout_url:detail['checkout_url']=order.checkout_url
+    return BillingError(409,detail)
+
+def _checkout_pending(db,order):
+    if order.billing_mode!='subscription' or order.product_type!='membership':return False
+    if order.status=='created':return True
+    if order.status=='failed':return not (order.checkout_context or {}).get('session_expired')
+    # A completed Checkout is not an entitlement. Keep its reservation until the
+    # authoritative first invoice is settled, including imported paid states.
+    return order.status=='paid' and bool(order.checkout_key) and db.scalar(select(CommerceSettlement).where(CommerceSettlement.order_id==order.id)) is None
+
+def _checkout_remote_state(db,order):
+    context=order.checkout_context or {}
+    if context.get('payment_status')=='failed':
+        raise checkout_conflict(order,'checkout_recovery_required','This subscription payment failed and its remote subscription needs support reconciliation before another checkout.','contact_support')
+    if context.get('payment_status')=='paid' or context.get('session_complete'):
+        raise checkout_conflict(order,'checkout_payment_pending','Payment is processing. Wait for the first invoice before starting another subscription.','wait_for_payment')
+    if not order.external_txn_id:
+        if not context.get('request'):
+            raise checkout_conflict(order,'checkout_recovery_required','This historical checkout needs support recovery before another subscription can be started.','contact_support')
+        return 'creating'
+    remote=stripe_request(db,order.account_code,'/checkout/sessions/'+urllib.parse.quote(order.external_txn_id,safe=''),method='GET')
+    if remote.get('id')!=order.external_txn_id:
+        raise BillingError(502,'Stripe returned an unexpected Checkout session')
+    if remote.get('status')=='complete' or remote.get('payment_status')=='paid':
+        order.checkout_context={**context,'session_complete':True,'payment_status':remote.get('payment_status')};db.commit()
+        raise checkout_conflict(order,'checkout_payment_pending','Payment is processing. Wait for the first invoice before starting another subscription.','wait_for_payment')
+    if remote.get('status')=='expired':
+        order.status='failed';order.checkout_context={**context,'session_expired':True};db.commit();return 'expired'
+    if remote.get('status')!='open':
+        raise checkout_conflict(order,'checkout_recovery_required','Stripe could not confirm whether this checkout is still payable. Contact support.','contact_support')
+    return 'open'
+
+def _checkout_result(order,reused=False):
+    return dict(url=order.checkout_url,session_id=order.external_txn_id,order_no=order.order_no,reused=reused)
+
 def checkout(db,*,user_id,email,product_type,code,idempotency_key,account_code=None,success_url=None,cancel_url=None,source_drama_id=None,attribution_pid=None):
     success=return_url(success_url,'success');cancel=return_url(cancel_url,'cancel')
     key='checkout:'+str(user_id)+':'+hashlib.sha256(idempotency_key.encode()).hexdigest()
     wallet_lock(db,user_id)
     order=db.scalar(select(Order).where(Order.checkout_key==key))
+    reused=order is not None
     if order:
         if order.product_type!=product_type or order.product_snapshot.get('code')!=code:raise BillingError(409,'idempotency key was used for another product')
-        if order.checkout_url:return dict(url=order.checkout_url,session_id=order.external_txn_id,order_no=order.order_no)
+        if account_code and order.account_code!=account_code:raise BillingError(409,'idempotency key was used for another payment channel')
+        if order.billing_mode=='subscription':
+            if order.status=='failed' and (order.checkout_context or {}).get('session_expired'):raise checkout_conflict(order,'checkout_expired','This checkout has expired. Start a new purchase.','new_purchase')
+            if not _checkout_pending(db,order):raise checkout_conflict(order,'checkout_already_paid','This order was already paid. View your orders.','view_orders')
+            state=_checkout_remote_state(db,order)
+            if state=='expired':raise checkout_conflict(order,'checkout_expired','This checkout has expired. Start a new purchase.','new_purchase')
+            if state=='open':return _checkout_result(order,True)
+        elif order.checkout_url:return _checkout_result(order,True)
         account=get_account(db,order.account_code);snapshot=order.product_snapshot
     else:
         snapshot=product_snapshot(db,product_type,code)
         if snapshot['billing_mode']=='subscription':
-            existing_subscription=db.scalar(select(Subscription).where(Subscription.user_id==user_id,Subscription.stripe_subscription_id.is_not(None),Subscription.status=='active',Subscription.canceled_at.is_(None)))
-            if existing_subscription is not None:raise BillingError(409,'an active renewing subscription already exists; manage it before starting another')
-        account=select_account(db,user_id,account_code)
-        if snapshot['price_cents']<50:raise BillingError(422,'Stripe price must be at least USD 0.50')
-        if source_drama_id is not None:
-            from app.modules.content.models import Drama
-            drama=db.get(Drama,source_drama_id)
-            if drama is None or drama.tenant_id!='jjtv' or drama.status!='published':raise BillingError(404,'source drama not found')
-        order=Order(order_no=secrets.token_hex(12),user_id=user_id,plan_version_id=snapshot['version_id'] if product_type=='membership' else None,product_type=product_type,product_snapshot=snapshot,amount_cents=snapshot['price_cents'],currency=snapshot['currency'],billing_mode=snapshot['billing_mode'],status='created',account_code=account['code'],checkout_key=key,source_drama_id=source_drama_id,attribution_pid=attribution_pid)
-        db.add(order);db.commit()
+            # Persisted orders reserve the right to create ONE subscription even
+            # while a remote response or its first invoice has not arrived.
+            pending=list(db.scalars(select(Order).where(Order.user_id==user_id,Order.product_type=='membership',Order.billing_mode=='subscription',Order.status.in_(('created','paid','failed'))).order_by(Order.id)))
+            for candidate in pending:
+                if not _checkout_pending(db,candidate):continue
+                state=_checkout_remote_state(db,candidate)
+                if state=='expired':
+                    wallet_lock(db,user_id);continue
+                if candidate.product_snapshot.get('code')!=code or (account_code and candidate.account_code!=account_code):
+                    raise checkout_conflict(candidate,'pending_subscription_checkout','Finish or cancel your existing checkout before choosing another subscription.','resume_or_cancel',state=='open')
+                order=candidate;account=get_account(db,order.account_code);snapshot=order.product_snapshot;reused=True
+                if state=='open':return _checkout_result(order,True)
+                break
+            if order is None:
+                existing_subscription=db.scalar(select(Subscription).where(Subscription.user_id==user_id,Subscription.stripe_subscription_id.is_not(None),Subscription.status=='active',Subscription.canceled_at.is_(None)))
+                if existing_subscription is not None:raise BillingError(409,'an active renewing subscription already exists; manage it before starting another')
+        if order is None:
+            account=select_account(db,user_id,account_code)
+            if snapshot['price_cents']<50:raise BillingError(422,'Stripe price must be at least USD 0.50')
+            if source_drama_id is not None:
+                from app.modules.content.models import Drama
+                drama=db.get(Drama,source_drama_id)
+                if drama is None or drama.tenant_id!='jjtv' or drama.status!='published':raise BillingError(404,'source drama not found')
+            order=Order(order_no=secrets.token_hex(12),user_id=user_id,plan_version_id=snapshot['version_id'] if product_type=='membership' else None,product_type=product_type,product_snapshot=snapshot,amount_cents=snapshot['price_cents'],currency=snapshot['currency'],billing_mode=snapshot['billing_mode'],status='created',account_code=account['code'],checkout_key=key,source_drama_id=source_drama_id,attribution_pid=attribution_pid,checkout_context={'request':dict(success_url=success,cancel_url=cancel,email=email)})
+            db.add(order);db.commit()
     price=ensure_price(db,account['code'],snapshot)
-    data={'mode':'subscription' if snapshot['billing_mode']=='subscription' else 'payment','line_items[0][price]':price,'line_items[0][quantity]':'1','success_url':success,'cancel_url':cancel,'client_reference_id':str(user_id),'metadata[commerce_order_no]':order.order_no,'metadata[user_id]':str(user_id),'metadata[plan_code]':code,'metadata[account_code]':account['code']}
-    if email:data['customer_email']=email
+    # ensure_price may commit. Reacquire the user mutex before refreshing or
+    # creating a Session so concurrent tabs reuse the same remote idempotency key.
+    wallet_lock(db,user_id)
+    order=db.get(Order,order.id,populate_existing=True)
+    if order.billing_mode=='subscription':
+        state=_checkout_remote_state(db,order)
+        if state=='expired':raise checkout_conflict(order,'checkout_expired','This checkout has expired. Start a new purchase.','new_purchase')
+        if state=='open':return _checkout_result(order,True)
+    elif order.checkout_url:return _checkout_result(order,True)
+    context=(order.checkout_context or {}).get('request')
+    if not context:raise checkout_conflict(order,'checkout_recovery_required','Original checkout request is unavailable. Contact support.','contact_support')
+    data={'mode':'subscription' if snapshot['billing_mode']=='subscription' else 'payment','line_items[0][price]':price,'line_items[0][quantity]':'1','success_url':context['success_url'],'cancel_url':context['cancel_url'],'client_reference_id':str(user_id),'metadata[commerce_order_no]':order.order_no,'metadata[user_id]':str(user_id),'metadata[plan_code]':snapshot['code'],'metadata[account_code]':account['code']}
+    if context.get('email'):data['customer_email']=context['email']
     if snapshot['billing_mode']=='subscription':
         data['subscription_data[metadata][commerce_order_no]']=order.order_no
         data['subscription_data[metadata][user_id]']=str(user_id)
-        data['subscription_data[metadata][plan_code]']=code
+        data['subscription_data[metadata][plan_code]']=snapshot['code']
     else:data['payment_intent_data[metadata][commerce_order_no]']=order.order_no
-    remote=stripe_request(db,account['code'],'/checkout/sessions',data,idempotency_key=key)
+    remote=stripe_request(db,account['code'],'/checkout/sessions',data,idempotency_key=order.checkout_key)
     order.external_txn_id=remote['id'];order.checkout_url=remote['url'];db.commit()
-    return dict(url=remote['url'],session_id=remote['id'],order_no=order.order_no)
+    return _checkout_result(order,reused)
+
+def cancel_checkout(db,user_id,order_no):
+    wallet_lock(db,user_id)
+    order=db.scalar(select(Order).where(Order.order_no==order_no,Order.user_id==user_id).with_for_update())
+    if order is None:raise BillingError(404,'order not found')
+    if order.billing_mode!='subscription' or order.product_type!='membership':raise BillingError(409,'Only unpaid subscription checkouts can be canceled')
+    if order.status=='failed' and (order.checkout_context or {}).get('session_expired'):return dict(order_no=order.order_no,status='failed',canceled=True)
+    if not _checkout_pending(db,order):raise checkout_conflict(order,'checkout_already_paid','This order is already settled and cannot be canceled.','view_orders')
+    state=_checkout_remote_state(db,order)
+    if state=='creating':raise checkout_conflict(order,'checkout_in_progress','Checkout creation is still processing. Retry the original purchase before canceling.','retry')
+    if state=='open':
+        remote=stripe_request(db,order.account_code,'/checkout/sessions/'+urllib.parse.quote(order.external_txn_id,safe='')+'/expire',{},idempotency_key='expire:'+order.order_no)
+        if remote.get('id')!=order.external_txn_id or remote.get('status')!='expired':
+            raise checkout_conflict(order,'checkout_payment_pending','Stripe has not confirmed cancellation. Wait for payment status before retrying.','wait_for_payment')
+        order.status='failed';order.checkout_context={**(order.checkout_context or {}),'session_expired':True};db.commit()
+    return dict(order_no=order.order_no,status='failed',canceled=True)
 
 def credit_order(db,order,wallet):
     coins=int(order.product_snapshot.get('base_coins',0))+int(order.product_snapshot.get('bonus_coins',0))
@@ -269,7 +413,8 @@ def credit_order(db,order,wallet):
 def settle_order(db,order,settlement_key,period_start=None,period_end=None):
     wallet=wallet_lock(db,order.user_id)
     order=db.get(Order,order.id,with_for_update=True,populate_existing=True)
-    if order.status in {'paid','refund_pending','refunded','refund_review'}:return dict(replayed=True,order_no=order.order_no)
+    if order.status in {'refund_pending','refunded','refund_review'}:return dict(replayed=True,order_no=order.order_no)
+    if order.status=='paid' and (period_start is None or db.scalar(select(CommerceSettlement).where(CommerceSettlement.order_id==order.id)) is not None):return dict(replayed=True,order_no=order.order_no)
     if db.get(CommerceSettlement,settlement_key):return dict(replayed=True,order_no=order.order_no)
     order.status='paid';order.paid_at=now()
     db.add(CommerceSettlement(key=settlement_key,order_id=order.id));credit_order(db,order,wallet)
@@ -285,13 +430,49 @@ def settle_order(db,order,settlement_key,period_start=None,period_end=None):
     db.commit();return dict(order_no=order.order_no,status='paid')
 
 def signature(db,code,body,header):
-    secret=account_config(db,code).get('webhook_secret')
-    if not secret:raise BillingError(503,'Stripe webhook signing secret is not configured')
+    config=account_config(db,code)
+    secrets_to_try=[config.get('webhook_secret')]
+    try:history=json.loads(config.get('webhook_secrets_history') or '[]')
+    except (ValueError,TypeError):history=[]
+    secrets_to_try.extend(x.get('secret') for x in history if isinstance(x,dict) and x.get('expires_at',0)>time.time())
+    secrets_to_try=[x for x in secrets_to_try if isinstance(x,str) and x]
+    if not secrets_to_try:raise BillingError(503,'Stripe webhook signing secret is not configured')
     pieces=[x.partition('=') for x in (header or '').split(',')]
     stamps=[int(v) for k,_,v in pieces if k=='t' and v.isdigit()]
     if not stamps or abs(time.time()-max(stamps))>300:raise BillingError(400,'invalid or expired Stripe signature')
-    expected=hmac.new(secret.encode(),str(max(stamps)).encode()+b'.'+body,hashlib.sha256).hexdigest()
-    if not any(k=='v1' and hmac.compare_digest(v,expected) for k,_,v in pieces):raise BillingError(401,'bad Stripe signature')
+    signed=str(max(stamps)).encode()+b'.'+body
+    for secret in secrets_to_try:
+        expected=hmac.new(secret.encode(),signed,hashlib.sha256).hexdigest()
+        if any(k=='v1' and hmac.compare_digest(v,expected) for k,_,v in pieces):return
+    raise BillingError(401,'bad Stripe signature')
+
+def record_subscription_lifecycle(db,code,payload,obj,order):
+    subscription=obj.get('id')
+    sub=db.scalar(select(Subscription).where(Subscription.stripe_subscription_id==subscription,Subscription.account_code==code,Subscription.managed_commerce.is_(True)))
+    order=order or db.scalar(select(Order).where(Order.subscription_ref==subscription,Order.account_code==code,Order.checkout_key.is_not(None)).order_by(Order.id))
+    if order is None:return None
+    if order.billing_mode!='subscription' or order.product_type!='membership' or not order.checkout_key:return None
+    wallet_lock(db,order.user_id)
+    order=db.get(Order,order.id,populate_existing=True)
+    if order.subscription_ref and order.subscription_ref!=subscription:raise BillingError(409,'subscription does not match frozen order')
+    sub=db.scalar(select(Subscription).where(Subscription.stripe_subscription_id==subscription,Subscription.account_code==code,Subscription.managed_commerce.is_(True)).execution_options(populate_existing=True))
+    order.subscription_ref=subscription
+    fact=db.get(StripeSubscriptionLifecycle,(code,subscription),with_for_update=True,populate_existing=True)
+    if fact is None:
+        fact=StripeSubscriptionLifecycle(account_code=code,subscription_id=subscription,order_id=order.id,user_id=order.user_id,deleted=False,cancel_at_period_end=False,last_event_created=0,last_event_id='');db.add(fact)
+    event_created=int(payload.get('created') or 0)
+    deleted=payload.get('type')=='customer.subscription.deleted' or obj.get('status') in {'canceled','incomplete_expired'}
+    cancel=deleted or bool(obj.get('cancel_at_period_end'))
+    # A terminal deletion is monotonic; older snapshots cannot resurrect billing.
+    if deleted or (not fact.deleted and (event_created>fact.last_event_created or (event_created==fact.last_event_created and cancel))):
+        fact.deleted=fact.deleted or deleted
+        fact.cancel_at_period_end=cancel
+        fact.canceled_at=datetime.fromtimestamp(obj['canceled_at'],UTC) if obj.get('canceled_at') else (fact.canceled_at or now()) if cancel else None
+        fact.last_event_created=max(event_created,fact.last_event_created);fact.last_event_id=str(payload.get('id') or '')
+    if sub is not None:
+        if sub.user_id!=order.user_id:raise BillingError(409,'subscription owner does not match frozen order')
+        sub.canceled_at=fact.canceled_at if fact.deleted or fact.cancel_at_period_end else None
+    db.commit();return dict(received=True,pending=sub is None,order_no=order.order_no)
 
 def process_event(db,code,payload):
     kind=payload.get('type','');obj=(payload.get('data') or {}).get('object') or {}
@@ -300,18 +481,32 @@ def process_event(db,code,payload):
     if kind.startswith('checkout.session.'):
         order=order or db.scalar(select(Order).where(Order.external_txn_id==obj.get('id'),Order.account_code==code,Order.checkout_key.is_not(None)))
         if order is None:return None
+        wallet_lock(db,order.user_id)
+        order=db.get(Order,order.id,with_for_update=True,populate_existing=True)
+        context=order.checkout_context or {}
         if kind in {'checkout.session.expired','checkout.session.async_payment_failed'}:
-            wallet_lock(db,order.user_id)
-            order=db.get(Order,order.id,with_for_update=True,populate_existing=True)
-            if order.status=='created':order.status='failed'
+            if order.status=='created' and context.get('payment_status')!='paid':
+                if kind=='checkout.session.async_payment_failed' and order.billing_mode=='subscription':
+                    # A failed asynchronous first payment may leave a remote
+                    # subscription retrying. Only expiry proves it unpayable.
+                    order.checkout_context={**context,'session_complete':True,'payment_status':'failed'}
+                elif not context.get('session_complete'):
+                    order.status='failed'
+                    if kind=='checkout.session.expired':order.checkout_context={**context,'session_expired':True}
             db.commit();return dict(order_no=order.order_no,status=order.status)
         if kind not in {'checkout.session.completed','checkout.session.async_payment_succeeded'}:return dict(ignored=kind)
-        if obj.get('payment_status')!='paid':return dict(pending=True)
+        if obj.get('payment_status')!='paid':
+            if order.billing_mode=='subscription':
+                order.checkout_context={**context,'session_complete':True,'payment_status':obj.get('payment_status')}
+                order.subscription_ref=obj.get('subscription') or order.subscription_ref;db.commit()
+            return dict(pending=True,order_no=order.order_no)
         if int(obj.get('amount_total',-1))!=order.amount_cents or str(obj.get('currency','')).upper()!=order.currency:raise BillingError(409,'Stripe amount does not match frozen order')
         order.payment_intent_id=obj.get('payment_intent') or order.payment_intent_id
         order.subscription_ref=obj.get('subscription') or order.subscription_ref
         if order.billing_mode=='subscription':
-            # Invoice is the sole money-settlement authority for recurring plans.
+            # Invoice remains the sole settlement authority; completion retains
+            # the checkout reservation even if the invoice webhook is delayed.
+            order.checkout_context={**context,'session_complete':True,'payment_status':'paid'}
             db.commit();return dict(pending=True,order_no=order.order_no)
         if not order.payment_intent_id:raise BillingError(409,'paid Checkout has no payment intent')
         return settle_order(db,order,code+':pi:'+order.payment_intent_id)
@@ -323,11 +518,13 @@ def process_event(db,code,payload):
             parent_meta=((obj.get('parent') or {}).get('subscription_details') or {}).get('metadata') or obj.get('subscription_details',{}).get('metadata',{})
             initial=db.scalar(select(Order).where(Order.order_no==parent_meta.get('commerce_order_no'),Order.account_code==code))
         if initial is None:return None
-        initial.subscription_ref=subscription
         wallet_lock(db,initial.user_id)
+        initial=db.get(Order,initial.id,populate_existing=True)
+        if initial.subscription_ref and initial.subscription_ref!=subscription:raise BillingError(409,'subscription does not match frozen order')
+        initial.subscription_ref=subscription
         order=db.scalar(select(Order).where(Order.invoice_id==obj['id']))
         if order is None:
-            if initial.status=='created' and initial.invoice_id is None:order=initial
+            if initial.status in {'created','paid'} and initial.invoice_id is None and db.scalar(select(CommerceSettlement).where(CommerceSettlement.order_id==initial.id)) is None:order=initial
             else:
                 order=Order(order_no=secrets.token_hex(12),user_id=initial.user_id,plan_version_id=initial.plan_version_id,product_type='membership',product_snapshot=dict(initial.product_snapshot),amount_cents=initial.product_snapshot['price_cents'],currency=initial.product_snapshot['currency'],account_code=code,billing_mode='subscription',status='created',subscription_ref=subscription,attribution_pid=initial.attribution_pid,source_drama_id=initial.source_drama_id)
                 db.add(order);db.flush()
@@ -357,6 +554,8 @@ def process_event(db,code,payload):
             sub=Subscription(user_id=order.user_id,plan_id=version.plan_id,plan_version_id=version.id,status='active',current_period_start=start,current_period_end=end,pass_end=preserved_pass,managed_commerce=True,account_code=code,stripe_subscription_id=subscription,billing_mode='subscription')
             db.add(sub)
         if end>aware(sub.current_period_end):sub.current_period_start=start;sub.current_period_end=end
+        fact=db.get(StripeSubscriptionLifecycle,(code,subscription))
+        if fact is not None:sub.canceled_at=fact.canceled_at if fact.deleted or fact.cancel_at_period_end else None
         sub.stripe_customer_id=obj.get('customer') or sub.stripe_customer_id
         return settle_order(db,order,code+':invoice:'+obj['id'],start,end)
     if kind in {'refund.updated','refund.created','charge.refunded'}:
@@ -387,13 +586,7 @@ def process_event(db,code,payload):
             state=obj.get('status')
         finalize_refund(db,refund,state);db.commit();return dict(refund_status=refund.status)
     if kind.startswith('customer.subscription.'):
-        sub=db.scalar(select(Subscription).where(Subscription.stripe_subscription_id==obj.get('id'),Subscription.account_code==code,Subscription.managed_commerce.is_(True)))
-        if sub is None:
-            # A subscription object is not proof that its invoice was paid.
-            if order is not None:return dict(pending=True,order_no=order.order_no)
-            return None
-        if kind=='customer.subscription.deleted' or obj.get('cancel_at_period_end'):sub.canceled_at=now()
-        db.commit();return dict(received=True)
+        return record_subscription_lifecycle(db,code,payload,obj,order)
     return None
 
 def refund_out(row):return dict(id=row.id,status=row.status,refund_id=row.refund_id,error=row.error)

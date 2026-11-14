@@ -91,6 +91,9 @@ def channels(db:Session=Depends(get_db)):
 @public_router.post('/commerce/checkout')
 def checkout(body:CheckoutIn,user=Depends(require_user),db:Session=Depends(get_db)):
     return call(db,service.checkout,db,user_id=user.id,email=user.email,**body.model_dump())
+@public_router.post('/commerce/orders/{order_no}/cancel')
+def cancel_checkout(order_no:str,user=Depends(require_user),db:Session=Depends(get_db)):
+    return call(db,service.cancel_checkout,db,user.id,order_no)
 @public_router.get('/commerce/orders')
 def orders(limit:int=Query(30,ge=1,le=100),offset:int=Query(0,ge=0),user=Depends(require_user),db:Session=Depends(get_db)):
     return service.list_orders(db,user.id,limit,offset)

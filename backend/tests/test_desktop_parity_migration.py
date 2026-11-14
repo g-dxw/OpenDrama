@@ -52,7 +52,7 @@ def test_desktop_upgrade_preserves_legacy_content_money_membership_and_secret_bo
                 assert db.execute(sa.text('SELECT id,title,status,free_episode_count,coin_price_per_episode,access_mode,member_pays_coins,non_member_free_episodes,language FROM dramas WHERE id=:id'),dict(id=drama_id)).one()==(drama_id,'Historical published drama','published',2,60,'public',False,None,'')
                 assert db.execute(sa.text('SELECT id,drama_id,episode_number,status,subtitle_url,coin_price FROM episodes WHERE id=:id'),dict(id=episode_id)).one()==(episode_id,drama_id,3,'published',subtitle_path,None)
                 assert db.execute(sa.text('SELECT episode_id,language,label,url,is_default FROM episode_subtitles')).one()==(episode_id,'und','Default',subtitle_path,True)
-                assert db.execute(sa.text('SELECT id,plan_version_id,amount_cents,status,external_txn_id,product_type,product_snapshot,account_code FROM orders WHERE id=:id'),dict(id=order_id)).one()==(order_id,version_id,1999,'paid','cs_original','membership',{},'env')
+                assert db.execute(sa.text('SELECT id,plan_version_id,amount_cents,status,external_txn_id,product_type,product_snapshot,account_code,checkout_context FROM orders WHERE id=:id'),dict(id=order_id)).one()==(order_id,version_id,1999,'paid','cs_original','membership',{},'env',{})
                 assert db.execute(sa.text('SELECT id,base_coins,bonus_coins,benefits FROM plan_versions WHERE id=:id'),dict(id=version_id)).one()==(version_id,0,0,{'items':['Original entitlement']})
                 assert db.execute(sa.text('SELECT id,plan_version_id,stripe_subscription_id,current_period_end,pass_end,account_code,managed_commerce FROM subscriptions WHERE id=:id'),dict(id=subscription_id)).one()==(subscription_id,version_id,'sub_original',period_end,pass_end,'env',False)
                 assert db.execute(sa.text('SELECT user_id,balance FROM wallet_accounts')).one()==(user_id,321)
@@ -65,7 +65,7 @@ def test_desktop_upgrade_preserves_legacy_content_money_membership_and_secret_bo
                     assert {key:enabled for owner,key,enabled in modules if owner==tenant}=={key:tenant=='jjtv' for key in new_keys}
                 # Migrations provision schema and legacy metadata, never import
                 # environment credentials or fabricate sales/tickets/conversions.
-                empty_tables=('managed_settings','coin_packs','coin_pack_versions','stripe_price_bindings','coin_allocations','membership_grants','commerce_settlements','commerce_refunds','support_config','support_tickets','support_messages','support_events','attribution_pixels','attribution_sources','attribution_plans','attribution_events','attribution_visits','user_attribution')
+                empty_tables=('stripe_subscription_lifecycle','managed_settings','coin_packs','coin_pack_versions','stripe_price_bindings','coin_allocations','membership_grants','commerce_settlements','commerce_refunds','support_config','support_tickets','support_messages','support_events','attribution_pixels','attribution_sources','attribution_plans','attribution_events','attribution_visits','user_attribution')
                 for table in empty_tables:assert db.scalar(sa.text('SELECT count(*) FROM '+table))==0
                 accounts=[dict(row) for row in db.execute(sa.text('SELECT * FROM stripe_accounts')).mappings()]
                 assert len(accounts)==1 and accounts[0]['code']=='env'

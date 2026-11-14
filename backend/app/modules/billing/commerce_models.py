@@ -92,3 +92,17 @@ class CommerceRefund(Base):
     reason: Mapped[str] = mapped_column(String(500))
     error: Mapped[str] = mapped_column(Text, default='')
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class StripeSubscriptionLifecycle(Base):
+    """Provider lifecycle facts may precede the first paid invoice."""
+    __tablename__='stripe_subscription_lifecycle'
+    account_code: Mapped[str]=mapped_column(String(32),primary_key=True)
+    subscription_id: Mapped[str]=mapped_column(String(100),primary_key=True)
+    order_id: Mapped[int]=mapped_column(ForeignKey('orders.id'),nullable=False)
+    user_id: Mapped[int]=mapped_column(ForeignKey('users.id'),nullable=False)
+    deleted: Mapped[bool]=mapped_column(Boolean,nullable=False,default=False)
+    cancel_at_period_end: Mapped[bool]=mapped_column(Boolean,nullable=False,default=False)
+    canceled_at: Mapped[datetime|None]=mapped_column(DateTime(timezone=True),nullable=True)
+    last_event_created: Mapped[int]=mapped_column(BigInteger,nullable=False,default=0)
+    last_event_id: Mapped[str]=mapped_column(String(100),nullable=False,default='')
