@@ -347,6 +347,7 @@ def checkout(db,*,user_id,email,product_type,code,idempotency_key,account_code=N
     if order:
         if order.product_type!=product_type or order.product_snapshot.get('code')!=code:raise BillingError(409,'idempotency key was used for another product')
         if account_code and order.account_code!=account_code:raise BillingError(409,'idempotency key was used for another payment channel')
+        if product_type=='membership' and order.status in {'created','failed'}:_membership_refund_checkout_guard(db,user_id)
         if order.status=='failed' and (order.checkout_context or {}).get('session_expired'):raise checkout_conflict(order,'checkout_expired','This checkout has expired. Start a new purchase.','new_purchase')
         if order.billing_mode=='subscription':
             if not _checkout_pending(db,order):raise checkout_conflict(order,'checkout_already_paid','This order was already paid. View your orders.','view_orders')
@@ -358,6 +359,7 @@ def checkout(db,*,user_id,email,product_type,code,idempotency_key,account_code=N
         elif order.checkout_url:return _checkout_result(order,True)
         account=get_account(db,order.account_code);snapshot=order.product_snapshot
     else:
+        if product_type=='membership':_membership_refund_checkout_guard(db,user_id)
         snapshot=product_snapshot(db,product_type,code)
         if snapshot['billing_mode']=='subscription':
             # Persisted orders reserve the right to create ONE subscription even
@@ -388,6 +390,7 @@ def checkout(db,*,user_id,email,product_type,code,idempotency_key,account_code=N
     # creating a Session so concurrent tabs reuse the same remote idempotency key.
     wallet_lock(db,user_id)
     order=db.get(Order,order.id,populate_existing=True)
+    if product_type=='membership' and order.status in {'created','failed'}:_membership_refund_checkout_guard(db,user_id)
     if order.status=='failed' and (order.checkout_context or {}).get('session_expired'):raise checkout_conflict(order,'checkout_expired','This checkout has expired. Start a new purchase.','new_purchase')
     if order.billing_mode=='subscription':
         state=_checkout_remote_state(db,order)
@@ -775,6 +778,148 @@ def reconcile_refund(db,order,refund):
     refund.refund_id=remote['id'];refund.error=''
     finalize_refund(db,refund,remote['status']);db.commit();return refund_out(refund)
 
+def _membership_settlement_ids(db,user_id):
+    return sorted(set(db.scalars(select(CommerceSettlement.order_id).join(Order,Order.id==CommerceSettlement.order_id).where(Order.user_id==user_id,Order.product_type=='membership'))))
+
+
+def _iso(value):return aware(value).astimezone(UTC).isoformat() if value is not None else None
+
+
+def _freeze_membership_refund(db,order,grant):
+    point=now();start,end=aware(grant.starts_at),aware(grant.ends_at)
+    delta=max(timedelta(),end-max(point,start))
+    remaining=(delta.days*86400+delta.seconds)*1000000+delta.microseconds
+    snapshot=dict(version=1,order_id=order.id,grant_id=grant.id,starts_at=_iso(start),ends_at=_iso(end),freeze_at=_iso(point),remaining_microseconds=remaining,settlement_order_ids=_membership_settlement_ids(db,order.user_id))
+    order.checkout_context={**(order.checkout_context or {}),'membership_refund_freeze':snapshot}
+    return snapshot
+
+
+def _verified_membership_budget(order,grant):
+    frozen=(order.checkout_context or {}).get('membership_refund_freeze') or {}
+    try:
+        if frozen.get('version')!=1 or frozen.get('order_id')!=order.id or frozen.get('grant_id')!=grant.id:raise ValueError()
+        start=datetime.fromisoformat(frozen['starts_at']);end=datetime.fromisoformat(frozen['ends_at']);point=datetime.fromisoformat(frozen['freeze_at'])
+        if any(value.tzinfo is None for value in (start,end,point)) or end<=start:raise ValueError()
+        delta=max(timedelta(),end-max(point,start));expected=(delta.days*86400+delta.seconds)*1000000+delta.microseconds
+        remaining=frozen['remaining_microseconds']
+        if type(remaining) is not int or remaining!=expected or remaining<0:raise ValueError()
+        if not (order.checkout_context or {}).get('membership_refund_resolution_result') and (_iso(grant.starts_at)!=_iso(start) or _iso(grant.ends_at)!=_iso(end)):raise ValueError()
+        settled=frozen['settlement_order_ids']
+        if not isinstance(settled,list) or any(type(value) is not int for value in settled) or order.id not in settled:raise ValueError()
+        return remaining,None
+    except (KeyError,TypeError,ValueError,AttributeError):
+        return None,'原会员冻结时长或结算快照无法验证，需要人工核对原始来源；不能猜测补时'
+
+
+def _membership_resolution_blockers(db,order,refund):
+    point=now();reasons=[];facts=[]
+    rows=db.execute(select(MembershipGrant,Order).join(Order,Order.id==MembershipGrant.order_id).where(MembershipGrant.user_id==order.user_id,MembershipGrant.order_id!=order.id,MembershipGrant.status.in_(('active','refund_pending','pending_refund'))).order_by(MembershipGrant.id)).all()
+    for other,owner in rows:
+        if other.status=='active':
+            if aware(other.ends_at)<=point:continue
+            reasons.append('其它会员权益仍有效至 '+_iso(other.ends_at)+'（订单 '+owner.order_no+'）；请等待到期或独立处理该来源')
+        else:
+            other_refund=db.scalar(select(CommerceRefund).where(CommerceRefund.order_id==owner.id))
+            case=(owner.checkout_context or {}).get('membership_refund_reconciliation') or {}
+            budget,_=_verified_membership_budget(owner,other)
+            known=other_refund is not None and other_refund.status=='manual_review' and case.get('version')==1 and bool(other_refund.refund_id) and case.get('provider_refund_id')==other_refund.refund_id and case.get('provider_status') in {'failed','canceled'} and budget is not None
+            # Confirmed review credits resolve in stable order; unknown/pending
+            # provider outcomes block every case, avoiding both cycles and guesses.
+            if known and refund is not None and other_refund.id>refund.id:continue
+            reasons.append('其它会员退款来源尚未结案（订单 '+owner.order_no+'）；请先确认或处理前序退款')
+        facts.append(dict(order_id=owner.id,grant_id=other.id,status=other.status,starts_at=_iso(other.starts_at),ends_at=_iso(other.ends_at),consumed=other.access_consumed))
+    for row in db.scalars(select(Subscription).where(Subscription.user_id==order.user_id,Subscription.status=='active').order_by(Subscription.id)):
+        ends=[aware(row.pass_end)]
+        if not row.managed_commerce:ends.append(aware(row.current_period_end))
+        valid=[end for end in ends if end is not None and end>point]
+        if valid:
+            reasons.append('其它手工或历史会员权益仍有效至 '+_iso(max(valid))+'；请先等待到期或处理该权益')
+            facts.append(dict(subscription_id=row.id,legacy_until=_iso(max(valid))))
+        if row.stripe_subscription_id:
+            fact=db.get(StripeSubscriptionLifecycle,(row.account_code,row.stripe_subscription_id))
+            if fact is None or not fact.deleted:
+                reasons.append('仍有未确认终止的自动续费绑定 '+str(row.id)+'；请先停止续费并等待终止确认')
+                facts.append(dict(subscription_id=row.id,account=row.account_code,renewing=True))
+    return reasons,facts
+
+
+def _membership_refund_state(db,order):
+    context=order.checkout_context or {};case=context.get('membership_refund_reconciliation') or {};receipt=context.get('membership_refund_resolution_result') or {}
+    refund=db.scalar(select(CommerceRefund).where(CommerceRefund.order_id==order.id))
+    grant=db.scalar(select(MembershipGrant).where(MembershipGrant.order_id==order.id))
+    source=db.scalar(select(CoinSource).where(CoinSource.order_id==order.id))
+    required=bool(case) and not bool(receipt)
+    remaining,budget_error=_verified_membership_budget(order,grant) if grant is not None else (None,'会员来源不存在，需要人工核对')
+    revoked=grant is not None and _administratively_revoked_membership(db,order,grant)
+    provider=case.get('provider_status') if case.get('provider_status') in {'failed','canceled'} else None
+    reasons=[];blockers=[]
+    if required:
+        if order.product_type!='membership' or order.billing_mode!='one_time':reasons.append('该来源不是可分配的一次性会员权益')
+        if case.get('version')!=1 or provider is None or refund is None or not refund.refund_id or case.get('provider_refund_id')!=refund.refund_id:reasons.append('原退款尚未确认失败或取消，或终态证据不匹配，不能恢复会员来源')
+        if refund is None or refund.status!='manual_review' or order.status!='refund_review':reasons.append('退款状态已变化，请重新核对')
+        if grant is None or grant.status!='refund_pending' or grant.access_consumed:reasons.append('会员来源已消费或冻结状态已变化，不能自动结案')
+        if budget_error:reasons.append(budget_error)
+        if source is not None and (source.remaining!=0 or source.reserved!=source.original):reasons.append('金币来源的冻结金额无法验证，需要人工核对')
+        if not revoked:
+            extra,blockers=_membership_resolution_blockers(db,order,refund);reasons.extend(extra)
+    fingerprint=dict(order_id=order.id,order_status=order.status,case=case,freeze=context.get('membership_refund_freeze'),receipt=receipt,
+        refund=dict(id=refund.id,status=refund.status,refund_id=refund.refund_id) if refund else None,
+        grant=dict(id=grant.id,status=grant.status,start=_iso(grant.starts_at),end=_iso(grant.ends_at),consumed=grant.access_consumed) if grant else None,
+        coins=dict(original=source.original,remaining=source.remaining,reserved=source.reserved) if source else None,revoked=revoked,blockers=blockers)
+    revision=hashlib.sha256(json.dumps(fingerprint,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+    return dict(required=required,resolved=bool(receipt),result=receipt.get('result'),kind='one_time_refund_window',provider_status=provider,
+        remaining_seconds=remaining/1000000 if remaining is not None else None,can_resolve=required and not reasons,
+        blocked_reason='；'.join(reasons) if reasons else None,revision=revision,disposition='release_revoked' if revoked else 'restore_remaining')
+
+
+def _membership_refund_checkout_guard(db,user_id):
+    rows=db.scalars(select(Order).join(CommerceRefund,CommerceRefund.order_id==Order.id).where(Order.user_id==user_id,Order.product_type=='membership',CommerceRefund.status.in_(('pending','manual_review'))).order_by(Order.id))
+    for order in rows:
+        grant=db.scalar(select(MembershipGrant).where(MembershipGrant.order_id==order.id))
+        if _administratively_revoked_membership(db,order,grant):continue
+        raise checkout_conflict(order,'membership_refund_pending','会员退款或来源核对尚未结案，请先处理该订单后再购买会员','resolve_refund')
+
+
+def _release_refund_coins(db,order,source,wallet):
+    amount=source.reserved if source is not None else 0
+    if amount:
+        source.reserved=0;source.remaining=amount;wallet.balance+=amount
+        db.add(CoinLedgerEntry(user_id=order.user_id,amount=amount,balance_after=wallet.balance,biz_type='refund_release',biz_key='refund_release:'+order.order_no,note='Stripe refund failed'))
+    return amount
+
+
+def resolve_membership_refund(db,order_no,actor_id,reason,idempotency_key,expected_revision):
+    if not isinstance(reason,str) or not reason.strip():raise BillingError(422,'请填写来源结案原因')
+    if not isinstance(idempotency_key,str) or not idempotency_key:raise BillingError(422,'缺少来源结案幂等标识')
+    order=db.scalar(select(Order).where(Order.order_no==order_no))
+    if order is None:raise BillingError(404,'order not found')
+    wallet=wallet_lock(db,order.user_id);order=db.get(Order,order.id,with_for_update=True,populate_existing=True)
+    context=order.checkout_context or {};receipt=context.get('membership_refund_resolution_result') or {}
+    payload=dict(reason=reason,expected_revision=expected_revision)
+    if receipt:
+        if receipt.get('idempotency_key')!=idempotency_key:raise BillingError(409,dict(code='membership_resolution_already_resolved',action='review_again',committed=False,message='该来源已结案，请刷新查看原结果'))
+        if receipt.get('request')!=payload:raise BillingError(409,dict(code='membership_resolution_key_conflict',action='review_again',committed=False,message='该幂等标识已用于不同的结案请求'))
+        return {**receipt['result'],'replayed':True}
+    state=_membership_refund_state(db,order)
+    if state['revision']!=expected_revision:raise BillingError(409,dict(code='membership_resolution_changed',action='review_again',committed=False,message='来源或阻塞状态已变化，请重新核对后提交'))
+    if not state['required'] or not state['can_resolve']:raise BillingError(409,dict(code='membership_resolution_blocked',action='review_again',committed=False,message=state['blocked_reason'] or '该来源没有可执行的结案事项'))
+    refund=db.scalar(select(CommerceRefund).where(CommerceRefund.order_id==order.id).with_for_update())
+    grant=db.scalar(select(MembershipGrant).where(MembershipGrant.order_id==order.id).with_for_update())
+    source=db.scalar(select(CoinSource).where(CoinSource.order_id==order.id).with_for_update())
+    remaining,_=_verified_membership_budget(order,grant);point=now();restored=False;start=end=None
+    if state['disposition']=='release_revoked':grant.status='revoked'
+    else:
+        grant.status='active'
+        if remaining:
+            grant.starts_at=point;grant.ends_at=point+timedelta(microseconds=remaining);restored=True;start=_iso(grant.starts_at);end=_iso(grant.ends_at)
+    released=_release_refund_coins(db,order,source,wallet)
+    refund.status=context['membership_refund_reconciliation']['provider_status'];refund.error='';order.status='paid'
+    result=dict(order_no=order.order_no,resolved=True,restored=restored,released_coins=released,starts_at=start,ends_at=end,replayed=False)
+    order.checkout_context={**context,'membership_refund_resolution_result':dict(idempotency_key=idempotency_key,request=payload,result=result,resolved_at=_iso(point))}
+    db.add(AuditLog(actor_type='admin',actor_id=actor_id,action='membership_source.resolve',target_type='order',target_id=order.id,created_at=point,payload=dict(reason=reason,source_order_id=order.id,grant_id=grant.id,freeze=context.get('membership_refund_freeze'),provider_status=refund.status,disposition=state['disposition'],result=result,revision=expected_revision)))
+    db.commit();return result
+
+
 def request_refund(db,order_no,actor,reason,idempotency_key):
     order=db.scalar(select(Order).where(Order.order_no==order_no))
     if order is None:raise BillingError(404,'order not found')
@@ -807,7 +952,9 @@ def request_refund(db,order_no,actor,reason,idempotency_key):
             if wallet.balance<source.original:raise BillingError(409,'wallet changed; manual review required')
             source.reserved=source.remaining;source.remaining=0;wallet.balance-=source.reserved
             db.add(CoinLedgerEntry(user_id=order.user_id,amount=-source.reserved,balance_after=wallet.balance,biz_type='refund_reserve',biz_key='refund_reserve:'+order.order_no,note=reason))
-        if grant:grant.status='refund_pending'
+        if grant:
+            _freeze_membership_refund(db,order,grant)
+            grant.status='refund_pending'
         order.status='refund_pending';audit(db,actor,'commerce.refund.request',order.id,dict(reason=reason));db.commit()
     # A new POST rejection never establishes the outcome of an earlier refund
     # on this payment. Retries below only READ the original provider facts.
@@ -838,6 +985,29 @@ def matching_refund_object(db,order,refund,remote,*,trusted_create=False):
         refund.status='manual_review';refund.error='Refund identity or full amount does not match the frozen request; manual reconciliation required';order.status='refund_review';db.flush();return False
     return True
 
+def _reconcile_failed_one_time_membership(db,order,refund,grant,status):
+    if order.billing_mode!='one_time' or _administratively_revoked_membership(db,order,grant):return False
+    context=order.checkout_context or {};frozen=context.get('membership_refund_freeze') or {}
+    remaining,budget_error=_verified_membership_budget(order,grant)
+    baseline=frozen.get('settlement_order_ids') or []
+    if not isinstance(baseline,list) or any(type(value) is not int for value in baseline):baseline=[]
+    newer=sorted(set(_membership_settlement_ids(db,order.user_id))-set(baseline))
+    reasons,blockers=_membership_resolution_blockers(db,order,refund)
+    if budget_error or newer or reasons:
+        case=dict(version=1,provider_status=status,provider_refund_id=refund.refund_id,conflicting_settlement_order_ids=newer,blockers_at_outcome=blockers,budget_error=budget_error)
+        order.checkout_context={**context,'membership_refund_reconciliation':case}
+        refund.status='manual_review';order.status='refund_review'
+        refund.error='Stripe退款已确认'+('失败' if status=='failed' else '取消')+'；会员来源需要按冻结剩余时长结案，原权益和金币继续冻结。'+(budget_error or ('存在冻结后结算的会员订单：'+','.join(map(str,newer)) if newer else '；'.join(reasons)))
+        db.add(AuditLog(actor_type='system',action='membership_source.reconciliation_required',target_type='order',target_id=order.id,created_at=now(),payload=dict(source_order_id=order.id,grant_id=grant.id,freeze=frozen,case=case)))
+        db.flush();return True
+    # With no conflicting rights, resume only the unelapsed frozen budget. Past
+    # availability is not granted a second time, and other source windows stay fixed.
+    point=now()
+    if remaining:grant.starts_at=point;grant.ends_at=point+timedelta(microseconds=remaining)
+    db.add(AuditLog(actor_type='system',action='membership_source.refund_restore',target_type='order',target_id=order.id,created_at=point,payload=dict(source_order_id=order.id,grant_id=grant.id,freeze=frozen,provider_status=status,starts_at=_iso(grant.starts_at),ends_at=_iso(grant.ends_at))))
+    return False
+
+
 def finalize_refund(db,refund,status):
     order=db.get(Order,refund.order_id);wallet=wallet_lock(db,order.user_id)
     refund=db.get(CommerceRefund,refund.id,with_for_update=True,populate_existing=True)
@@ -851,9 +1021,8 @@ def finalize_refund(db,refund,status):
         if grant:grant.status='refunded'
         order.status='refunded';order.refunded_at=now();refund.status='succeeded';refund.error=''
     elif status in {'failed','canceled'}:
-        if source and source.reserved:
-            amount=source.reserved;source.reserved=0;source.remaining=amount;wallet.balance+=amount
-            db.add(CoinLedgerEntry(user_id=order.user_id,amount=amount,balance_after=wallet.balance,biz_type='refund_release',biz_key='refund_release:'+order.order_no,note='Stripe refund failed'))
+        if grant and _reconcile_failed_one_time_membership(db,order,refund,grant,status):return
+        _release_refund_coins(db,order,source,wallet)
         if grant:grant.status='revoked' if _administratively_revoked_membership(db,order,grant) else 'active'
         order.status='paid';refund.status=status
     else:refund.status='pending'
@@ -949,4 +1118,4 @@ def admin_order_detail(db,order_no):
     source=db.scalar(select(CoinSource).where(CoinSource.order_id==order.id))
     grant=db.scalar(select(MembershipGrant).where(MembershipGrant.order_id==order.id))
     refund=db.scalar(select(CommerceRefund).where(CommerceRefund.order_id==order.id))
-    return dict(order=item,customer=customer_out(db.get(User,order.user_id)),refund=refund_out(refund) if refund else None,entitlement_sources=dict(coins=dict(original=source.original,remaining=source.remaining,reserved=source.reserved) if source else None,membership=dict(starts_at=grant.starts_at.isoformat(),ends_at=grant.ends_at.isoformat(),status=grant.status,access_consumed=grant.access_consumed) if grant else None),refund_eligibility=refund_eligibility(db,order))
+    return dict(order=item,customer=customer_out(db.get(User,order.user_id)),refund=refund_out(refund) if refund else None,entitlement_sources=dict(coins=dict(original=source.original,remaining=source.remaining,reserved=source.reserved) if source else None,membership=dict(starts_at=grant.starts_at.isoformat(),ends_at=grant.ends_at.isoformat(),status=grant.status,access_consumed=grant.access_consumed) if grant else None),refund_eligibility=refund_eligibility(db,order),membership_refund_resolution=_membership_refund_state(db,order))
