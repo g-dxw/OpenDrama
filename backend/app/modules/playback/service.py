@@ -160,7 +160,13 @@ def authorize(
             },
         }
 
-    if member and not policy['free'] and not unlocked and (not drama.member_pays_coins or policy['coin_price']==0) and user_id is not None:
+    # A coin unlock can coexist with a required membership gate. Consume the
+    # membership whenever the same viewer could not play without it, even when
+    # they also own the episode. Keep this decision on the shared access policy.
+    membership_needed = member and not episode_access(
+        drama, episode, member=False, unlocked=unlocked
+    )["allowed"]
+    if membership_needed and user_id is not None:
         from app.modules.billing.commerce import mark_membership_consumed
         try:
             mark_membership_consumed(session, user_id, episode.id)
