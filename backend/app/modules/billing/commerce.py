@@ -495,6 +495,15 @@ def record_subscription_lifecycle(db,code,payload,obj,order):
         fact.last_event_created=max(event_created,fact.last_event_created);fact.last_event_id=str(payload.get('id') or '')
     if sub is not None:
         if sub.user_id!=order.user_id:raise BillingError(409,'subscription owner does not match frozen order')
+        context=sub.cancellation_context or {}
+        requested=context.get('requested_at',0)
+        if context.get('key') and cancel and event_created>=requested and event_created>context.get('lifecycle_event_created',0):
+            # An older cancel event can prove the uncertain request succeeded
+            # without replacing the newer current lifecycle snapshot.
+            context={**context,'confirmed_at':min(context.get('confirmed_at') or event_created,event_created)}
+        if context.get('key') and context.get('confirmed_at') and not fact.deleted and not fact.cancel_at_period_end and fact.last_event_created>max(requested,context['confirmed_at'],context.get('verified_at',0),context.get('lifecycle_event_created',0)):
+            context={}
+        sub.cancellation_context=context
         sub.canceled_at=fact.canceled_at if fact.deleted or fact.cancel_at_period_end else None
     db.commit();return dict(received=True,pending=sub is None,order_no=order.order_no)
 

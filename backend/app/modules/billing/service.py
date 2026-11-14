@@ -1244,11 +1244,59 @@ def apply_stripe_event(session:Session,*,body:bytes,signature:str,payload:dict)-
     with managed_stripe_runtime(session):
         return _legacy_apply_stripe_event(session,body=body,signature=signature,payload=payload,signature_verified=True)
 
+def _prepare_managed_cancellation(session:Session,row:Subscription)->Subscription:
+    """Commit the intent before network I/O, then restore wallet/subscription locks."""
+    from app.modules.billing.commerce import wallet_lock
+    from app.modules.billing.commerce_models import StripeSubscriptionLifecycle
+    identity=(row.id,row.user_id,row.account_code,row.stripe_subscription_id)
+    while not (row.cancellation_context or {}).get('key'):
+        fact=session.get(StripeSubscriptionLifecycle,(row.account_code,row.stripe_subscription_id),populate_existing=True)
+        row.cancellation_context=dict(key='cancel:'+secrets.token_hex(24),requested_at=int(time.time()),lifecycle_event_created=fact.last_event_created if fact else 0)
+        session.commit()
+        wallet_lock(session,identity[1])
+        row=session.get(Subscription,identity[0],with_for_update=True,populate_existing=True)
+        if row is None or not row.managed_commerce or row.status!='active' or (row.id,row.user_id,row.account_code,row.stripe_subscription_id)!=identity:
+            raise BillingError(409,'Subscription changed while preparing cancellation; retry')
+        # An accepted resume may have retired this intent during the commit gap.
+    return row
+
+
+def _cancel_managed_renewal(session:Session,row:Subscription)->None:
+    from app.modules.billing.commerce import stripe_request
+    context=row.cancellation_context
+    path='/subscriptions/'+urllib.parse.quote(row.stripe_subscription_id,safe='')
+    response=stripe_request(session,row.account_code,path,
+        {'cancel_at_period_end':'true'},idempotency_key=context['key'])
+    # A successful POST may be an old idempotency-cache response. Confirm current
+    # merchant state before telling a user/admin that future renewal is stopped.
+    remote=stripe_request(session,row.account_code,path,method='GET')
+    if not isinstance(remote,dict) or remote.get('id')!=row.stripe_subscription_id:
+        raise BillingError(502,'Could not verify the original subscription cancellation')
+    live={'active','trialing','past_due','unpaid','incomplete','paused'}
+    terminal=remote.get('status') in {'canceled','incomplete_expired'}
+    if not terminal:
+        if remote.get('status') not in live or type(remote.get('cancel_at_period_end')) is not bool:
+            raise BillingError(409,'Original subscription cancellation is not confirmed; retry or contact support')
+        if not remote['cancel_at_period_end']:
+            if not isinstance(response,dict) or response.get('id')!=row.stripe_subscription_id or response.get('status') not in live or response.get('cancel_at_period_end') is not True:
+                raise BillingError(409,'Cancellation response could not be reconciled with current provider state; contact support')
+            # The original operation did succeed, but a later resume superseded
+            # it. Retire its key durably; a caller retry is a new logical intent.
+            row.cancellation_context={};row.canceled_at=None;session.commit()
+            raise BillingError(409,dict(code='subscription_resumed_retry',message='This subscription resumed after the previous cancellation. Retry to stop renewal.',action='retry'))
+    from app.modules.billing.commerce_models import StripeSubscriptionLifecycle
+    fact=session.get(StripeSubscriptionLifecycle,(row.account_code,row.stripe_subscription_id),populate_existing=True)
+    stamp=int(time.time())
+    row.cancellation_context={**context,'confirmed_at':context.get('confirmed_at') or stamp,'verified_at':stamp,'lifecycle_event_created':max(context.get('lifecycle_event_created',0),fact.last_event_created if fact else 0)}
+
+
 def cancel_subscription(session:Session,user_id:int)->None:
+    from app.modules.billing.commerce import wallet_lock
+    wallet_lock(session,user_id)
     row=active_subscription(session,user_id,for_update=True)
     if row is not None and row.managed_commerce and row.stripe_subscription_id:
-        from app.modules.billing.commerce import stripe_request
-        stripe_request(session,row.account_code,'/subscriptions/'+row.stripe_subscription_id,{'cancel_at_period_end':'true'},idempotency_key='cancel:'+row.stripe_subscription_id)
+        row=_prepare_managed_cancellation(session,row)
+        _cancel_managed_renewal(session,row)
         row.canceled_at=datetime.now(timezone.utc);session.commit();return
     with managed_stripe_runtime(session,row.account_code if row else "env"):
         return _legacy_cancel_subscription(session,user_id)
@@ -1273,7 +1321,16 @@ def revoke_membership(session:Session,*,user_id:int,mode:str,reason:str,actor_id
     if mode=='period_end' and not stripe_id:raise BillingError(409,'时长包没有续费概念，请选择「立即收回」')
     if stripe_id:
         if row.managed_commerce:
-            commerce.stripe_request(session,row.account_code,'/subscriptions/'+stripe_id,{'cancel_at_period_end':'true'} if mode=='period_end' else None,method='POST' if mode=='period_end' else 'DELETE',idempotency_key='admin-revoke:'+mode+':'+stripe_id)
+            if mode=='period_end':
+                row=_prepare_managed_cancellation(session,row)
+                # The durable intent commit releases locks. Refresh paid access
+                # before applying an admin action in the reacquired transaction.
+                grants=list(session.scalars(select(MembershipGrant).where(MembershipGrant.user_id==user_id,MembershipGrant.status=='active',MembershipGrant.ends_at>_now()).with_for_update().execution_options(populate_existing=True)))
+                before=access_until(session,user_id)
+                if before is None:raise BillingError(409,'该用户当前没有有效会员')
+                _cancel_managed_renewal(session,row)
+            else:
+                commerce.stripe_request(session,row.account_code,'/subscriptions/'+stripe_id,None,method='DELETE',idempotency_key='admin-revoke:'+mode+':'+stripe_id)
         else:
             with managed_stripe_runtime(session,row.account_code):
                 _stripe_request('/subscriptions/'+stripe_id,{'cancel_at_period_end':'true'} if mode=='period_end' else None,method='POST' if mode=='period_end' else 'DELETE')

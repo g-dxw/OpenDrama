@@ -82,6 +82,8 @@ class Subscription(Base):
     canceled_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     account_code: Mapped[str] = mapped_column(String(32), nullable=False, default="env", server_default="env")
     managed_commerce: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    # Persist before Stripe I/O; retries share a key until a proven later resume.
+    cancellation_context: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
     stripe_customer_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     stripe_subscription_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     stripe_price_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
