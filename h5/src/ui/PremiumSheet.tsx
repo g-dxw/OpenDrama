@@ -177,16 +177,23 @@ export function PremiumSheet({
       result.order.product_code !== code
     )
       throw new Error("Checkout identity changed");
-    if (result.order.status === "paid" && result.settled === true) {
+    if (
+      (result.order.status === "paid" || result.order.status === "refunded") &&
+      result.settled === true
+    ) {
       updateExpired({
         ownerToken: request.token,
         code,
         intent,
         paidOrderNo: orderNo,
         message:
-          locale === "zh"
-            ? "这笔订单已付款。请先查看订单，再决定是否开始新的购买。"
-            : "This order has already been paid. Review your orders before starting another purchase.",
+          result.order.status === "refunded"
+            ? locale === "zh"
+              ? "这笔订单已全额退款。请先查看订单，再决定是否开始新的购买。"
+              : "This order has been fully refunded. Review your orders before starting another purchase."
+            : locale === "zh"
+              ? "这笔订单已付款。请先查看订单，再决定是否开始新的购买。"
+              : "This order has already been paid. Review your orders before starting another purchase.",
       });
       finishRequest(request, true);
       return "paid";

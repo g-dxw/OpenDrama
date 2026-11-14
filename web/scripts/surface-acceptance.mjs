@@ -1108,11 +1108,11 @@ try {
   const guestPurchases = calls.filter(
     (call) => call.path === "/v1/commerce/checkout",
   ).length;
-  await page.click('[data-testid="premium-buy-weekly"]');
+  await page.locator('[data-testid="premium-buy-weekly"]').click();
   await page.waitForSelector('[data-testid="login-sheet"]');
   await resize(1920);
   await surface("mobile");
-  await page.click('[data-testid="login-sheet"] .close-btn');
+  await page.locator('[data-testid="login-sheet"] .close-btn').click();
   await surface("desktop");
   assert.equal(
     calls.filter((call) => call.path === "/v1/commerce/checkout").length,
@@ -1130,7 +1130,7 @@ try {
   await surface("mobile");
   await page.waitForSelector('[data-testid="premium-buy-weekly"]');
   const purchase = hold("checkout", "H5-PINNED-ORDER");
-  await page.click('[data-testid="premium-buy-weekly"]');
+  await page.locator('[data-testid="premium-buy-weekly"]').click();
   await purchase.started;
   await resize(1440);
   await surface("mobile");
@@ -1159,9 +1159,9 @@ try {
     "ABANDONED-ORDER",
     process.env.SURFACE_LATE_DELIVERY || "respond",
   );
-  await page.click('[data-testid="premium-buy-weekly"]');
+  await page.locator('[data-testid="premium-buy-weekly"]').click();
   await abandoned.started;
-  await page.click('[data-testid="premium-sheet"] .close-btn');
+  await page.locator('[data-testid="premium-sheet"] .close-btn').click();
   await page.waitForSelector('[data-testid="premium-sheet"]', { hidden: true });
   await resize(1440);
   await surface("desktop");
@@ -1188,7 +1188,7 @@ try {
   await surface("mobile");
   await page.waitForSelector('[data-testid="premium-buy-weekly"]');
   const changedOwner = hold("checkout", "OLD-TOKEN-ORDER");
-  await page.click('[data-testid="premium-buy-weekly"]');
+  await page.locator('[data-testid="premium-buy-weekly"]').click();
   await changedOwner.started;
   await page.evaluate(() => {
     localStorage.setItem("minitv_h5_token", "mobile-token-b");
@@ -1216,11 +1216,11 @@ try {
   await surface("mobile");
   await page.waitForSelector('[data-testid="premium-cancel"]');
   const cancellation = hold("cancel");
-  await page.click('[data-testid="premium-cancel"]');
+  await page.locator('[data-testid="premium-cancel"]').click();
   await cancellation.started;
   await resize(1440);
   await surface("mobile");
-  await page.click('[data-testid="premium-sheet"] .close-btn');
+  await page.locator('[data-testid="premium-sheet"] .close-btn').click();
   await surface("desktop");
   const profileReads = calls.filter(
     (call) =>
@@ -1272,7 +1272,7 @@ try {
   };
   const buyFailed = async (reply) => {
     recoveryReplies.push(reply);
-    await page.click('[data-testid="premium-buy-weekly"]');
+    await page.locator('[data-testid="premium-buy-weekly"]').click();
     await page.waitForFunction(
       () =>
         document.querySelector(".premium-error") &&
@@ -1282,7 +1282,7 @@ try {
   await freshPlans("expired-fixture-intent");
   const beforeExpired = checkoutCalls().length;
   recoveryReplies.push(expiredReply());
-  await page.click('[data-testid="premium-buy-weekly"]');
+  await page.locator('[data-testid="premium-buy-weekly"]').click();
   await page.waitForSelector('[data-testid="premium-start-new-checkout"]');
   assert.equal(checkoutCalls().length, beforeExpired + 1);
   assert.equal(
@@ -1302,7 +1302,7 @@ try {
   await surface("mobile");
   await page.waitForSelector('[data-testid="premium-buy-weekly"]');
   recoveryReplies.push(expiredReply());
-  await page.click('[data-testid="premium-buy-weekly"]');
+  await page.locator('[data-testid="premium-buy-weekly"]').click();
   await page.waitForSelector('[data-testid="premium-start-new-checkout"]');
   assert(
     checkoutCalls()
@@ -1313,7 +1313,7 @@ try {
   await surface("mobile");
   await resize(390);
   recoveryReplies.push(unknownReply);
-  await page.click('[data-testid="premium-start-new-checkout"]');
+  await page.locator('[data-testid="premium-start-new-checkout"]').click();
   await page.waitForFunction(
     () =>
       document.querySelector(".premium-error") &&
@@ -1461,9 +1461,101 @@ try {
         " paid checkout without a success return offers explicit new intent; uncertain retries retain it",
     );
   }
+  await freshPlans("fully-refunded-intent");
+  checkoutFacts.set("FULLY-REFUNDED", {
+    order_no: "FULLY-REFUNDED",
+    product_type: "membership",
+    product_code: "weekly",
+    status: "refunded",
+    settled: true,
+  });
+  const beforeRefunded = checkoutCalls().length;
+  recoveryReplies.push(paidReply("FULLY-REFUNDED"));
+  await page.locator('[data-testid="premium-buy-weekly"]').click();
+  await page.waitForSelector('[data-testid="premium-paid-checkout"]');
+  assert(
+    (
+      await page.$eval(
+        '[data-testid="premium-paid-checkout"]',
+        (e) => e.textContent,
+      )
+    ).includes("fully refunded"),
+  );
+  assert.equal(checkoutCalls().length, beforeRefunded + 1);
+  assert.equal(
+    await page.evaluate(() =>
+      sessionStorage.getItem("jjtv_checkout_membership_weekly"),
+    ),
+    "fully-refunded-intent",
+  );
+  await page.evaluate(() =>
+    sessionStorage.setItem(
+      "jjtv_checkout_membership_weekly",
+      "NEWER-REFUND-ATTEMPT",
+    ),
+  );
+  await page.locator('[data-testid="premium-paid-start-new-checkout"]').click();
+  await page.waitForSelector('[data-testid="premium-paid-checkout"]', {
+    hidden: true,
+  });
+  assert.equal(checkoutCalls().length, beforeRefunded + 1);
+  assert.equal(
+    await page.evaluate(() =>
+      sessionStorage.getItem("jjtv_checkout_membership_weekly"),
+    ),
+    "NEWER-REFUND-ATTEMPT",
+  );
+  await freshPlans("fully-refunded-intent");
+  recoveryReplies.push(paidReply("FULLY-REFUNDED"));
+  await page.locator('[data-testid="premium-buy-weekly"]').click();
+  await page.waitForSelector('[data-testid="premium-paid-checkout"]');
+  const refundedNewCount = checkoutCalls().length;
+  const refundedHold = hold("checkout", "REFUNDED-NEW-PURCHASE");
+  const refundedNavigation = page.waitForNavigation({
+    waitUntil: "domcontentloaded",
+  });
+  await page.locator('[data-testid="premium-paid-start-new-checkout"]').click();
+  await refundedHold.started;
+  assert.equal(checkoutCalls().length, refundedNewCount + 1);
+  assert.notEqual(
+    checkoutCalls().at(-1).body.idempotency_key,
+    "fully-refunded-intent",
+  );
+  assert.equal(
+    await page.$('[data-testid="premium-paid-start-new-checkout"]'),
+    null,
+  );
+  assert.equal(
+    await page.$eval('[data-testid="premium-buy-weekly"]', (b) => b.disabled),
+    true,
+  );
+  const disabledPurchase = await page.$eval(
+    '[data-testid="premium-buy-weekly"]',
+    (b) => {
+      const rect = b.getBoundingClientRect();
+      return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+    },
+  );
+  await page.mouse.click(disabledPurchase.x, disabledPurchase.y);
+  await page.mouse.click(disabledPurchase.x, disabledPurchase.y);
+  await page.waitForFunction(
+    () => document.querySelector('[data-testid="premium-buy-weekly"]').disabled,
+  );
+  assert.equal(checkoutCalls().length, refundedNewCount + 1);
+  await settleHeld(refundedHold);
+  await refundedNavigation;
+  await surface("mobile");
+  await page.waitForFunction(
+    () => !new URLSearchParams(location.search).has("checkout"),
+  );
+  pass(
+    "fully refunded settled orders permit only explicit new purchase, preserve newer CAS intent and cannot submit twice",
+  );
   for (const fact of [
     { status: "paid", settled: false, product_code: "weekly" },
-    { status: "refunded", settled: true, product_code: "weekly" },
+    { status: "refunded", settled: false, product_code: "weekly" },
+    { status: "refund_pending", settled: true, product_code: "weekly" },
+    { status: "refund_review", settled: true, product_code: "weekly" },
     { status: "paid", settled: true, product_code: "monthly" },
   ]) {
     await freshPlans("unconfirmed-paid-intent");
@@ -1485,7 +1577,7 @@ try {
     );
   }
   pass(
-    "unsettled, refunded and product-mismatched orders cannot authorize a fresh membership intent",
+    "unsettled, refund-pending, manual-review and product-mismatched orders cannot authorize a fresh membership intent",
   );
   for (const flag of ["success", "cancel", "unknown"]) {
     const intent = "return-proof-" + flag;
@@ -1597,7 +1689,7 @@ try {
   );
   await freshPlans("quota-expired-intent");
   recoveryReplies.push(expiredReply());
-  await page.click('[data-testid="premium-buy-weekly"]');
+  await page.locator('[data-testid="premium-buy-weekly"]').click();
   await page.waitForSelector('[data-testid="premium-start-new-checkout"]');
   const beforeQuota = checkoutCalls().length;
   await page.evaluate(() => {
@@ -1616,7 +1708,7 @@ try {
       return native.call(this, key, value);
     };
   });
-  await page.click('[data-testid="premium-start-new-checkout"]');
+  await page.locator('[data-testid="premium-start-new-checkout"]').click();
   await page.waitForFunction(
     () =>
       [...document.querySelectorAll(".premium-error")].some((element) =>
@@ -1641,7 +1733,7 @@ try {
   );
   await page.evaluate(() => window.__restoreSurfaceStorage());
   recoveryReplies.push(unknownReply);
-  await page.click('[data-testid="premium-start-new-checkout"]');
+  await page.locator('[data-testid="premium-start-new-checkout"]').click();
   await page.waitForFunction(
     () =>
       document.querySelector(".premium-error") &&
@@ -1657,7 +1749,7 @@ try {
   );
   await freshPlans("stale-expired-intent");
   recoveryReplies.push(expiredReply());
-  await page.click('[data-testid="premium-buy-weekly"]');
+  await page.locator('[data-testid="premium-buy-weekly"]').click();
   await page.waitForSelector('[data-testid="premium-start-new-checkout"]');
   const beforeStale = checkoutCalls().length;
   await page.evaluate(() =>
@@ -1666,7 +1758,7 @@ try {
       "newer-unconfirmed-intent",
     ),
   );
-  await page.click('[data-testid="premium-start-new-checkout"]');
+  await page.locator('[data-testid="premium-start-new-checkout"]').click();
   await page.waitForSelector('[data-testid="premium-start-new-checkout"]', {
     hidden: true,
   });
@@ -1679,7 +1771,7 @@ try {
   );
   await freshPlans("old-owner-expired-intent");
   recoveryReplies.push(expiredReply("PRIVATE OLD OWNER EXPIRED ORDER"));
-  await page.click('[data-testid="premium-buy-weekly"]');
+  await page.locator('[data-testid="premium-buy-weekly"]').click();
   await page.waitForSelector('[data-testid="premium-start-new-checkout"]');
   await page.evaluate(() =>
     localStorage.setItem("minitv_h5_token", "mobile-token-b"),

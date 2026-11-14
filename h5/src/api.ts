@@ -282,7 +282,7 @@ export function replaceExpiredMembershipIntent(
   sessionStorage.setItem(key, crypto.randomUUID());
   return true;
 }
-/** The caller has confirmed this exact order paid and settled before showing its explicit action. */
+/** The caller confirmed this exact order settled and paid or fully refunded before its explicit action. */
 export const replacePaidMembershipIntent = replaceExpiredMembershipIntent;
 export interface CheckoutOrderStatus {
   order: {
