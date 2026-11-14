@@ -41,6 +41,21 @@ const page = await browser.newPage(),
   calls = [],
   checks = [];
 page.on("pageerror", (e) => errors.push(e.message));
+await page.evaluateOnNewDocument(() => {
+  window.__jjtvPendingFetches = 0;
+  const originalFetch = window.fetch.bind(window);
+  window.fetch = async (...args) => {
+    window.__jjtvPendingFetches++;
+    try {
+      const response = await originalFetch(...args);
+      await response.clone().arrayBuffer();
+      return response;
+    } finally {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      window.__jjtvPendingFetches--;
+    }
+  };
+});
 let activeMember = false,
   playableFirst = false,
   media = Buffer.alloc(0),
@@ -707,7 +722,7 @@ try {
   );
   abandoned.release();
   await (await abandonedResponse).buffer();
-  await settled();
+  await page.waitForFunction(() => window.__jjtvPendingFetches === 0);
   assert(new URL(page.url()).hash.startsWith("#account/"));
   assert.equal(
     await page.evaluate(() => sessionStorage.getItem("jjtv_h5_checkout_order")),
@@ -732,7 +747,7 @@ try {
   );
   changedOwner.release();
   await (await changedResponse).buffer();
-  await settled();
+  await page.waitForFunction(() => window.__jjtvPendingFetches === 0);
   assert.equal(new URL(page.url()).hash, "#price");
   assert.equal(
     await page.evaluate(() => sessionStorage.getItem("jjtv_h5_checkout_order")),
@@ -767,7 +782,7 @@ try {
   );
   cancellation.release();
   await (await canceledResponse).buffer();
-  await settled();
+  await page.waitForFunction(() => window.__jjtvPendingFetches === 0);
   assert.equal(
     calls.filter(
       (call) =>
