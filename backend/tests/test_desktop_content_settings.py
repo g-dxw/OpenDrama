@@ -161,3 +161,23 @@ def test_public_plan_cards_expose_entitlement_days_and_only_recurring_periods(se
  one_time=client.get('/v1/plans').json()['items']
  assert [p['duration_days'] for p in one_time]==[7,30,365]
  assert all(p['recurring_interval'] is None for p in one_time)
+
+
+def test_admin_plan_cards_expose_the_same_real_cadence_as_public_plans(session, make):
+ from app.modules.billing.models import Plan, PlanVersion
+ from app.modules.billing import service as billing
+ owner=make.admin(role='admin')
+ for code in ['weekly','monthly','yearly']:
+  plan=Plan(code=code,name_en=code,status='active');session.add(plan);session.flush()
+  session.add(PlanVersion(plan_id=plan.id,version=1,price_cents=999))
+ session.commit()
+ client=TestClient(app);headers=login(client,owner)
+ for mode in ['subscription','one_time']:
+  billing.set_billing_mode(session,mode,owner.id)
+  public=client.get('/v1/plans').json()['items']
+  response=client.get('/admin/v1/commerce/plans',headers=headers)
+  assert response.status_code==200,response.text
+  actual=response.json()
+  assert actual['billing_mode']==mode
+  fields=lambda p:(p['code'],p['duration_days'],p['recurring_interval'],p['billing_mode'])
+  assert list(map(fields,actual['items']))==list(map(fields,public))

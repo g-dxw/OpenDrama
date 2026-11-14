@@ -14,7 +14,7 @@ from app.modules.common.auth import require_user
 from app.modules.billing import commerce as service
 from app.modules.billing.models import Plan,PlanVersion
 from app.modules.billing.commerce_models import CoinPack,StripePriceBinding
-from app.modules.billing.service import BillingError
+from app.modules.billing.service import BillingError, PLAN_DAYS, INTERVAL_OF, billing_mode
 from app.modules.wallet.models import CoinLedgerEntry,WalletAccount
 from app.modules.ops.managed_settings import get_config,save_config
 
@@ -127,11 +127,11 @@ def pack_status(code:str,body:StatusIn,request:Request,user=Depends(require_admi
 @admin_router.get('/commerce/plans')
 def all_plans(user=Depends(require_admin),db:Session=Depends(get_db)):
     out=[]
+    mode=billing_mode(db)
     for plan in db.scalars(select(Plan).order_by(Plan.id)):
         version=db.scalar(select(PlanVersion).where(PlanVersion.plan_id==plan.id).order_by(PlanVersion.version.desc()).limit(1))
-        if version:out.append(dict(code=plan.code,name_en=plan.name_en,name_zh=plan.name_zh,status=plan.status,price_cents=version.price_cents,currency=version.currency,version=version.version,base_coins=version.base_coins,bonus_coins=version.bonus_coins,benefits=version.benefits))
-    from app.modules.billing.service import billing_mode
-    return {'items':out,'billing_mode':billing_mode(db)}
+        if version:out.append(dict(code=plan.code,name_en=plan.name_en,name_zh=plan.name_zh,status=plan.status,price_cents=version.price_cents,currency=version.currency,version=version.version,base_coins=version.base_coins,bonus_coins=version.bonus_coins,benefits=version.benefits,duration_days=PLAN_DAYS.get(plan.code,30) if mode=="one_time" else None,recurring_interval=INTERVAL_OF.get(plan.code,"month") if mode=="subscription" else None,billing_mode=mode))
+    return {'items':out,'billing_mode':mode}
 @admin_router.post('/plans/{code}/status')
 def plan_status(code:str,body:StatusIn,request:Request,user=Depends(require_admin),db:Session=Depends(get_db)):
     require_permission(request,'plans.manage');row=db.scalar(select(Plan).where(Plan.code==code))
