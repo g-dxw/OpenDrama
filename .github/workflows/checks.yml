@@ -92,18 +92,19 @@ jobs:
         run: npm ci
       - name: Type check and build committed source
         run: python scripts/build_frontends.py --frontend ${{ matrix.frontend }}
-      - name: Check desktop consumer flows and responsive layouts
+      - name: Check desktop flows, languages, and independent mobile surface
         if: matrix.frontend == 'web'
         working-directory: web
         env:
           CHROME_PATH: /usr/bin/google-chrome
           SHOTS_DIR: ${{ runner.temp }}/jjtv-pc-acceptance
-        run: npm run accept:client && npm run accept:consumer && npm run accept:subtitles && npm run accept:visual
+        run: npm run accept:client && npm run accept:consumer && npm run accept:subtitles && npm run accept:visual && npm run accept:locales && npm run accept:surface
       - name: Check preserved H5 account and player flows
         if: matrix.frontend == 'h5'
         working-directory: h5
         env:
           CHROME_PATH: /usr/bin/google-chrome
+          SHOTS_DIR: ${{ runner.temp }}/jjtv-h5-acceptance
         run: npm run verify:consumer
       - name: Check management pages and role guards
         if: matrix.frontend == 'admin'
@@ -113,13 +114,14 @@ jobs:
           SHOTS_DIR: ${{ runner.temp }}/jjtv-admin-acceptance
         run: npm run accept:parity && npm run accept:commerce
       - name: Keep browser acceptance evidence
-        if: always() && (matrix.frontend == 'web' || matrix.frontend == 'admin')
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: jjtv-${{ matrix.frontend }}-acceptance-${{ github.sha }}
           path: |
             ${{ runner.temp }}/jjtv-pc-acceptance/
             ${{ runner.temp }}/jjtv-admin-acceptance/
+            ${{ runner.temp }}/jjtv-h5-acceptance/
           if-no-files-found: warn
           retention-days: 7
       - name: Keep the checked frontend build

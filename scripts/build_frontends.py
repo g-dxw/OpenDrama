@@ -26,7 +26,9 @@ def require_clean_source(root: Path, frontends: tuple[str, ...] = FRONTENDS) -> 
     changed = git(root, "diff", "--name-only", "HEAD", "--")
     if changed:
         raise SystemExit("Commit tracked source changes before building or deploying JJTV:\n" + changed)
-    for frontend in (*frontends, "shared"):
+    # The web bundle imports the independent H5 surface as a lazy chunk.
+    sources = tuple(dict.fromkeys((*frontends, *(("h5",) if "web" in frontends else ()), "shared")))
+    for frontend in sources:
         untracked = git(root, "ls-files", "--others", "--exclude-standard", "--", frontend)
         if untracked:
             raise SystemExit(f"Untracked {frontend} source is not part of HEAD:\n{untracked}")

@@ -822,7 +822,7 @@ try {
     waitUntil: "networkidle0",
   });
   await text("Trending stories");
-  for (const width of [1280, 1440, 1920, 390]) {
+  for (const width of [1024, 1280, 1440, 1920]) {
     await page.setViewport({ width, height: 1000 });
     await page.screenshot({
       path: path.join(OUT, "home-" + width + ".png"),
@@ -830,7 +830,7 @@ try {
     });
     assert(
       await page.evaluate(
-        () => document.documentElement.scrollWidth <= innerWidth,
+        () => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1,
       ),
       "horizontal overflow at " + width,
     );
@@ -1254,15 +1254,15 @@ try {
   assert(await page.$("#membership-plans"));
   assert(await page.$("#coin-packs"));
   await text("300 base + 30 bonus coins");
-  await text("Access for 7 days");
-  await text("per week");
+  await text("7 days");
+  await text("/ week");
   const membershipCards = await page.$$eval(".membership-card", (cards) =>
     cards.map((card) => card.textContent),
   );
-  assert(!membershipCards[0].includes("Access for"));
-  assert(membershipCards[0].includes("per week"));
-  assert(membershipCards[1].includes("Access for 7 days"));
-  assert(!membershipCards[1].includes("per week"));
+  assert(!membershipCards[0].includes("7 days"));
+  assert(membershipCards[0].includes("/ week"));
+  assert(membershipCards[1].includes("7 days"));
+  assert(!membershipCards[1].includes("/ week"));
   pass(
     "subscriptions show billing cadence while one-time plans show fixed access days",
   );
@@ -1485,7 +1485,7 @@ try {
   pass(
     "an existing email code restores one check-in and refreshes private rewards",
   );
-  for (const width of [1280, 1440, 1920, 390]) {
+  for (const width of [1024, 1280, 1440, 1920]) {
     await page.setViewport({ width, height: 1000 });
     for (const route of ["#account", "#price?tab=coins", "#rewards"]) {
       await go(route);
@@ -1498,7 +1498,7 @@ try {
       );
       assert(
         await page.evaluate(
-          () => document.documentElement.scrollWidth <= innerWidth,
+          () => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1,
         ),
         route + " overflow at " + width,
       );
@@ -1511,7 +1511,7 @@ try {
       });
     }
   }
-  pass("account, price and reward details fit desktop and narrow screens");
+  pass("account, price and reward details retain desktop geometry from 1024px");
   await page.setViewport({ width: 1440, height: 1000 });
   await go("#account/overview");
   await clickText("Sign out");
@@ -1559,11 +1559,8 @@ try {
   await clickText("Subscribe");
   await text("A membership checkout is already open");
   await page.setViewport({ width: 390, height: 1000 });
-  assert(
-    await page.evaluate(
-      () => document.documentElement.scrollWidth <= innerWidth,
-    ),
-  );
+  await page.waitForSelector('.checkout-recovery');
+  assert(await page.evaluate(()=>document.documentElement.scrollWidth>=1024&&!!document.querySelector('.consumer-header nav')),'checkout recovery keeps the 1024px desktop surface while payment intent is active');
   await page.screenshot({
     path: path.join(OUT, "checkout-recovery-390.png"),
     fullPage: true,
