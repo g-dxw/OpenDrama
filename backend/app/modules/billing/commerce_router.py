@@ -2,6 +2,7 @@
 from __future__ import annotations
 import csv
 import io
+from datetime import date
 from fastapi import APIRouter,Depends,HTTPException,Header,Request,Query
 from pydantic import BaseModel,Field
 from sqlalchemy import select,func
@@ -35,6 +36,7 @@ class PackIn(BaseModel):
     bonus_coins:int=Field(default=0,ge=0)
     sort_order:int=Field(default=0,ge=0)
     badge:str=Field(default='',max_length=64)
+    note:str=Field(default='',max_length=500)
 class PackPatch(BaseModel):
     name_en:str|None=Field(default=None,min_length=1,max_length=64)
     name_zh:str|None=Field(default=None,max_length=64)
@@ -43,6 +45,7 @@ class PackPatch(BaseModel):
     bonus_coins:int|None=Field(default=None,ge=0)
     sort_order:int|None=Field(default=None,ge=0)
     badge:str|None=Field(default=None,max_length=64)
+    note:str=Field(default='',max_length=500)
 class StatusIn(BaseModel):status:str=Field(pattern='^(active|retired)$')
 class AccountIn(BaseModel):
     code:str=Field(pattern='^[a-z0-9_]{2,32}$')
@@ -203,7 +206,11 @@ def export(request:Request,user_id:int|None=None,biz_type:str|None=None,user=Dep
     for r in db.scalars(ledger_query(user_id,biz_type).limit(10000)):writer.writerow([r.id,r.user_id,r.amount,r.balance_after,r.biz_type,r.created_at.isoformat()])
     service.audit(db,user.id,'coins.export');db.commit();return {'filename':'coin-ledger.csv','content':stream.getvalue()}
 @admin_router.get('/commerce/orders')
-def admin_orders(limit:int=Query(50,ge=1,le=100),offset:int=Query(0,ge=0),user=Depends(require_admin),db:Session=Depends(get_db)):return service.list_orders(db,None,limit,offset)
+def admin_orders(limit:int=Query(50,ge=1,le=100),offset:int=Query(0,ge=0),q:str=Query('',max_length=200),status:str|None=Query(None,pattern='^(created|paid|failed|refund_pending|refunded|refund_review)$'),product_type:str|None=Query(None,pattern='^(membership|coin_pack)$'),account_code:str|None=Query(None,max_length=32),billing_mode:str|None=Query(None,pattern='^(one_time|subscription)$'),date_from:date|None=None,date_to:date|None=None,user=Depends(require_admin),db:Session=Depends(get_db)):
+    return call(db,service.admin_orders,db,limit,offset,q=q,status=status,product_type=product_type,account_code=account_code,billing_mode=billing_mode,date_from=date_from,date_to=date_to)
+@admin_router.get('/commerce/orders/{order_no}')
+def order_detail(order_no:str,user=Depends(require_admin),db:Session=Depends(get_db)):
+    return call(db,service.admin_order_detail,db,order_no)
 @admin_router.post('/finance/orders/{order_no}/refund')
 def refund(order_no:str,body:RefundIn,request:Request,user=Depends(require_admin),db:Session=Depends(get_db)):
     require_permission(request,'finance.refund');return call(db,service.request_refund,db,order_no,user.id,body.reason,body.idempotency_key)

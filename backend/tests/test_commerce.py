@@ -28,7 +28,7 @@ def commercial(session,make,monkeypatch):
         calls.append((code,path,data,method,idempotency_key))
         if path=='/prices':return {'id':'price_'+str(len(calls))}
         if path=='/checkout/sessions':return {'id':'cs_'+idempotency_key[-12:],'url':'https://checkout.stripe.com/test/'+idempotency_key[-12:]}
-        if path=='/refunds':return {'id':'re_'+hashlib.sha256(idempotency_key.encode()).hexdigest()[:12],'status':'succeeded'}
+        if path=='/refunds':return {'id':'re_'+hashlib.sha256(idempotency_key.encode()).hexdigest()[:12],'status':'succeeded','amount':int(data['amount']),'currency':'usd'}
         if path=='/account':return {'id':'acct_unit','country':'US'}
         return {}
     monkeypatch.setattr(c,'stripe_request',remote)
@@ -292,3 +292,117 @@ def test_other_verified_refund_reservation_is_not_an_unmatched_coin_debit(sessio
     c.request_refund(session,first.order_no,actor.id,'first unused','refund-first')
     assert c.request_refund(session,second.order_no,actor.id,'second unused','refund-second')['status']=='succeeded'
     assert session.get(WalletAccount,user.id).balance==0
+
+
+@pytest.mark.parametrize('kind',['coin_pack','membership'])
+def test_external_manual_refund_stays_manual_on_repeated_events_and_admin_retry(session,commercial,kind):
+    user,actor,calls=commercial
+    order=membership_order(session,user) if kind=='membership' else purchase(session,user)
+    pay(session,order)
+    if kind=='membership':c.mark_membership_consumed(session,user.id,123);session.commit()
+    balance=session.get(WalletAccount,user.id).balance
+    external={'type':'refund.created','data':{'object':{'id':'re_external_review','payment_intent':order.payment_intent_id,'status':'succeeded','amount':order.amount_cents}}}
+    assert c.process_event(session,'env',external)['manual_review']
+    assert c.process_event(session,'env',external)['manual_review']
+    external['type']='refund.updated'
+    assert c.process_event(session,'env',external)['manual_review']
+    assert c.request_refund(session,order.order_no,actor.id,'operator retry','review-retry')['status']=='manual_review'
+    refund=session.scalar(select(CommerceRefund).where(CommerceRefund.order_id==order.id))
+    c.finalize_refund(session,refund,'succeeded');session.commit()
+    pay(session,order)
+    assert order.status=='refund_review' and refund.status=='manual_review'
+    assert session.get(WalletAccount,user.id).balance==balance
+    assert not [call for call in calls if call[1]=='/refunds']
+    grant=session.scalar(select(MembershipGrant).where(MembershipGrant.order_id==order.id))
+    if grant is not None:assert grant.status=='active' and grant.access_consumed
+
+
+@pytest.mark.parametrize('old_period_ended',[False,True])
+def test_canceled_managed_subscriber_can_pay_for_new_subscription_without_rewriting_old_binding(session,commercial,old_period_ended):
+    user,actor,_=commercial
+    billing.get_billing_settings(session).billing_mode='subscription';session.commit()
+    first=membership_order(session,user);first.subscription_ref='sub_replaced_old';session.commit()
+    stamp=int(time.time());old_start=stamp-60*86400 if old_period_ended else stamp-86400;old_end=stamp-30*86400 if old_period_ended else stamp+29*86400
+    first_event={'type':'invoice.paid','data':{'object':dict(id='in_replaced_old',subscription=first.subscription_ref,payment_intent='pi_replaced_old',customer='cus_old',amount_paid=1999,currency='usd',lines={'data':[{'period':{'start':old_start,'end':old_end}}]})}}
+    c.process_event(session,'env',first_event)
+    old=session.scalar(select(Subscription).where(Subscription.stripe_subscription_id=='sub_replaced_old'))
+    original_version=old.plan_version_id
+    manual_end=datetime.fromtimestamp(stamp+45*86400,timezone.utc);old.pass_end=manual_end;session.commit()
+    c.process_event(session,'env',{'type':'customer.subscription.deleted','data':{'object':{'id':'sub_replaced_old'}}})
+    new_version=PlanVersion(plan_id=old.plan_id,version=2,price_cents=2999,base_coins=200,bonus_coins=3,benefits={});session.add(new_version);session.commit()
+    c.save_account(session,'new_merchant',dict(name='New merchant',status='active',is_default=True,secret_key='sk_test_new_merchant',webhook_secret='whsec_new_merchant'),actor.id)
+    second=purchase(session,user,'new-subscription-intent',kind='membership',code='monthly');second.subscription_ref='sub_replacement_new';session.commit()
+    new_event={'type':'invoice.paid','data':{'object':dict(id='in_replacement_new',subscription=second.subscription_ref,payment_intent='pi_replacement_new',customer='cus_new',amount_paid=2999,currency='usd',lines={'data':[{'period':{'start':stamp,'end':stamp+30*86400}}]})}}
+    c.process_event(session,'new_merchant',new_event);c.process_event(session,'new_merchant',new_event)
+    session.refresh(old)
+    active=session.scalar(select(Subscription).where(Subscription.user_id==user.id,Subscription.status=='active'))
+    assert active.id!=old.id and active.stripe_subscription_id=='sub_replacement_new'
+    assert active.account_code=='new_merchant' and active.plan_version_id==new_version.id and active.pass_end==manual_end
+    assert old.status=='canceled' and old.stripe_subscription_id=='sub_replaced_old' and old.account_code=='env' and old.plan_version_id==original_version
+    assert session.get(WalletAccount,user.id).balance==228
+    assert session.get(Order,second.id).status=='paid' and billing.access_until(session,user.id)>=manual_end
+    # A delayed old-account lifecycle event must never take the active slot back.
+    c.process_event(session,'env',{'type':'customer.subscription.deleted','data':{'object':{'id':'sub_replaced_old'}}})
+    assert session.scalar(select(Subscription.id).where(Subscription.user_id==user.id,Subscription.status=='active'))==active.id
+
+
+def test_admin_finance_filters_statistics_and_details_cover_whole_dataset(session,commercial,make):
+    from datetime import date
+    from fastapi.testclient import TestClient
+    from app.main import app
+    user,actor,_=commercial
+    first=purchase(session,user,'global-first');pay(session,first)
+    second=purchase(session,user,'global-refunded');pay(session,second);c.request_refund(session,second.order_no,actor.id,'unused','global-refund')
+    pending=purchase(session,user,'global-pending')
+    other_user=make.user(email='other-finance@example.com')
+    other=purchase(session,other_user,'global-other');pay(session,other)
+    # Los Angeles Nov 10 includes 07:30 UTC Nov 11, and excludes 08:00.
+    first.created_at=datetime(2026,11,11,7,30,tzinfo=timezone.utc)
+    second.created_at=datetime(2026,11,11,8,0,tzinfo=timezone.utc)
+    pending.created_at=datetime(2026,11,10,9,0,tzinfo=timezone.utc)
+    other.created_at=datetime(2026,11,10,10,0,tzinfo=timezone.utc);session.commit()
+    client=TestClient(app)
+    login=client.post('/admin/v1/auth/login',json=dict(tenant_code='jjtv',username=actor.username,password='pass-1234'))
+    assert login.status_code==200,login.text
+    headers={'Authorization':'Bearer '+login.json()['token']}
+    response=client.get('/admin/v1/commerce/orders',headers=headers,params=dict(q=user.email,date_from='2026-11-10',date_to='2026-11-10',limit=1,product_type='coin_pack',account_code='env',billing_mode='one_time'))
+    assert response.status_code==200,response.text
+    data=response.json()
+    assert data['total']==2 and len(data['items'])==1 and data['has_more']
+    assert data['summary']['orders']==2 and data['summary']['gross_cents']==500 and data['summary']['pending_cents']==500
+    assert data['summary']['pending_orders']==1 and data['summary']['net_cents']==500
+    assert data['items'][0]['user']['email']==user.email and data['items'][0]['external_txn_id']
+    refunded=client.get('/admin/v1/commerce/orders',headers=headers,params=dict(q=user.email,status='refunded')).json()
+    assert refunded['total']==1 and refunded['items'][0]['order_no']==second.order_no
+    assert refunded['summary']['gross_cents']==500 and refunded['summary']['refunded_cents']==500 and refunded['summary']['net_cents']==0
+    before=session.get(WalletAccount,user.id).balance
+    detail=client.get('/admin/v1/commerce/orders/'+first.order_no,headers=headers)
+    assert detail.status_code==200,detail.text
+    payload=detail.json()
+    assert payload['customer']['id']==user.id and payload['order']['snapshot']['version_id']
+    assert payload['refund_eligibility']['eligible'] and payload['entitlement_sources']['coins']==dict(original=120,remaining=120,reserved=0)
+    session.expire_all();assert session.get(WalletAccount,user.id).balance==before
+    assert client.get('/admin/v1/commerce/orders',headers=headers,params=dict(date_from='2026-11-12',date_to='2026-11-10')).status_code==422
+    assert client.get('/admin/v1/commerce/orders',headers=headers,params=dict(status='invented')).status_code==422
+    assert client.get('/admin/v1/commerce/orders/unknown-order',headers=headers).status_code==404
+    assert client.get('/admin/v1/commerce/orders/'+first.order_no).status_code==401
+
+
+def test_coin_pack_adjustment_reason_is_recorded_with_immutable_version(session,commercial):
+    from app.modules.common.models import AuditLog
+    user,actor,_=commercial
+    updated=c.save_pack(session,'starter',dict(price_cents=700,note='seasonal price review'),actor.id)
+    audit=session.scalar(select(AuditLog).where(AuditLog.action=='coin_pack.save').order_by(AuditLog.id.desc()).limit(1))
+    assert audit.payload['note']=='seasonal price review' and audit.payload['version_id']==updated['version_id']
+
+
+@pytest.mark.parametrize('different_id,amount',[(False,1),(True,500)])
+def test_pending_refund_does_not_finalize_another_or_partial_provider_refund(session,commercial,monkeypatch,different_id,amount):
+    user,actor,_=commercial;order=purchase(session,user);pay(session,order)
+    monkeypatch.setattr(c,'stripe_request',lambda *a,**k:{'id':'re_expected','status':'pending'})
+    c.request_refund(session,order.order_no,actor.id,'full amount requested','pending-full-refund')
+    event={'type':'refund.updated','data':{'object':{'id':'re_another' if different_id else 're_expected','payment_intent':order.payment_intent_id,'status':'succeeded','amount':amount,'currency':'usd'}}}
+    result=c.process_event(session,'env',event)
+    assert result['manual_review'] and order.status=='refund_review'
+    source=session.scalar(select(CoinSource).where(CoinSource.order_id==order.id))
+    assert source.reserved==120 and source.remaining==0 and session.get(WalletAccount,user.id).balance==0

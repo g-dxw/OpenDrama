@@ -110,8 +110,8 @@ def save_pack(db,code,data,actor):
     if values['price_cents'] is None or values['price_cents']<50 or values['base_coins'] is None or values['base_coins']<1 or values['bonus_coins']<0:raise BillingError(422,'invalid price or coin amount')
     if values['currency']!='USD':raise BillingError(422,'only USD products are supported')
     if latest is None or any(getattr(latest,key)!=value for key,value in values.items()):
-        db.add(CoinPackVersion(pack_id=pack.id,version=latest.version+1 if latest else 1,**values))
-    audit(db,actor,'coin_pack.save',pack.id,dict(code=code));db.commit()
+        latest=CoinPackVersion(pack_id=pack.id,version=latest.version+1 if latest else 1,**values);db.add(latest);db.flush()
+    audit(db,actor,'coin_pack.save',pack.id,dict(code=code,version_id=latest.id,note=data.get('note','')));db.commit()
     return next(x for x in list_packs(db,True) if x['code']==code)
 
 def env_defaults():return dict(secret_key=os.environ.get('STRIPE_SECRET_KEY','').strip(),webhook_secret=os.environ.get('STRIPE_WEBHOOK_SECRET','').strip())
@@ -269,7 +269,7 @@ def credit_order(db,order,wallet):
 def settle_order(db,order,settlement_key,period_start=None,period_end=None):
     wallet=wallet_lock(db,order.user_id)
     order=db.get(Order,order.id,with_for_update=True,populate_existing=True)
-    if order.status in {'paid','refund_pending','refunded'}:return dict(replayed=True,order_no=order.order_no)
+    if order.status in {'paid','refund_pending','refunded','refund_review'}:return dict(replayed=True,order_no=order.order_no)
     if db.get(CommerceSettlement,settlement_key):return dict(replayed=True,order_no=order.order_no)
     order.status='paid';order.paid_at=now()
     db.add(CommerceSettlement(key=settlement_key,order_id=order.id));credit_order(db,order,wallet)
@@ -338,16 +338,24 @@ def process_event(db,code,payload):
         period=line['period'];start=datetime.fromtimestamp(period['start'],UTC);end=datetime.fromtimestamp(period['end'],UTC)
         if end<=start or int(obj.get('amount_paid',-1))!=order.amount_cents or str(obj.get('currency','')).upper()!=order.currency:raise BillingError(409,'invoice period or amount mismatch')
         # Keep a merchant binding for cancellation while paid grants own access.
-        sub=db.scalar(select(Subscription).where(Subscription.stripe_subscription_id==subscription))
+        sub=db.scalar(select(Subscription).where(Subscription.stripe_subscription_id==subscription,Subscription.account_code==code).with_for_update())
+        if sub is not None and sub.user_id!=order.user_id:raise BillingError(409,'subscription owner does not match frozen order')
         if sub is None:
             old=db.scalar(select(Subscription).where(Subscription.user_id==order.user_id,Subscription.status=='active').with_for_update())
-            if old and old.stripe_subscription_id and old.stripe_subscription_id!=subscription:raise BillingError(409,'another subscription already exists')
+            if old and old.stripe_subscription_id and old.stripe_subscription_id!=subscription and old.canceled_at is None:
+                raise BillingError(409,'another renewing subscription already exists')
+            preserved_pass=None
             if old:
-                if not old.managed_commerce:old.pass_end=max(filter(None,[aware(old.pass_end),aware(old.current_period_end)]))
-                sub=old
-            else:
-                version=db.get(PlanVersion,order.plan_version_id);sub=Subscription(user_id=order.user_id,plan_id=version.plan_id,plan_version_id=version.id,status='active',current_period_start=start,current_period_end=end);db.add(sub)
-            sub.stripe_subscription_id=subscription;sub.managed_commerce=True;sub.account_code=code
+                # Keep old merchant/subscription IDs and version as history.
+                # Managed paid periods live in their own grants; legacy/manual
+                # windows must remain usable through the new active binding.
+                windows=[aware(old.pass_end)]
+                if not old.managed_commerce:windows.append(aware(old.current_period_end))
+                preserved_pass=max((value for value in windows if value is not None),default=None)
+                old.status='canceled';db.flush()
+            version=db.get(PlanVersion,order.plan_version_id)
+            sub=Subscription(user_id=order.user_id,plan_id=version.plan_id,plan_version_id=version.id,status='active',current_period_start=start,current_period_end=end,pass_end=preserved_pass,managed_commerce=True,account_code=code,stripe_subscription_id=subscription,billing_mode='subscription')
+            db.add(sub)
         if end>aware(sub.current_period_end):sub.current_period_start=start;sub.current_period_end=end
         sub.stripe_customer_id=obj.get('customer') or sub.stripe_customer_id
         return settle_order(db,order,code+':invoice:'+obj['id'],start,end)
@@ -367,11 +375,16 @@ def process_event(db,code,payload):
             if existing:return dict(manual_review=existing.status=='manual_review',refund_status=existing.status)
             db.add(CommerceRefund(order_id=external_order.id,idempotency_key='external:'+external_order.order_no,status='manual_review',refund_id=obj.get('id') if kind!='charge.refunded' else None,reason='Provider initiated refund',error='Provider refund was not requested through the verified entitlement workflow; manual reconciliation required'))
             external_order.status='refund_review';db.commit();return dict(manual_review=True)
+        if refund.status=='manual_review':return dict(manual_review=True,refund_status=refund.status)
         if kind=='charge.refunded':
             order=db.get(Order,refund.order_id)
             if int(obj.get('amount_refunded',0))!=order.amount_cents:return dict(manual_review=True)
             state='succeeded'
-        else:state=obj.get('status')
+        else:
+            order=db.get(Order,refund.order_id)
+            if not matching_refund_object(db,order,refund,obj):db.commit();return dict(manual_review=True,refund_status=refund.status)
+            if not refund.refund_id:refund.refund_id=obj.get('id')
+            state=obj.get('status')
         finalize_refund(db,refund,state);db.commit();return dict(refund_status=refund.status)
     if kind.startswith('customer.subscription.'):
         sub=db.scalar(select(Subscription).where(Subscription.stripe_subscription_id==obj.get('id'),Subscription.account_code==code,Subscription.managed_commerce.is_(True)))
@@ -415,7 +428,7 @@ def request_refund(db,order_no,actor,reason,idempotency_key):
     existing=db.scalar(select(CommerceRefund).where(CommerceRefund.order_id==order.id))
     if existing:
         db.commit()
-        if existing.status in {'succeeded','failed','canceled'}:return refund_out(existing)
+        if existing.status in {'succeeded','failed','canceled','manual_review'}:return refund_out(existing)
         refund=existing
     else:
         if order.status!='paid' or not order.checkout_key and not order.invoice_id or not order.product_snapshot or not order.payment_intent_id:raise BillingError(409,'legacy or unverified payment requires manual refund review')
@@ -441,14 +454,28 @@ def request_refund(db,order_no,actor,reason,idempotency_key):
         refund.error=exc.detail
         if getattr(exc,'definitive',False):finalize_refund(db,refund,'failed')
         db.commit();raise
+    if not matching_refund_object(db,order,refund,remote):db.commit();return refund_out(refund)
     refund.refund_id=remote['id'];finalize_refund(db,refund,remote.get('status','pending'));db.commit();return refund_out(refund)
+
+def matching_refund_object(db,order,refund,remote):
+    """Only the full refund we requested may settle frozen entitlement sources."""
+    mismatch=(refund.refund_id is not None and remote.get('id')!=refund.refund_id)
+    if remote.get('status')=='succeeded':
+        mismatch=mismatch or type(remote.get('amount')) is not int or remote['amount']!=order.amount_cents
+    if remote.get('currency') is not None:
+        mismatch=mismatch or str(remote['currency']).upper()!=order.currency.upper()
+    if mismatch:
+        refund.status='manual_review';refund.error='Refund identity or full amount does not match the frozen request; manual reconciliation required';order.status='refund_review';db.flush();return False
+    return True
 
 def finalize_refund(db,refund,status):
     order=db.get(Order,refund.order_id);wallet=wallet_lock(db,order.user_id)
     refund=db.get(CommerceRefund,refund.id,with_for_update=True,populate_existing=True)
-    if refund.status in {'succeeded','failed','canceled'}:return
+    if refund.status in {'succeeded','failed','canceled','manual_review'}:return
     source=db.scalar(select(CoinSource).where(CoinSource.order_id==order.id).with_for_update())
     grant=db.scalar(select(MembershipGrant).where(MembershipGrant.order_id==order.id).with_for_update())
+    if refund.status!='pending' or order.status!='refund_pending' or (source is None and grant is None) or (source is not None and (source.remaining!=0 or source.reserved!=source.original)) or (grant is not None and (grant.status!='refund_pending' or grant.access_consumed)):
+        refund.status='manual_review';refund.error='Refund sources are not completely frozen; manual reconciliation required';order.status='refund_review';db.flush();return
     if status=='succeeded':
         if source:source.reserved=0
         if grant:grant.status='refunded'
@@ -462,13 +489,92 @@ def finalize_refund(db,refund,status):
     else:refund.status='pending'
     db.flush()
 
+def customer_out(user):
+    return dict(id=user.id,email=user.email,display_name=user.display_name,public_id=user.public_id)
+
+def order_out(db,row,include_customer=False):
+    snapshot=row.product_snapshot or {}
+    version=db.get(PlanVersion,row.plan_version_id) if row.plan_version_id else None
+    plan=db.get(Plan,version.plan_id) if version else None
+    item=dict(order_no=row.order_no,product_type=row.product_type,product_code=snapshot.get('code') or (plan.code if plan else ''),product_name=snapshot.get('name') or (plan.name_en if plan else ''),plan_code=snapshot.get('code') or (plan.code if plan else ''),plan_name_en=snapshot.get('name') or (plan.name_en if plan else ''),plan_name_zh=snapshot.get('name_zh',''),amount_cents=row.amount_cents,currency=row.currency,status=row.status,billing_mode=row.billing_mode,account_code=row.account_code,paid_at=row.paid_at.isoformat() if row.paid_at else None,created_at=row.created_at.isoformat(),coins=snapshot.get('base_coins',0)+snapshot.get('bonus_coins',0))
+    if include_customer:
+        from app.modules.account.models import User
+        user=db.get(User,row.user_id)
+        item.update(user_id=row.user_id,user=customer_out(user) if user else None,external_txn_id=row.external_txn_id)
+    return item
+
 def list_orders(db,user_id=None,limit=50,offset=0):
     stmt=select(Order).order_by(Order.created_at.desc(),Order.id.desc())
     if user_id is not None:stmt=stmt.where(Order.user_id==user_id)
     rows=list(db.scalars(stmt.offset(offset).limit(limit+1)))
-    out=[]
-    for row in rows[:limit]:
-        snapshot=row.product_snapshot or {};plan=db.get(PlanVersion,row.plan_version_id) if row.plan_version_id else None
-        product=db.get(Plan,plan.plan_id) if plan else None
-        out.append(dict(order_no=row.order_no,product_type=row.product_type,product_code=snapshot.get('code') or (product.code if product else ''),product_name=snapshot.get('name') or (product.name_en if product else ''),plan_code=snapshot.get('code') or (product.code if product else ''),plan_name_en=snapshot.get('name') or (product.name_en if product else ''),plan_name_zh=snapshot.get('name_zh',''),amount_cents=row.amount_cents,currency=row.currency,status=row.status,billing_mode=row.billing_mode,account_code=row.account_code,paid_at=row.paid_at.isoformat() if row.paid_at else None,created_at=row.created_at.isoformat(),coins=snapshot.get('base_coins',0)+snapshot.get('bonus_coins',0)))
-    return dict(items=out,has_more=len(rows)>limit)
+    return dict(items=[order_out(db,row) for row in rows[:limit]],has_more=len(rows)>limit)
+
+def filtered_admin_orders(q=None,status=None,date_from=None,date_to=None,product_type=None,account_code=None,billing_mode=None):
+    from app.modules.account.models import User
+    from sqlalchemy import or_
+    from zoneinfo import ZoneInfo
+    stmt=select(Order)
+    if q and q.strip():
+        value=q.strip()
+        terms=[Order.order_no.icontains(value,autoescape=True),Order.external_txn_id.icontains(value,autoescape=True),User.email.icontains(value,autoescape=True),User.display_name.icontains(value,autoescape=True),User.public_id.icontains(value,autoescape=True)]
+        if value.isdigit():terms.append(User.id==int(value))
+        stmt=stmt.join(User,User.id==Order.user_id).where(or_(*terms))
+    if status:stmt=stmt.where(Order.status==status)
+    if product_type:stmt=stmt.where(Order.product_type==product_type)
+    if account_code:stmt=stmt.where(Order.account_code==account_code)
+    if billing_mode:stmt=stmt.where(Order.billing_mode==billing_mode)
+    if date_from and date_to and date_from>date_to:raise BillingError(422,'date_from must not be after date_to')
+    zone=ZoneInfo('America/Los_Angeles')
+    if date_from:stmt=stmt.where(Order.created_at>=datetime.combine(date_from,datetime.min.time(),zone))
+    if date_to:stmt=stmt.where(Order.created_at<datetime.combine(date_to+timedelta(days=1),datetime.min.time(),zone))
+    return stmt
+
+def admin_orders(db,limit=50,offset=0,**filters):
+    stmt=filtered_admin_orders(**filters)
+    selected=stmt.subquery()
+    grouped=list(db.execute(select(selected.c.currency,selected.c.status,func.count().label('orders'),func.sum(selected.c.amount_cents).label('cents')).group_by(selected.c.currency,selected.c.status)))
+    currencies={}
+    counts={}
+    for currency,state,count,cents in grouped:
+        bucket=currencies.setdefault(currency,dict(currency=currency,gross_cents=0,paid_cents=0,refunded_cents=0,net_cents=0,pending_cents=0,review_cents=0))
+        counts[state]=counts.get(state,0)+count
+        if state in {'paid','refund_pending','refunded','refund_review'}:bucket['gross_cents']+=int(cents)
+        if state=='refunded':bucket['refunded_cents']+=int(cents)
+        if state=='created':bucket['pending_cents']+=int(cents)
+        if state=='refund_review':bucket['review_cents']+=int(cents)
+    for bucket in currencies.values():
+        bucket['paid_cents']=bucket['gross_cents']
+        bucket['net_cents']=bucket['gross_cents']-bucket['refunded_cents']
+    usd=currencies.get('USD',dict(currency='USD',gross_cents=0,paid_cents=0,refunded_cents=0,net_cents=0,pending_cents=0,review_cents=0))
+    summary=dict(**usd,orders=sum(counts.values()),paid_orders=sum(counts.get(s,0) for s in ('paid','refund_pending','refunded','refund_review')),refunded_orders=counts.get('refunded',0),pending_orders=counts.get('created',0),pending_refund_orders=counts.get('refund_pending',0),review_orders=counts.get('refund_review',0),failed_orders=counts.get('failed',0),currencies=list(currencies.values()))
+    rows=list(db.scalars(stmt.order_by(Order.created_at.desc(),Order.id.desc()).offset(offset).limit(limit+1)))
+    return dict(items=[order_out(db,row,True) for row in rows[:limit]],has_more=len(rows)>limit,total=summary['orders'],summary=summary)
+
+def refund_eligibility(db,order):
+    existing=db.scalar(select(CommerceRefund).where(CommerceRefund.order_id==order.id))
+    if existing:
+        return dict(eligible=False,reason=existing.error or ('退款处理中，可重试现有申请' if existing.status=='pending' else '该订单已有退款记录：'+existing.status))
+    if order.status!='paid' or (not order.checkout_key and not order.invoice_id) or not order.product_snapshot or not order.payment_intent_id:return dict(eligible=False,reason='历史订单或支付来源不完整，需要人工核对')
+    source=db.scalar(select(CoinSource).where(CoinSource.order_id==order.id))
+    grant=db.scalar(select(MembershipGrant).where(MembershipGrant.order_id==order.id))
+    if source:
+        try:verify_source_proof(db,order,source)
+        except BillingError as exc:return dict(eligible=False,reason=exc.detail)
+        if source.remaining!=source.original or source.reserved:return dict(eligible=False,reason='本订单金币已消费或冻结，需人工核对')
+    if grant:
+        if grant.access_consumed or grant.status!='active':return dict(eligible=False,reason='本订单会员权益已消费或变更，需人工核对')
+        changed=db.scalar(select(AuditLog.id).where(AuditLog.target_type=='user',AuditLog.target_id==order.user_id,AuditLog.action.in_(('membership_grant','membership_revoke')),AuditLog.created_at>=order.paid_at).limit(1))
+        if changed:return dict(eligible=False,reason='购买后存在人工会员调整，需人工核对')
+    if source is None and grant is None:return dict(eligible=False,reason='没有可证明未消费的订单权益来源')
+    return dict(eligible=True,reason='可申请未消费权益的全额退款；提交时服务端会重新核验并冻结')
+
+def admin_order_detail(db,order_no):
+    from app.modules.account.models import User
+    order=db.scalar(select(Order).where(Order.order_no==order_no))
+    if order is None:raise BillingError(404,'order not found')
+    item=order_out(db,order,True)
+    item.update(source_drama_id=order.source_drama_id,version_id=order.plan_version_id or order.product_snapshot.get('version_id'),snapshot=order.product_snapshot,payment_intent_id=order.payment_intent_id,invoice_id=order.invoice_id,subscription_ref=order.subscription_ref)
+    source=db.scalar(select(CoinSource).where(CoinSource.order_id==order.id))
+    grant=db.scalar(select(MembershipGrant).where(MembershipGrant.order_id==order.id))
+    refund=db.scalar(select(CommerceRefund).where(CommerceRefund.order_id==order.id))
+    return dict(order=item,customer=customer_out(db.get(User,order.user_id)),refund=refund_out(refund) if refund else None,entitlement_sources=dict(coins=dict(original=source.original,remaining=source.remaining,reserved=source.reserved) if source else None,membership=dict(starts_at=grant.starts_at.isoformat(),ends_at=grant.ends_at.isoformat(),status=grant.status,access_consumed=grant.access_consumed) if grant else None),refund_eligibility=refund_eligibility(db,order))
