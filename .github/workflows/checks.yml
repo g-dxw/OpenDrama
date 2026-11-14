@@ -111,7 +111,17 @@ jobs:
         env:
           CHROME_PATH: /usr/bin/google-chrome
           SHOTS_DIR: ${{ runner.temp }}/jjtv-admin-acceptance
-        run: npm run accept:parity
+        run: npm run accept:parity && npm run accept:commerce
+      - name: Keep browser acceptance evidence
+        if: always() && (matrix.frontend == 'web' || matrix.frontend == 'admin')
+        uses: actions/upload-artifact@v4
+        with:
+          name: jjtv-${{ matrix.frontend }}-acceptance-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/jjtv-pc-acceptance/
+            ${{ runner.temp }}/jjtv-admin-acceptance/
+          if-no-files-found: warn
+          retention-days: 7
       - name: Keep the checked frontend build
         uses: actions/upload-artifact@v4
         with:
