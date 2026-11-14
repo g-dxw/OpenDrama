@@ -22,7 +22,6 @@ export default function App() {
 function Shell() {
   const { user, status, loginOpen, openLogin, authError, refresh } = useAuth();
   const [hash, setHash] = useState(window.location.hash.slice(1) || "home"),
-    [search, setSearch] = useState(""),
     [menu, setMenu] = useState(false);
   const [checkout, setCheckout] = useState<string | null>(() =>
     new URLSearchParams(window.location.search).get("checkout"),
@@ -76,7 +75,7 @@ function Shell() {
   let content;
   if (path === "home" || path === "") content = <Home />;
   else if (["browse", "search", "shows", "preview"].includes(path))
-    content = <Browse key={path} query={query} preview={path === "preview"} />;
+    content = <Browse key={path} query={query} preview={path === "preview"} searchOnly={path === "search"} />;
   else if (path === "foryou") content = <ForYou />;
   else if (route[0] === "watch") {
     const id = Number(route[1]);
@@ -153,8 +152,7 @@ function Shell() {
         <nav className={menu ? "open" : ""} aria-label="Main navigation">
           {[
             ["home", "Home"],
-            ["browse", "Explore"],
-            ["foryou", "For you"],
+            ["foryou", "For You"],
             ["price", "Price"],
             ["account", "Me"],
           ].map(([id, label]) => (
@@ -168,43 +166,11 @@ function Shell() {
             </a>
           ))}
         </nav>
-        <form
-          className="header-search"
-          role="search"
-          onSubmit={(e) => {
-            e.preventDefault();
-            window.location.hash = "search?q=" + encodeURIComponent(search);
-          }}
-        >
-          <label className="sr-only" htmlFor="site-search">
-            Search dramas
-          </label>
-          <input
-            id="site-search"
-            type="search"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Find your next story"
-          />
-          <button aria-label="Search" type="submit">
-            <Icon name="search" />
-          </button>
-        </form>
         <div className="header-account">
-          <a className="premium-link" href="#premium">
-            <Icon name="crown" />
-            <span>Premium</span>
-          </a>
+          <a className={"header-search-trigger icon-button" + (path === "search" ? " active" : "")} href="#search" aria-label="Search dramas"><Icon name="search" size={20}/></a>
+          <span className="header-language" title="English">EN</span>
           {user ? (
             <>
-              <a
-                className="header-coins"
-                href="#coins"
-                aria-label={user.coins + " coins, top up"}
-              >
-                <Icon name="coin" />
-                {user.coins.toLocaleString()}
-              </a>
               <a
                 className="profile-button"
                 href="#account"
@@ -215,7 +181,7 @@ function Shell() {
             </>
           ) : (
             <button
-              className="button primary sign-in"
+              className="button secondary sign-in"
               onClick={openLogin}
               disabled={status === "loading"}
             >
@@ -242,18 +208,8 @@ function Shell() {
         <Suspense fallback={<Loading />}>{content}</Suspense>
       </main>
       <footer className="consumer-footer">
-        <a className="consumer-brand" href="#home">
-          JJ<span>TV</span>
-        </a>
-        <p>Big stories. Small episodes. Watch your way.</p>
-        <nav aria-label="Footer">
-          <a href="#about">About JJTV</a>
-          <a href="#support">Help & support</a>
-          <a href="#legal/terms">Terms of Use</a>
-          <a href="/privacy.html">Privacy Policy</a>
-          <a href="#download">Watch on mobile</a>
-        </nav>
-        <span>© {new Date().getFullYear()} JJTV</span>
+        <div className="footer-identity"><a className="consumer-brand" href="#home">JJ<span>TV</span></a><span>© {new Date().getFullYear()} JJTV</span></div>
+        <nav aria-label="Footer"><a href="#about">About</a><a href="#support">Help & support</a><a href="#legal/terms">Terms</a><a href="/privacy.html">Privacy</a></nav>
       </footer>
       {loginOpen && <Login />}
     </div>

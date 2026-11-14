@@ -73,6 +73,10 @@ export function Icon({ name, size = 20 }: { name: string; size?: number }) {
     ),
     check: <path d="m5 12 4 4L19 6" />,
     menu: <path d="M4 6h16M4 12h16M4 18h16" />,
+    more: <><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></>,
+    share: <><path d="M14 4h6v6M20 4 10 14"/><path d="M20 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h5"/></>,
+    volume: <><path d="m11 4-6 5H2v6h3l6 5zM15 8a6 6 0 0 1 0 8M18 5a10 10 0 0 1 0 14"/></>,
+    "volume-off": <><path d="m11 4-6 5H2v6h3l6 5zM16 9l6 6M22 9l-6 6"/></>,
   };
   return (
     <svg
@@ -175,6 +179,7 @@ export function Modal({
         tabIndex={-1}
       >
         <div className="modal-head">
+          {className.split(" ").includes("auth-sheet") && <span className="auth-brand-mark" aria-hidden="true"><Icon name="play" size={19}/></span>}
           <h2>{title}</h2>
           <button
             className="icon-button"
@@ -250,16 +255,7 @@ export function DramaCard({ drama }: { drama: CatalogDrama }) {
         )}
       </div>
       <h3>{drama.title}</h3>
-      <p>
-        {drama.episode_count ?? drama.published_episode_count ?? 0} episodes
-        {drama.play_count
-          ? " · " +
-            Intl.NumberFormat("en", { notation: "compact" }).format(
-              drama.play_count,
-            ) +
-            " views"
-          : ""}
-      </p>
+      <p>{drama.episode_count != null || drama.published_episode_count != null ? (drama.episode_count ?? drama.published_episode_count) + " episodes" : ""}{drama.play_count != null ? ((drama.episode_count != null || drama.published_episode_count != null) ? " · " : "") + Intl.NumberFormat("en", {notation:"compact"}).format(drama.play_count) + " views" : ""}</p>
     </a>
   );
 }

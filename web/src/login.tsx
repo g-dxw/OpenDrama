@@ -76,7 +76,7 @@ export function Login() {
     }
   }
   return (
-    <Modal title="Welcome to JJTV" onClose={closeLogin}>
+    <Modal title="Welcome to JJTV" onClose={closeLogin} className="auth-sheet">
       <p className="muted">
         Sign in to save your place and unlock your next episode.
       </p>

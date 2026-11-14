@@ -10,7 +10,8 @@
     "accept:preview": "node scripts/preview-acceptance.mjs",
     "accept:consumer": "node scripts/consumer-acceptance.mjs",
     "accept:subtitles": "node --experimental-strip-types scripts/subtitle-acceptance.mjs",
-    "accept:client": "node scripts/client-acceptance.mjs"
+    "accept:client": "node scripts/client-acceptance.mjs",
+    "accept:visual": "node scripts/visual-parity.mjs"
   },
   "dependencies": {
     "hls.js": "^1.7.3",
