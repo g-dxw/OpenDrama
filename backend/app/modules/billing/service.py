@@ -539,6 +539,7 @@ def grant_membership(
             actor_type="admin",
             actor_id=actor_id,
             action="membership_grant",
+            created_at=_now(),
             target_type="user",
             target_id=user_id,
             payload={
@@ -595,6 +596,7 @@ def revoke_membership(
                 actor_type="admin",
                 actor_id=actor_id,
                 action="membership_revoke",
+                created_at=_now(),
                 target_type="user",
                 target_id=user_id,
                 payload={
@@ -626,6 +628,7 @@ def revoke_membership(
             actor_type="admin",
             actor_id=actor_id,
             action="membership_revoke",
+            created_at=_now(),
             target_type="user",
             target_id=user_id,
             payload={
@@ -1351,7 +1354,7 @@ def revoke_membership(session:Session,*,user_id:int,mode:str,reason:str,actor_id
         # Freeze only bindings already known when all existing grants are revoked.
         # Original managed orders retain historical identities if a row was replaced.
         payload.update(cutoff_at=moment.isoformat(),revoked_subscription_bindings=revoked_bindings)
-    session.add(AuditLog(actor_type='admin',actor_id=actor_id,action='membership_revoke',target_type='user',target_id=user_id,payload=payload))
+    session.add(AuditLog(actor_type='admin',actor_id=actor_id,action='membership_revoke',target_type='user',target_id=user_id,payload=payload,created_at=_now()))
     session.commit()
     return dict(mode=mode,before_until=before.isoformat(),after_until=before.isoformat() if mode=='period_end' else moment.isoformat(),stripe_canceled=bool(stripe_id))
 
