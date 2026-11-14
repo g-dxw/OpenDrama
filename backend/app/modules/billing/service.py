@@ -498,7 +498,7 @@ def grant_membership(
             .where(
                 MembershipGrant.user_id == user_id,
                 or_(
-                    MembershipGrant.status == "pending_refund",
+                    MembershipGrant.status.in_(("refund_pending", "pending_refund")),
                     (MembershipGrant.status == "active") & (MembershipGrant.ends_at > _now()),
                 ),
             )

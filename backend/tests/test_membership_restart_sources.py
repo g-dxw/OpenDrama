@@ -138,8 +138,9 @@ def test_restart_rejects_paid_checkout_source_without_false_success(session, pai
     ("active", -1, 29, False),
     ("active", 10, 40, False),
     ("active", -1, 29, True),
-    ("pending_refund", 0, 30, False),
-    ("pending_refund", -31, -1, False),
+    ("refund_pending", 0, 30, False),
+    ("refund_pending", -31, -1, False),
+    ("pending_refund", 0, 30, False),  # Historical alias remains protected.
 ])
 def test_restart_preserves_live_queued_consumed_and_refund_frozen_sources(
     session, paid_source, status, start_days, end_days, consumed,
@@ -148,11 +149,36 @@ def test_restart_preserves_live_queued_consumed_and_refund_frozen_sources(
     grant.starts_at = moment + timedelta(days=start_days)
     grant.ends_at = moment + timedelta(days=end_days)
     grant.status, grant.access_consumed = status, consumed
-    if status == "pending_refund":
+    if status in {"refund_pending", "pending_refund"}:
         order.status = "refund_pending"
     session.commit()
     frozen_order, frozen_grant = order_facts(order), grant_facts(grant)
     with pytest.raises(billing.BillingError) as raised:
+        adjust(session, user, actor)
+    assert raised.value.status_code == 409
+    session.rollback()
+    assert order_facts(session.get(Order, order.id)) == frozen_order
+    assert grant_facts(session.get(MembershipGrant, grant.id)) == frozen_grant
+    assert adjustments(session, user.id) == 0
+
+
+def test_restart_rejects_actual_pending_refund_service_source(session, paid_source, monkeypatch):
+    user, actor, order, grant, _, _ = paid_source
+    monkeypatch.setattr(commerce, "stripe_request", lambda *args, **kwargs: {
+        "id": "re_membership_pending", "status": "pending",
+        "payment_intent": order.payment_intent_id,
+        "amount": order.amount_cents, "currency": order.currency.lower(),
+    })
+    requested = commerce.request_refund(
+        session, order.order_no, actor.id, "Unused paid membership", "real-pending-source",
+    )
+    assert requested["status"] == "pending"
+    session.expire_all()
+    assert session.get(MembershipGrant, grant.id).status == "refund_pending"
+    assert billing.access_until(session, user.id) is None
+    frozen_order = order_facts(session.get(Order, order.id))
+    frozen_grant = grant_facts(session.get(MembershipGrant, grant.id))
+    with pytest.raises(billing.BillingError, match="订单") as raised:
         adjust(session, user, actor)
     assert raised.value.status_code == 409
     session.rollback()
@@ -175,7 +201,7 @@ def test_extend_stacks_on_paid_access_without_changing_its_source(session, paid_
 
 def test_extend_does_not_thaw_a_pending_refund(session, paid_source):
     user, actor, order, grant, moment, _ = paid_source
-    grant.status, order.status = "pending_refund", "refund_pending"
+    grant.status, order.status = "refund_pending", "refund_pending"
     session.commit()
     frozen_order, frozen_grant = order_facts(order), grant_facts(grant)
     result = adjust(session, user, actor, mode="extend")
