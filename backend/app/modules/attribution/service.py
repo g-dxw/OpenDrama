@@ -85,16 +85,27 @@ def clean_context(context):
     source=context or {}
     return {k:str(source[k])[:500] for k in ("user_agent","ttclid","fbclid") if source.get(k)}
 
+def clean_client_id(value):
+    # Never truncate IDs: distinct browsers must not collapse to the same lookup key.
+    if not isinstance(value,str) or not value or len(value)>100 or any(c.isspace() or ord(c)<32 for c in value):
+        return ""
+    return value
+
+
 def visit(db,pid,context=None,client_id=""):
     plan=active_plan(db,pid)
     if not plan: return dict(pid=pid,active=False)
     stamp=now()
+    client_id=clean_client_id(client_id)
     # A browser revisit with the same client id is one visit within 30 minutes.
     row=None
     if client_id:
-        row=db.scalar(select(AttributionVisit).where(AttributionVisit.plan_id==plan.id,AttributionVisit.client_id==client_id,AttributionVisit.created_at>=stamp-timedelta(minutes=30)).order_by(AttributionVisit.created_at.desc()).limit(1))
+        row=db.scalar(select(AttributionVisit).where(AttributionVisit.tenant_id=="jjtv",AttributionVisit.plan_id==plan.id,AttributionVisit.client_id==client_id,AttributionVisit.created_at>=stamp-timedelta(minutes=30)).order_by(AttributionVisit.created_at.desc()).limit(1))
     if row is None:
         row=AttributionVisit(id=secrets.token_hex(16),tenant_id="jjtv",plan_id=plan.id,client_id=client_id,context=clean_context(context),created_at=stamp);db.add(row);db.flush()
+    else:
+        # A deduplicated landing may carry a fresh click; empty fields do not erase it.
+        row.context={**clean_context(row.context),**clean_context(context)}
     pixel=owned(db,AttributionPixel,plan.pixel_id)
     return dict(pid=plan.pid,active=True,visit_id=row.id,pixel=dict(platform=pixel.platform,pixel_id=pixel.pixel_id))
 
@@ -104,14 +115,24 @@ def enqueue(db,*,pixel_id,event_id,kind,plan_id=None,user_id=None,order_no=None,
     if identifier: return db.get(AttributionEvent,identifier)
     return db.scalar(select(AttributionEvent).where(AttributionEvent.pixel_id==pixel_id,AttributionEvent.event_id==event_id))
 
-def record_registration(db,*,user_id:int,pid:str|None,context=None):
+def record_registration(db,*,user_id:int,pid:str|None,context=None,client_id=""):
     plan=active_plan(db,pid)
     if plan is None: return []
-    # First successful registration owns attribution; subsequent logins cannot reassign it.
-    db.execute(insert(UserAttribution).values(user_id=user_id,tenant_id="jjtv",plan_id=plan.id,context=clean_context(context),created_at=now()).on_conflict_do_nothing(index_elements=[UserAttribution.user_id]))
+    matched_context={}
+    client_id=clean_client_id(client_id)
+    if client_id:
+        # pid is a public campaign ID, not a visitor identity. Match all ownership fields.
+        visit=db.scalar(select(AttributionVisit).where(
+            AttributionVisit.tenant_id=="jjtv",AttributionVisit.plan_id==plan.id,
+            AttributionVisit.client_id==client_id,AttributionVisit.created_at<=now(),
+        ).order_by(AttributionVisit.created_at.desc(),AttributionVisit.id.desc()).limit(1))
+        if visit is not None: matched_context=clean_context(visit.context)
+    matched_context.update(clean_context(context))
+    # First successful registration owns both the plan and its click context.
+    db.execute(insert(UserAttribution).values(user_id=user_id,tenant_id="jjtv",plan_id=plan.id,context=matched_context,created_at=now()).on_conflict_do_nothing(index_elements=[UserAttribution.user_id]))
     attribution=db.get(UserAttribution,user_id)
-    if attribution is None or attribution.plan_id!=plan.id: return []
-    return [enqueue(db,pixel_id=plan.pixel_id,event_id="registration:"+str(user_id),kind="registration",plan_id=plan.id,user_id=user_id,context=context)]
+    if attribution is None or attribution.tenant_id!="jjtv" or attribution.plan_id!=plan.id: return []
+    return [enqueue(db,pixel_id=plan.pixel_id,event_id="registration:"+str(user_id),kind="registration",plan_id=plan.id,user_id=user_id,context=attribution.context)]
 
 def record_payment(db,*,order_no:str,user_id:int,pid:str|None,amount_cents:int,currency:str,context=None):
     from app.modules.billing.models import Order
@@ -123,7 +144,8 @@ def record_payment(db,*,order_no:str,user_id:int,pid:str|None,amount_cents:int,c
         previous=db.get(AttributionPlan,identity.plan_id);pid=previous.pid if previous else None
     plan=active_plan(db,pid)
     if plan is None: return []
-    if not context and identity and identity.tenant_id=="jjtv" and identity.plan_id==plan.id: context=identity.context
+    if identity and identity.tenant_id=="jjtv" and identity.plan_id==plan.id:
+        context={**clean_context(identity.context),**context}
     return [enqueue(db,pixel_id=plan.pixel_id,event_id="purchase:"+order_no,kind="purchase",plan_id=plan.id,user_id=user_id,order_no=order_no,amount_cents=amount_cents,currency=currency.upper(),context=context)]
 
 def event_out(row):

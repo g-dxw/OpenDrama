@@ -59,7 +59,7 @@ def _registration_attribution(db,request,user_id,created=True):
     pid=request.headers.get('X-JJTV-Attribution','')[:100]
     if created and pid:
         from app.modules.attribution.service import record_registration
-        record_registration(db,user_id=user_id,pid=pid,context={'user_agent':request.headers.get('user-agent','')[:500]})
+        record_registration(db,user_id=user_id,pid=pid,context={'user_agent':request.headers.get('user-agent','')[:500]},client_id=request.headers.get('X-Device-Id',''))
         db.commit()
 
 

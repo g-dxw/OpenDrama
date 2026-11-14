@@ -73,7 +73,11 @@ def scope(request,permission):
 def visit(body:VisitIn,request:Request,db:Session=Depends(get_db)):
     if db.info.get("content_tenant_id","jjtv")!="jjtv": raise HTTPException(403,"Attribution is available for JJTV only")
     context=dict(user_agent=request.headers.get("user-agent","")[:500],ttclid=body.ttclid,fbclid=body.fbclid)
-    result=service.visit(db,body.pid,context,body.client_id);db.commit();return result
+    # Current PC/H5 requests always carry the shared client device header.
+    # Keep body-only older clients compatible, but never let it override that identity.
+    client_id=request.headers.get("X-Device-Id")
+    if client_id is None: client_id=body.client_id
+    result=service.visit(db,body.pid,context,client_id);db.commit();return result
 
 @admin_router.get("/pixels")
 def pixels(request:Request,staff:AdminUser=Depends(require_admin),db:Session=Depends(get_db)):
