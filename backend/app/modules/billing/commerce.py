@@ -434,17 +434,21 @@ def credit_order(db,order,wallet):
     db.add(CoinLedgerEntry(user_id=order.user_id,amount=coins,balance_after=wallet.balance,biz_type='purchase',biz_key='purchase:'+order.order_no,note=order.product_type))
     db.add(CoinSource(user_id=order.user_id,order_id=order.id,original=coins,remaining=coins,reserved=0))
 
-def _administratively_revoked_subscription(db,order):
-    if order.billing_mode!='subscription' or not order.subscription_ref:return False
-    # Immediate administrative withdrawal permanently fences this old merchant
-    # binding. Keep late paid invoices/coins, but do not restore withdrawn access.
-    return db.scalar(select(AuditLog.id).where(
-        AuditLog.actor_type=='admin',AuditLog.action=='membership_revoke',AuditLog.target_type=='user',AuditLog.target_id==order.user_id,
-        AuditLog.payload['mode'].astext=='now',AuditLog.payload['cutoff_at'].astext.is_not(None),
-        or_(
+def _administratively_revoked_membership(db,order,grant=None):
+    if order.product_type!='membership':return False
+    # A frozen source may return from refund processing after withdrawal. Binding
+    # fences additionally cover paid invoices whose source did not exist yet.
+    source=dict(order_id=order.id)
+    if grant is not None:source['grant_id']=grant.id
+    matches=[AuditLog.payload['revoked_membership_sources'].contains([source])]
+    if order.billing_mode=='subscription' and order.subscription_ref:
+        matches.extend((
             (AuditLog.payload['account_code'].astext==order.account_code)&(AuditLog.payload['stripe_subscription_id'].astext==order.subscription_ref),
             AuditLog.payload['revoked_subscription_bindings'].contains([dict(account_code=order.account_code,stripe_subscription_id=order.subscription_ref)]),
-        ),
+        ))
+    return db.scalar(select(AuditLog.id).where(
+        AuditLog.actor_type=='admin',AuditLog.action=='membership_revoke',AuditLog.target_type=='user',AuditLog.target_id==order.user_id,
+        AuditLog.payload['mode'].astext=='now',AuditLog.payload['cutoff_at'].astext.is_not(None),or_(*matches),
     ).limit(1)) is not None
 
 
@@ -461,7 +465,7 @@ def settle_order(db,order,settlement_key,period_start=None,period_end=None):
             end=grant_access_until(db,order.user_id)
             start=max(now(),end or now());finish=start+timedelta(days=order.product_snapshot.get('days',30))
         else:start,finish=period_start,period_end
-        status='revoked' if _administratively_revoked_subscription(db,order) else 'active'
+        status='revoked' if _administratively_revoked_membership(db,order) else 'active'
         db.add(MembershipGrant(order_id=order.id,user_id=order.user_id,starts_at=start,ends_at=finish,status=status,access_consumed=False))
     db.flush()
     from app.modules.attribution.service import record_payment
@@ -606,7 +610,7 @@ def process_event(db,code,payload):
         order.payment_intent_id=None if manual else payment.payment_intent_id
         order.checkout_context={**context,'invoice_payment_evidence':evidence,'invoice_payment_intent_ids':sorted(identities),'invoice_payment_requires_manual_review':manual,'invoice_payment_review_reason':payment.reason or context.get('invoice_payment_review_reason','')}
         # Keep a merchant binding for cancellation while paid grants own access.
-        administratively_revoked=_administratively_revoked_subscription(db,order)
+        administratively_revoked=_administratively_revoked_membership(db,order)
         sub=db.scalar(select(Subscription).where(Subscription.stripe_subscription_id==subscription,Subscription.account_code==code).with_for_update())
         if sub is not None and sub.user_id!=order.user_id:raise BillingError(409,'subscription owner does not match frozen order')
         if sub is None:
@@ -850,7 +854,7 @@ def finalize_refund(db,refund,status):
         if source and source.reserved:
             amount=source.reserved;source.reserved=0;source.remaining=amount;wallet.balance+=amount
             db.add(CoinLedgerEntry(user_id=order.user_id,amount=amount,balance_after=wallet.balance,biz_type='refund_release',biz_key='refund_release:'+order.order_no,note='Stripe refund failed'))
-        if grant:grant.status='revoked' if _administratively_revoked_subscription(db,order) else 'active'
+        if grant:grant.status='revoked' if _administratively_revoked_membership(db,order,grant) else 'active'
         order.status='paid';refund.status=status
     else:refund.status='pending'
     db.flush()
