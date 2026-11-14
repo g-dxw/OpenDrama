@@ -282,8 +282,19 @@ page.on("request", async (req) => {
             name_en: "Weekly pass",
             name_zh: "周卡",
             billing_mode: "subscription",
-            duration_days: 7,
+            duration_days: null,
             recurring_interval: "week",
+            price_cents: 499,
+            currency: "USD",
+            benefits: { items: ["Watch member episodes"] },
+          },
+          {
+            code: "weekly-once",
+            name_en: "Seven-day access",
+            name_zh: "七天权益",
+            billing_mode: "one_time",
+            duration_days: 7,
+            recurring_interval: null,
             price_cents: 499,
             currency: "USD",
             benefits: { items: ["Watch member episodes"] },
@@ -751,6 +762,16 @@ try {
   await text("300 base + 30 bonus coins");
   await text("Access for 7 days");
   await text("per week");
+  const membershipCards = await page.$$eval(".membership-card", (cards) =>
+    cards.map((card) => card.textContent),
+  );
+  assert(!membershipCards[0].includes("Access for"));
+  assert(membershipCards[0].includes("per week"));
+  assert(membershipCards[1].includes("Access for 7 days"));
+  assert(!membershipCards[1].includes("per week"));
+  pass(
+    "subscriptions show billing cadence while one-time plans show fixed access days",
+  );
   pass(
     "price tabs retain deep links and show configured base and bonus values",
   );
@@ -970,7 +991,7 @@ try {
   pass(
     "an existing email code restores one check-in and refreshes private rewards",
   );
-  for (const width of [1440, 390]) {
+  for (const width of [1280, 1440, 1920, 390]) {
     await page.setViewport({ width, height: 1000 });
     for (const route of ["#account", "#price?tab=coins", "#rewards"]) {
       await go(route);

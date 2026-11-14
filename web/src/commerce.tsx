@@ -216,11 +216,12 @@ export function Store({
                           ? "Auto-renewing"
                           : "One-time pass"}
                       </span>
-                      {Number(plan.duration_days) > 0 && (
-                        <p className="plan-duration">
-                          Access for {plan.duration_days} days
-                        </p>
-                      )}
+                      {(plan.billing_mode || mode) === "one_time" &&
+                        Number(plan.duration_days) > 0 && (
+                          <p className="plan-duration">
+                            Access for {plan.duration_days} days
+                          </p>
+                        )}
                     </div>
                     <strong>
                       {money(plan.price_cents, plan.currency)}

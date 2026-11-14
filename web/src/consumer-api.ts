@@ -84,7 +84,7 @@ export interface Plan {
   currency: string;
   benefits?: { items?: string[]; best?: boolean };
   billing_mode?: string;
-  duration_days?: number;
+  duration_days?: number | null;
   recurring_interval?: "week" | "month" | "year" | null;
   base_coins?: number;
   bonus_coins?: number;
