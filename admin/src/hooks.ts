@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { message } from "antd";
 import { api, errorText, isDeadCredential } from "./api";
 
@@ -17,29 +17,36 @@ export function useLoad<T>(
   const [data, setData] = useState<T>(fallback);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const generation = useRef(0);
+  const currentPath = useRef(path);
+  currentPath.current = path;
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; generation.current++; }; }, []);
 
   const reload = () => {
+    const id = ++generation.current;
+    const requestedPath = path;
+    const current = () => mounted.current && id === generation.current && currentPath.current === requestedPath;
     setLoading(true);
     return api<T>(path)
       .then((value) => {
+        if (!current()) return;
         setData(value);
         setError(null);
       })
       .catch((e) => {
-        // 会话失效时 api() 已经在跳登录页，再弹一条红字只会盖在登录页上。
-        if (isDeadCredential(e?.status ?? 0, e?.detail)) {
-          setError("unauthorized");
-          return;
-        }
+        if (!current()) return;
+        if (isDeadCredential(e?.status ?? 0, e?.detail)) { setError('unauthorized'); return; }
         const text = errorText(e);
         setError(text);
         message.error(text);
       })
-      .finally(() => setLoading(false));
+      .finally(() => { if (current()) setLoading(false); });
   };
 
   useEffect(() => {
     if (!enabled) {
+      generation.current++;
       setLoading(false);
       return;
     }

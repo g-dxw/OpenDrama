@@ -886,7 +886,7 @@ export default function EpisodesPanel({ dramaId }: { dramaId: string }) {
           }),
         } : undefined}
         columns={[
-          {title:'字幕 / 定价',key:'assets',width:126,render:(_value:unknown,row:EpisodeRow)=><EpisodeAssets episodeId={row.id} price={row.coin_price}/>},
+          {title:'字幕 / 定价',key:'assets',width:126,render:(_value:unknown,row:EpisodeRow)=><EpisodeAssets episodeId={row.id} episodeNumber={row.episode_number} price={row.coin_price} onSaved={load}/>},
           { title: "集", dataIndex: "episode_number", width: 70 },
           {
             title: "标题",
