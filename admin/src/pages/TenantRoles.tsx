@@ -57,7 +57,7 @@ export default function TenantRoles({ tenant, onClose, inline = false }: { tenan
   const body = <>
       <Space direction="vertical" size="middle" style={{ width: "100%" }}>
         <Typography.Text type="secondary">菜单分类与后台导航保持一致；“查看”权限决定可见子菜单，操作权限分别控制编辑、上传、审核等动作。仅显示此租户支持的功能。</Typography.Text>
-        {tenant?.kind === "india_legacy" && <Alert type="info" showIcon message="India 仅开放内容运营" description="授权后仍需连接具备相应权限的旧站账号。此处不会开放旧站财务、钱包或会员管理。" />}
+        {tenant?.kind === "india_legacy" && <Alert type="info" showIcon message="India 内容运营权限" description="按查看、编辑、上传、定价、审核和上下架分别授权。统一运营授权启用后，员工使用本租户账号即可操作；旧站账号连接仅用于兼容模式。" />}
         {error && <Alert type="error" showIcon message={error} action={<Button onClick={() => void load()}>重试</Button>} />}
         <Space><Button type="primary" icon={<PlusOutlined aria-hidden />} disabled={loading || !!error} onClick={() => edit("new")}>新增角色</Button>
           <Button icon={<ReloadOutlined aria-hidden />} loading={loading} onClick={() => void load()}>刷新角色</Button></Space>

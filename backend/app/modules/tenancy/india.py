@@ -1,21 +1,26 @@
 """Fixed India API connector. No database, credentials persistence, or URL proxying.
 
-The caller supplies the current JJTV operator's encrypted-at-rest upstream business
-credentials. Passwords are used only in the dedicated client login request.
+Delegated requests carry server-derived tenant permissions and a short-lived,
+request-bound proof. The optional legacy mode uses encrypted upstream business
+credentials, with passwords sent only to its dedicated client login endpoint.
 """
 from __future__ import annotations
 
 import asyncio
+import base64
 from collections.abc import AsyncIterable, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
 import json
 import hashlib
+import hmac
 from pathlib import Path
 import os
 import re
+import time
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
@@ -26,6 +31,8 @@ _SAFE_ID = re.compile(r"[A-Za-z0-9_-]{1,160}\Z")
 _CREDENTIAL = re.compile(r"[A-Za-z0-9_-]{20,500}\Z")
 _SAFE_CODE = re.compile(r"[A-Z][A-Z0-9_]{0,79}\Z")
 _STAFF_ROLES = frozenset({"admin", "editor", "reviewer", "support", "finance", "growth"})
+DELEGATED_PERMISSIONS = frozenset({"dramas.view", "dramas.edit", "dramas.upload", "dramas.publish",
+                                   "dramas.pricing", "reviews.view", "reviews.decide"})
 
 
 class IndiaError(Exception):
@@ -201,14 +208,74 @@ def client_fingerprint() -> str:
     return hashlib.sha256(client_secret().encode("ascii")).hexdigest()
 
 
+def delegated_enabled() -> bool:
+    # A mistyped enable flag must select the fail-closed delegated path, rather
+    # than quietly re-enable individual password connections.
+    return os.environ.get("INDIA_JJTV_DELEGATED_ENABLED", "").strip().lower() not in {"", "false", "off"}
+
+
+def delegated_secret() -> str:
+    """Dedicated server signing key; enabling delegation never falls back to staff credentials."""
+    if os.environ.get("INDIA_JJTV_DELEGATED_ENABLED", "").strip().lower() != "true":
+        raise IndiaError("india_delegated_unavailable", 503)
+    try:
+        path = Path(os.environ.get("INDIA_JJTV_DELEGATED_SECRET_FILE", ""))
+        if (not path.is_absolute() or path.is_symlink() or not path.is_file() or path.stat().st_size > 256
+                or os.name == "posix" and path.stat().st_mode & 0o077):
+            raise ValueError()
+        secret = path.read_text(encoding="ascii").strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{43,128}", secret):
+            raise ValueError()
+        return secret
+    except (OSError, ValueError, UnicodeError):
+        raise IndiaError("india_delegated_unavailable", 503) from None
+
+
+def _base64url(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+
+@asynccontextmanager
+async def _stream_request(client: httpx.AsyncClient, request: httpx.Request):
+    response = await client.send(request, stream=True)
+    try:
+        yield response
+    finally:
+        await response.aclose()
+
+
 class IndiaClient:
     """Each operation owns its HTTP client; construction accepts server configuration only."""
 
-    def __init__(self, *, operator_id: str, base_url: str | None = None, transport: httpx.AsyncBaseTransport | None = None):
+    def __init__(self, *, operator_id: str, base_url: str | None = None, transport: httpx.AsyncBaseTransport | None = None,
+                 permissions: list[str] | tuple[str, ...] | None = None, actor_scope: str = "tenant"):
         self.base_url = normalize_api_base(base_url if base_url is not None else os.environ.get("INDIA_API_BASE_URL"))
         self._transport = transport
         self._operator_id = safe_id(operator_id)
-        self._client_secret = client_secret()
+        self._delegated = permissions is not None
+        if self._delegated:
+            if (actor_scope not in {"tenant", "platform"} or not isinstance(permissions, (list, tuple))
+                    or any(not isinstance(value, str) or value not in DELEGATED_PERMISSIONS for value in permissions)):
+                raise IndiaError("india_delegated_identity_invalid", 400)
+            self._permissions = sorted(set(permissions))
+            self._actor_scope = actor_scope
+            self._delegated_secret = delegated_secret()
+        else:
+            self._client_secret = client_secret()
+
+    def _proof(self, request: httpx.Request, *, upload: bool) -> str:
+        now = int(time.time())
+        claims = {"v": 1, "iss": "jjtv", "aud": "india-content", "tenant_id": "india-short-drama",
+                  "operator_id": self._operator_id, "actor_scope": self._actor_scope,
+                  "permissions": self._permissions, "iat": now, "exp": now + 30, "jti": str(uuid4()),
+                  "method": request.method, "target": request.url.raw_path.decode("ascii"),
+                  "body_sha256": "STREAMING" if upload else hashlib.sha256(request.content).hexdigest(),
+                  "content_type": request.headers.get("content-type", ""),
+                  "content_length": request.headers.get("content-length", ""),
+                  "idempotency_key": request.headers.get("idempotency-key", "")}
+        encoded = _base64url(json.dumps(claims, separators=(",", ":"), ensure_ascii=True).encode("utf-8"))
+        signature = hmac.new(self._delegated_secret.encode("ascii"), encoded.encode("ascii"), hashlib.sha256).digest()
+        return encoded + "." + _base64url(signature)
 
     async def call(self, action: str, *, access_token: str | None = None, resource_id: str | None = None,
                    payload: Mapping[str, Any] | None = None, params: Mapping[str, Any] | None = None,
@@ -217,13 +284,19 @@ class IndiaClient:
         spec = _ACTIONS.get(action)
         if spec is None:
             raise IndiaError("india_action_not_allowed", 400)
+        if self._delegated and action in {"me", "login", "refresh", "logout"}:
+            raise IndiaError("india_action_not_allowed", 400)
         if "{id}" in spec.path:
             path = spec.path.format(id=safe_id(resource_id))
         elif resource_id is not None:
             raise IndiaError("india_invalid_resource", 400)
         else:
             path = spec.path
-        _credential(access_token, required=spec.authenticated)
+        if self._delegated:
+            if access_token is not None:
+                raise IndiaError("india_delegated_identity_invalid", 400)
+        else:
+            _credential(access_token, required=spec.authenticated)
         query: dict[str, str | int | bool] = {}
         for key, value in (params or {}).items():
             if key not in spec.query or not isinstance(value, (str, int, bool)) or isinstance(value, str) and len(value) > 2048:
@@ -250,14 +323,18 @@ class IndiaClient:
         return await self._send(spec.method, path, access_token=access_token, payload=body, params=query,
                                 headers=idempotency_headers, auth_stage=auth_stage)
 
-    async def upload(self, kind: str, upload_id: str, *, access_token: str, chunks: AsyncIterable[bytes],
+    async def upload(self, kind: str, upload_id: str, *, access_token: str | None = None, chunks: AsyncIterable[bytes],
                      size: int, content_type: str, idempotency_key: str | None = None) -> IndiaReply:
         idempotency_headers = _idempotency_headers(idempotency_key)
         spec = _UPLOADS.get(kind)
         if spec is None:
             raise IndiaError("india_action_not_allowed", 400)
         path, limit, content_types = spec
-        _credential(access_token)
+        if self._delegated:
+            if access_token is not None:
+                raise IndiaError("india_delegated_identity_invalid", 400)
+        else:
+            _credential(access_token)
         if isinstance(size, bool) or not isinstance(size, int) or size < 1:
             raise IndiaError("india_upload_size_invalid", 400)
         if size > limit:
@@ -290,9 +367,10 @@ class IndiaClient:
                     payload: dict | None = None, params: dict | None = None,
                     content: AsyncIterable[bytes] | None = None, headers: dict | None = None,
                     upload: bool = False, auth_stage: str | None = None) -> IndiaReply:
-        request_headers = {"Accept": "application/json", "User-Agent": "JJTV-India-Connector/2.0", **(headers or {}),
-                           "X-JJTV-Client-Id": "jjtv", "X-JJTV-Client-Secret": self._client_secret,
-                           "X-JJTV-Operator-Id": self._operator_id}
+        request_headers = {"Accept": "application/json", "User-Agent": "JJTV-India-Connector/2.0", **(headers or {})}
+        if not self._delegated:
+            request_headers.update({"X-JJTV-Client-Id": "jjtv", "X-JJTV-Client-Secret": self._client_secret,
+                                    "X-JJTV-Operator-Id": self._operator_id})
         if access_token:
             request_headers["Authorization"] = "Bearer " + _credential(access_token)
         timeout = httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=5.0)
@@ -305,7 +383,10 @@ class IndiaClient:
                         options["content"] = content
                     elif payload is not None:
                         options["json"] = payload
-                    async with client.stream(method, path, **options) as response:
+                    upstream_request = client.build_request(method, path, **options)
+                    if self._delegated:
+                        upstream_request.headers["X-JJTV-Delegated-Proof"] = self._proof(upstream_request, upload=upload)
+                    async with _stream_request(client, upstream_request) as response:
                         if 300 <= response.status_code < 400:
                             raise IndiaError("india_redirect_rejected")
                         limit = MAX_JSON_BYTES if response.is_success else 65536
@@ -325,9 +406,13 @@ class IndiaClient:
                             upstream = upstream if isinstance(upstream, str) and _SAFE_CODE.fullmatch(upstream) else None
                             status = response.status_code
                             public_status = 409 if status == 401 else status if 400 <= status < 500 else 502
-                            code = "india_auth_required" if status == 401 else "india_forbidden" if status == 403 else "india_upstream_error"
+                            code = ("india_delegated_unavailable" if self._delegated else "india_auth_required") if status == 401 else "india_forbidden" if status == 403 else "india_upstream_error"
+                            if self._delegated and status == 401:
+                                public_status = 503
                             if status == 429:
                                 code = "india_rate_limited"
+                            elif self._delegated and upstream in {"JJTV_DELEGATED_DISABLED", "JJTV_DELEGATED_UNAVAILABLE", "JJTV_DELEGATED_PROOF_INVALID", "JJTV_DELEGATED_PROOF_REPLAYED"}:
+                                code, public_status = "india_delegated_unavailable", 503
                             elif upstream in {"JJTV_CLIENT_DISABLED", "JJTV_CLIENT_UNAVAILABLE", "JJTV_CLIENT_PROOF_INVALID"}:
                                 code, public_status = "india_client_unavailable", 503
                             elif status == 401 and auth_stage == "login":

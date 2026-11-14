@@ -16,7 +16,7 @@ from app.modules.ops import service as ops_service
 from app.modules.tenancy import service
 from app.modules.tenancy.models import INDIA_TENANT
 from app.modules.tenancy.permissions import require_permission
-from app.modules.tenancy.india import IndiaClient, IndiaError, normalize_login, normalize_refresh, normalize_staff, client_fingerprint
+from app.modules.tenancy.india import IndiaClient, IndiaError, normalize_login, normalize_refresh, normalize_staff, client_fingerprint, delegated_enabled, DELEGATED_PERMISSIONS
 router=APIRouter(prefix='/admin/v1/tenants',tags=['india-content'])
 
 class LoginInput(BaseModel):
@@ -24,12 +24,13 @@ class LoginInput(BaseModel):
     username: str = Field(min_length=1, max_length=64)
     password: str = Field(min_length=1, max_length=128)
 
-def audit(db,user,tenant_id,action,*,old_actor=None,request_id=None,outcome='success',code=None,resource_id=None):
+def audit(db,user,tenant_id,action,*,old_actor=None,request_id=None,outcome='success',code=None,resource_id=None,auth_mode=None):
     payload=dict(tenant_id=tenant_id,outcome=outcome)
     if old_actor: payload['upstream_actor_id']=old_actor
     if request_id: payload['upstream_request_id']=request_id
     if code: payload['upstream_code']=code
     if resource_id: payload['resource_id']=resource_id
+    if auth_mode: payload['auth_mode']=auth_mode
     db.add(AuditLog(actor_type='admin',actor_id=user.id,actor_scope=db.info.get('actor_scope',user.account_scope),tenant_id=tenant_id,action=action,target_type='tenant',target_id=None,payload=payload)); db.commit()
 
 def india_access(tenant_id,db,user,request,*,write=False):
@@ -51,8 +52,34 @@ def describe(data=None, *, configured=True):
         if data.get("expires_at"): result["expires_at"] = data["expires_at"]
     return result
 
+
+def delegated_client(request, user):
+    """Only verified server-side tenant grants may become provider permissions."""
+    permissions = sorted(set(getattr(request.state, "tenant_permissions", ())) & DELEGATED_PERMISSIONS)
+    principal = request.state.principal
+    return IndiaClient(operator_id=str(user.id), permissions=permissions, actor_scope=principal.account_scope)
+
+
+def delegated_status(request, user):
+    permissions = sorted(set(getattr(request.state, "tenant_permissions", ())) & DELEGATED_PERMISSIONS)
+    configured = True
+    try:
+        delegated_client(request, user)
+    except IndiaError:
+        configured = False
+    return {"configured": configured, "auth_mode": "jjtv_delegated", "connected": configured,
+            "state": "connected" if configured else "unavailable", "permissions": permissions,
+            "username": user.username, "actor_scope": request.state.principal.account_scope}
+
+
+def reject_delegated_connection(tenant_id, db, user, request):
+    if delegated_enabled():
+        india_access(tenant_id, db, user, request)
+        raise HTTPException(410, detail={"code": "india_connection_not_required", "message": "India 已按当前租户角色授权，无需连接旧站账号"})
+
+
 def fail_india(error, db, request, user, *, expected_access_token=None, expected_challenge_token=None):
-    if error.code == "india_auth_required":
+    if error.code == "india_auth_required" and not delegated_enabled():
         service.clear_connection(db, request, user, expected_access_token=expected_access_token)
     elif error.code in {"india_challenge_expired", "india_mfa_replayed"} and expected_challenge_token is not None:
         service.clear_connection(db, request, user, expected_challenge_token=expected_challenge_token)
@@ -60,6 +87,8 @@ def fail_india(error, db, request, user, *, expected_access_token=None, expected
                 "india_login_rejected": "旧站账号验证未通过，请检查账号和密码",
                 "india_client_unavailable": "旧站专用连接尚未启用或配置已失效，请联系管理员",
                 "india_client_contract_invalid": "旧站专用连接响应异常，请联系管理员",
+                "india_delegated_unavailable": "India 角色授权通道暂不可用，请联系平台管理员检查配置",
+                "india_delegated_identity_invalid": "India 角色授权请求无效，请联系平台管理员",
                 "india_mfa_invalid": "验证码无效或验证已失效，请输入当前验证码；仍失败可重新连接",
                 "india_challenge_expired": "本次验证已过期，请重新连接运营账号",
                 "india_mfa_replayed": "验证码已使用，请重新连接后输入新的验证码",
@@ -122,6 +151,8 @@ def auth_limit(user):
 async def india_session(tenant_id: str, request: Request, response: Response, db: Session = Depends(get_db), user: AdminUser = Depends(require_admin)):
     response.headers["Cache-Control"] = "no-store"
     india_access(tenant_id, db, user, request)
+    if delegated_enabled():
+        return delegated_status(request, user)
     if not os.environ.get("INDIA_API_BASE_URL") or not os.environ.get("TENANT_CONNECTION_KEY"):
         return describe(configured=False)
     try:
@@ -148,6 +179,7 @@ async def india_session(tenant_id: str, request: Request, response: Response, db
 
 @router.post("/{tenant_id}/india/session")
 async def india_login(tenant_id: str, body: LoginInput, request: Request, response: Response, db: Session = Depends(get_db), user: AdminUser = Depends(require_admin)):
+    reject_delegated_connection(tenant_id, db, user, request)
     with service.connection_mutation(request, user):
         response.headers["Cache-Control"] = "no-store"
         india_access(tenant_id, db, user, request); service.connection_cipher(); auth_limit(user)
@@ -172,6 +204,7 @@ def retired_india_mfa(tenant_id: str, request: Request, db: Session = Depends(ge
 
 @router.post("/{tenant_id}/india/session/refresh")
 async def india_refresh(tenant_id: str, request: Request, response: Response, db: Session = Depends(get_db), user: AdminUser = Depends(require_admin)):
+    reject_delegated_connection(tenant_id, db, user, request)
     with service.connection_mutation(request, user):
         response.headers["Cache-Control"] = "no-store"
         india_access(tenant_id, db, user, request)
@@ -188,6 +221,7 @@ async def india_refresh(tenant_id: str, request: Request, response: Response, db
 
 @router.delete("/{tenant_id}/india/session")
 async def india_disconnect(tenant_id: str, request: Request, response: Response, db: Session = Depends(get_db), user: AdminUser = Depends(require_admin)):
+    reject_delegated_connection(tenant_id, db, user, request)
     with service.connection_mutation(request, user):
         response.headers["Cache-Control"] = "no-store"
         india_access(tenant_id, db, user, request)
@@ -263,14 +297,17 @@ async def india_content(tenant_id: str, upstream_path: str, request: Request, re
     if request.method != "GET":
         try: key = str(UUID(request.headers.get("Idempotency-Key", "")))
         except ValueError: raise HTTPException(400, detail="操作需要有效 Idempotency-Key") from None
-    data = await connected_data(db, request, user)
+    delegated = delegated_enabled()
+    data = None if delegated else await connected_data(db, request, user)
+    upstream_actor = None if delegated else data["user"]["id"]
+    auth_mode = "jjtv_delegated" if delegated else "jjtv_client_password"
     db.commit()  # Release the read connection before streaming a large upload.
     try:
-        client = IndiaClient(operator_id=str(user.id))
+        client = delegated_client(request, user) if delegated else IndiaClient(operator_id=str(user.id))
         if upload_kind:
             try: size = int(request.headers.get("Content-Length", ""))
             except ValueError: raise HTTPException(411, detail="上传需要声明文件长度") from None
-            reply = await client.upload(upload_kind, resource_id, access_token=data["access_token"], chunks=request.stream(),
+            reply = await client.upload(upload_kind, resource_id, access_token=None if delegated else data["access_token"], chunks=request.stream(),
                 size=size, content_type=request.headers.get("Content-Type", ""), idempotency_key=key)
         else:
             if len(request.query_params.multi_items()) != len(set(request.query_params.keys())): raise HTTPException(400, detail="查询条件不能重复")
@@ -282,12 +319,12 @@ async def india_content(tenant_id: str, upstream_path: str, request: Request, re
                     if field == 'version': continue
                     permission = 'dramas.pricing' if field in {'free_episode_count','member_window'} else 'dramas.edit'
                     require_permission(request, permission)
-            reply = await client.call(action, access_token=data["access_token"], resource_id=resource_id,
+            reply = await client.call(action, access_token=None if delegated else data["access_token"], resource_id=resource_id,
                 payload=payload, params=dict(request.query_params), idempotency_key=key)
         if request.method != "GET":
-            audit(db, user, tenant_id, "india." + action, old_actor=data["user"]["id"], request_id=reply.request_id, resource_id=resource_id)
+            audit(db, user, tenant_id, "india." + action, old_actor=upstream_actor, request_id=reply.request_id, resource_id=resource_id, auth_mode=auth_mode)
         return {"data": reply.data, "request_id": reply.request_id}
     except IndiaError as error:
-        if request.method != "GET": audit(db, user, tenant_id, "india." + action, old_actor=data["user"]["id"],
-            request_id=error.request_id, outcome="rejected", code=error.upstream_code, resource_id=resource_id)
-        fail_india(error, db, request, user, expected_access_token=data.get("access_token"))
+        if request.method != "GET": audit(db, user, tenant_id, "india." + action, old_actor=upstream_actor,
+            request_id=error.request_id, outcome="rejected", code=error.upstream_code, resource_id=resource_id, auth_mode=auth_mode)
+        fail_india(error, db, request, user, expected_access_token=None if delegated else data.get("access_token"))

@@ -4,6 +4,8 @@ All India HTTP calls are mocked. Tests never call or migrate the old system.
 """
 from __future__ import annotations
 import hashlib
+import base64
+import hmac
 import json
 from uuid import uuid4
 from datetime import datetime, timedelta, timezone
@@ -64,6 +66,7 @@ def context(session, make, monkeypatch, tmp_path):
     client_key.write_text(CLIENT_SECRET, encoding='ascii')
     monkeypatch.setenv('INDIA_JJTV_CLIENT_ENABLED', 'true')
     monkeypatch.setenv('INDIA_JJTV_CLIENT_SECRET_FILE', str(client_key))
+    monkeypatch.setenv('INDIA_JJTV_DELEGATED_ENABLED', 'false')
     client = TestClient(app)
     return dict(db=session, make=make, client=client, owner=owner, operator=operator, finance=finance,
                 platform=platform, platform_headers=login(client, platform), owner_headers=login(client, owner),
@@ -637,3 +640,140 @@ def test_expiring_access_is_refreshed_before_content_request_and_not_blindly_ret
     assert [call[0] for call in india_auth_http[0]] == ["auth/jjtv/refresh", "admin/series"]
     assert india_auth_http[0][-1][2]["authorization"] == "Bearer " + "n" * 43
     assert saved_india(context)[1]["access_token"] == "n" * 43
+
+
+@pytest.fixture()
+def india_delegated_http(monkeypatch, context, tmp_path):
+    """Actual consumer HTTP transport, with independently checked synthetic signed proofs."""
+    from app.modules.tenancy import router as tenant_router
+
+    secret = 'synthetic_delegated_contract_' + 'd' * 43
+    key = tmp_path / 'jjtv-delegated.key'
+    key.write_text(secret, encoding='ascii')
+    key.chmod(0o600)
+    monkeypatch.setenv('INDIA_JJTV_DELEGATED_ENABLED', 'true')
+    monkeypatch.setenv('INDIA_JJTV_DELEGATED_SECRET_FILE', str(key))
+    # Delegation needs neither encrypted legacy connections nor password bridge configuration.
+    monkeypatch.delenv('TENANT_CONNECTION_KEY', raising=False)
+    monkeypatch.delenv('INDIA_JJTV_CLIENT_ENABLED', raising=False)
+    monkeypatch.delenv('INDIA_JJTV_CLIENT_SECRET_FILE', raising=False)
+    observed = []
+
+    def handler(request):
+        encoded, signature = request.headers['x-jjtv-delegated-proof'].split('.')
+        decode = lambda value: base64.urlsafe_b64decode(value + '=' * (-len(value) % 4))
+        assert hmac.compare_digest(decode(signature), hmac.new(secret.encode(), encoded.encode(), hashlib.sha256).digest())
+        claims = json.loads(decode(encoded))
+        assert claims['target'] == request.url.raw_path.decode('ascii')
+        assert claims['body_sha256'] == ('STREAMING' if request.method == 'PUT' else hashlib.sha256(request.content).hexdigest())
+        assert 'authorization' not in request.headers and 'x-jjtv-client-secret' not in request.headers
+        observed.append({'claims': claims, 'body': request.content, 'path': request.url.path})
+        return httpx.Response(200, json={'data': {'items': [], 'next_cursor': None}, 'request_id': 'delegated-http-request'})
+
+    monkeypatch.setattr(tenant_router, 'IndiaClient', lambda **kwargs: IndiaClient(
+        **kwargs, base_url='https://india.example/v1', transport=httpx.MockTransport(handler)))
+    return observed, key
+
+
+def delegated_role(context, permissions):
+    db = context['db']
+    role = TenantRole(id='delegated-'+uuid4().hex, tenant_id=INDIA_TENANT, name='Delegated test role',
+                      kind='business', permissions=permissions, version=1)
+    db.add(role); db.flush()
+    db.get(TenantMember, (INDIA_TENANT, context['operator'].id)).role_id = role.id
+    db.commit()
+    return role
+
+
+def test_delegated_india_works_after_each_jjtv_login_without_any_legacy_connection(context, india_delegated_http):
+    client, headers, db = context['client'], context['owner_headers'], context['db']
+    status = client.get(INDIA+'/session', headers=headers)
+    assert status.status_code == 200 and status.json()['auth_mode'] == 'jjtv_delegated'
+    assert status.json()['configured'] is True and status.json()['connected'] is True
+    assert status.json()['username'] == context['owner'].username
+    assert 'role' not in status.json() and 'expires_at' not in status.json()
+    assert india_delegated_http[0] == []  # Status does not perform an old staff login.
+    forged = {**headers, 'X-JJTV-Operator-Id': 'attacker', 'X-JJTV-Delegated-Proof': 'browser-forgery',
+              'X-JJTV-Client-Secret': 'browser-secret'}
+    assert client.get(INDIA+'/admin/series', headers=forged).status_code == 200
+    fresh = login(client, context['owner'])
+    assert client.get(INDIA+'/admin/series', headers=fresh).status_code == 200
+    claims = [item['claims'] for item in india_delegated_http[0]]
+    assert len(claims) == 2 and all(item['operator_id'] == str(context['owner'].id) for item in claims)
+    assert all(item['actor_scope'] == 'tenant' and item['tenant_id'] == INDIA_TENANT for item in claims)
+    assert claims[0]['jti'] != claims[1]['jti']
+    assert db.scalar(select(IndiaConnection)) is None
+
+
+@pytest.mark.parametrize('method,path,body', [('POST','/session',{'username':'unused','password':'never-forward'}),
+    ('POST','/session/refresh',{}), ('DELETE','/session',None)])
+def test_delegated_mode_retires_individual_password_connection_controls(context, india_delegated_http, method, path, body):
+    response = context['client'].request(method, INDIA+path, headers=context['owner_headers'], json=body)
+    assert response.status_code == 410 and response.json()['detail']['code'] == 'india_connection_not_required'
+    assert india_delegated_http[0] == [] and context['db'].scalar(select(IndiaConnection)) is None
+
+
+@pytest.mark.parametrize('configuration', ['missing-key', 'mistyped-flag'])
+def test_delegated_configuration_failure_cannot_fall_back_to_legacy_password(context, india_delegated_http, monkeypatch, configuration):
+    if configuration == 'missing-key': india_delegated_http[1].unlink()
+    else: monkeypatch.setenv('INDIA_JJTV_DELEGATED_ENABLED', 'ture')
+    status = context['client'].get(INDIA+'/session', headers=context['owner_headers'])
+    assert status.status_code == 200 and status.json()['auth_mode'] == 'jjtv_delegated'
+    assert status.json()['configured'] is False and status.json()['connected'] is False
+    denied = context['client'].get(INDIA+'/admin/series', headers=context['owner_headers'])
+    assert denied.status_code == 503 and denied.json()['detail']['code'] == 'india_delegated_unavailable'
+    assert india_delegated_http[0] == []
+
+
+def test_delegated_permissions_are_live_and_cannot_be_supplied_by_browser_or_other_tenant(context, india_delegated_http):
+    client = context['client']
+    assert client.get(INDIA+'/session', headers=context['operator_headers']).status_code == 403
+    role = delegated_role(context, ['dramas.view', 'dramas.edit'])
+    headers = context['operator_headers']
+    assert client.get(INDIA+'/admin/series', headers=headers).status_code == 200
+    assert india_delegated_http[0][-1]['claims']['permissions'] == ['dramas.edit', 'dramas.view']
+    before = len(india_delegated_http[0])
+    assert client.get(INDIA+'/admin/series', headers=scoped(headers, DEFAULT_TENANT)).status_code == 403
+    assert client.get(INDIA+'/admin/series', headers=context['platform_headers']).status_code == 403
+    role.permissions = []; role.version += 1; context['db'].commit()
+    assert client.get(INDIA+'/admin/series', headers=headers).status_code == 403
+    assert len(india_delegated_http[0]) == before
+
+
+def test_delegated_edit_and_pricing_permissions_are_checked_per_field_before_signing(context, india_delegated_http):
+    client, headers, db = context['client'], context['operator_headers'], context['db']
+    role = delegated_role(context, ['dramas.view', 'dramas.pricing'])
+    def patch(payload):
+        return client.patch(INDIA+'/admin/series/series_existing', json=payload,
+                            headers={**headers, 'Idempotency-Key': str(uuid4())})
+    assert patch({'version': 3, 'free_episode_count': 2}).status_code == 200
+    assert patch({'version': 3, 'title': 'Denied'}).status_code == 403
+    assert len(india_delegated_http[0]) == 1
+    assert india_delegated_http[0][0]['claims']['permissions'] == ['dramas.pricing', 'dramas.view']
+    role.permissions = ['dramas.view', 'dramas.edit']; role.version += 1; db.commit()
+    assert patch({'version': 3, 'title': 'Allowed'}).status_code == 200
+    assert patch({'version': 3, 'title': 'Mixed denied', 'member_window': True}).status_code == 403
+    assert len(india_delegated_http[0]) == 2
+    create = client.post(INDIA+'/admin/series', json={'title': 'Pricing denied', 'free_episode_count': 0},
+                         headers={**headers, 'Idempotency-Key': str(uuid4())})
+    assert create.status_code == 403 and len(india_delegated_http[0]) == 2
+
+
+def test_delegated_review_is_separate_from_publish_and_support_audits_real_platform_actor(context, india_delegated_http):
+    client, db = context['client'], context['db']
+    delegated_role(context, ['reviews.view', 'reviews.decide'])
+    headers = {**context['operator_headers'], 'Idempotency-Key': str(uuid4())}
+    assert client.post(INDIA+'/admin/series/series_existing/review', json={'version':3,'approved':True,'reason':'Review'}, headers=headers).status_code == 200
+    assert client.post(INDIA+'/admin/series/series_existing/publish', json={'version':3,'reason':'Publish'}, headers=headers).status_code == 403
+    assert len(india_delegated_http[0]) == 1
+    support = {**entered(context, INDIA_TENANT), 'Idempotency-Key': str(uuid4())}
+    result = client.post(INDIA+'/admin/series/series_existing/publish', json={'version':3,'reason':'Platform support'}, headers=support)
+    assert result.status_code == 200
+    proof = india_delegated_http[0][-1]['claims']
+    assert proof['operator_id'] == str(context['platform'].id) and proof['actor_scope'] == 'platform'
+    db.expire_all()
+    record = db.scalar(select(AuditLog).where(AuditLog.actor_id == context['platform'].id, AuditLog.action == 'india.publish'))
+    assert record.actor_scope == 'platform' and record.tenant_id == INDIA_TENANT
+    assert record.payload['auth_mode'] == 'jjtv_delegated'
+    assert record.payload['upstream_request_id'] == 'delegated-http-request'
+    assert 'upstream_actor_id' not in record.payload
