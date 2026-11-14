@@ -62,6 +62,75 @@ def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, default=str).encode()).digest()
 
 
+# These are the immutable additions made by revision a1114permissions, not the
+# current runtime module registry. Existing ownership and disabled modules must
+# never be rewritten merely because a capability was added to the application.
+CAPABILITY_REVISION = 'a1114permissions'
+CAPABILITY_KEYS = frozenset({'login_settings','stripe','coin_packs','coins','attribution','support'})
+
+
+def _snapshot_rows(snapshot, field, keys, table=None):
+    rows = snapshot.get(field)
+    if not isinstance(rows,list) or any(not isinstance(row,dict) for row in rows):
+        raise RuntimeError('Incomplete capability preservation evidence; API remains stopped')
+    try:
+        indexed = {tuple(row[key] for key in keys):row for row in rows}
+    except (KeyError,TypeError):
+        raise RuntimeError('Invalid capability preservation evidence; API remains stopped') from None
+    if len(indexed)!=len(rows) or (table is not None and snapshot['table_counts'].get(table)!=len(rows)):
+        raise RuntimeError('Incomplete capability preservation evidence; API remains stopped')
+    return indexed
+
+
+def _verify_capability_append(old, new):
+    tables = {'legacy_business_bindings','tenant_modules'}.intersection(old['table_counts'])
+    if not tables:
+        return set()  # These tables did not exist before the identity migration.
+    tenants = _snapshot_rows(old,'tenants',('id',))
+    current_tenants = _snapshot_rows(new,'tenants',('id',))
+    if tenants!=current_tenants or tenants.get(('jjtv',),{}).get('kind')!='native':
+        raise RuntimeError('Tenant identities changed during capability migration; API remains stopped')
+    # Permit the known additions only when this upgrade actually crosses their
+    # migration. A normal head-to-head deployment cannot silently add modules.
+    revisions = (old.get('revisions'),new.get('revisions'))
+    if any(not isinstance(value,list) or len(value)!=1 for value in revisions):
+        raise RuntimeError('Cannot verify capability migration revisions; API remains stopped')
+    from alembic.script import ScriptDirectory
+    backend = Path(__file__).resolve().parents[1]
+    config = Config(str(backend/'alembic.ini'))
+    config.set_main_option('script_location',str(backend/'alembic'))
+    try:
+        crossed = CAPABILITY_REVISION in {revision.revision for revision in
+                    ScriptDirectory.from_config(config).iterate_revisions(revisions[1][0],revisions[0][0])}
+    except Exception:
+        raise RuntimeError('Cannot verify capability migration revisions; API remains stopped') from None
+    for table,field,keys in (('legacy_business_bindings','legacy_bindings',('module_key',)),
+                             ('tenant_modules','modules',('tenant_id','module_key'))):
+        if table not in tables:
+            continue
+        previous = _snapshot_rows(old,field,keys,table)
+        current = _snapshot_rows(new,field,keys,table)
+        if any(current.get(key)!=row for key,row in previous.items()):
+            raise RuntimeError('Existing '+table+' rows changed; API remains stopped')
+        if table=='legacy_business_bindings':
+            expected = {(key,) for key in CAPABILITY_KEYS} - previous.keys() if crossed else set()
+        else:
+            expected = {(tenant[0],key) for tenant in tenants for key in CAPABILITY_KEYS} - previous.keys() if crossed else set()
+        if current.keys()-previous.keys()!=expected:
+            raise RuntimeError('Unexpected '+table+' additions; API remains stopped')
+        for key in expected:
+            row = current[key]
+            if table=='legacy_business_bindings':
+                valid = (set(row)=={'module_key','tenant_id','created_at'}
+                         and row['tenant_id']=='jjtv' and row['created_at'] is not None)
+            else:
+                valid = (set(row)=={'tenant_id','module_key','enabled'}
+                         and row['enabled'] is (key[0]=='jjtv'))
+            if not valid:
+                raise RuntimeError('Invalid '+table+' capability ownership; API remains stopped')
+    return tables
+
+
 def verify_preserved(before, after):
     old, accounts, history = before
     new, new_accounts, new_history = after
@@ -69,8 +138,9 @@ def verify_preserved(before, after):
         raise RuntimeError('Original account identity, password or status changed; API remains stopped')
     if any(new_history.get(key) != value for key,value in history.items()):
         raise RuntimeError('Historical audit data changed; API remains stopped')
+    capability_tables = _verify_capability_append(old,new)
     for table,count in old['table_counts'].items():
-        if table not in CHANGING_TABLES and new['table_counts'].get(table) != count:
+        if table not in CHANGING_TABLES and table not in capability_tables and new['table_counts'].get(table) != count:
             raise RuntimeError('Unexpected business row count change in '+table+'; API remains stopped')
     if new['table_counts'].get('admin_users',0) < len(accounts):
         raise RuntimeError('Original account count decreased; API remains stopped')
