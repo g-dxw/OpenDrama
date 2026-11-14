@@ -12,7 +12,7 @@
 
 新模式默认关闭。JJTV 设置 `INDIA_JJTV_DELEGATED_ENABLED=true`，`INDIA_JJTV_DELEGATED_SECRET_FILE` 指向受保护的独立密钥文件。服务器现有只读 `/run/secrets/india-client` 挂载可以承载该文件，例如 `/run/secrets/india-client/delegated.key`。配置只放在受控运行环境，不提交密钥、真实环境文件或浏览器令牌。
 
-India API 必须先部署匹配的受信委托 provider，使用配对的独立密钥和启用配置。不能只发布前端或只开启 JJTV 开关。此密钥不得复用旧站账号密码、MFA 种子、支付密钥、`TENANT_CONNECTION_KEY` 或专用密码 provider 的客户端密钥。JJTV 只允许固定 India 来源和已有内容路由，不提供通用代理。
+India API 必须先部署匹配的受信委托 provider，设置 `JJTV_DELEGATED_ENABLED=true` 和 `JJTV_DELEGATED_SECRET_FILE`，使用配对的独立密钥。不能只发布前端或只开启 JJTV 开关。此密钥不得复用旧站账号密码、MFA 种子、支付密钥、`TENANT_CONNECTION_KEY` 或专用密码 provider 的客户端密钥。JJTV 只允许固定 India 来源和已有内容路由，不提供通用代理。
 
 委托开关开启但缺少有效配置时，页面显示服务配置错误，接口拒绝操作。不会自动改用共享旧站员工身份。关闭开关时仍可使用原专用密码连接模式；旧站直接登录的认证规则保持兼容。
 
