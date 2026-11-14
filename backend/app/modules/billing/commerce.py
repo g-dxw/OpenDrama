@@ -310,7 +310,9 @@ def _checkout_remote_state(db,order):
         order.checkout_context={**context,'session_complete':True,'payment_status':remote.get('payment_status')};db.commit()
         raise checkout_conflict(order,'checkout_payment_pending','Payment is processing. Wait for the first invoice before starting another subscription.','wait_for_payment')
     if remote.get('status')=='expired':
-        order.status='failed';order.checkout_context={**context,'session_expired':True};db.commit();return 'expired'
+        # Keep the wallet mutex until a replacement reservation is persisted.
+        # Callers returning an expiry response commit the terminal fact instead.
+        order.status='failed';order.checkout_context={**context,'session_expired':True};db.flush();return 'expired'
     if remote.get('status')!='open':
         raise checkout_conflict(order,'checkout_recovery_required','Stripe could not confirm whether this checkout is still payable. Contact support.','contact_support')
     return 'open'
@@ -331,7 +333,9 @@ def checkout(db,*,user_id,email,product_type,code,idempotency_key,account_code=N
             if order.status=='failed' and (order.checkout_context or {}).get('session_expired'):raise checkout_conflict(order,'checkout_expired','This checkout has expired. Start a new purchase.','new_purchase')
             if not _checkout_pending(db,order):raise checkout_conflict(order,'checkout_already_paid','This order was already paid. View your orders.','view_orders')
             state=_checkout_remote_state(db,order)
-            if state=='expired':raise checkout_conflict(order,'checkout_expired','This checkout has expired. Start a new purchase.','new_purchase')
+            if state=='expired':
+                db.commit()
+                raise checkout_conflict(order,'checkout_expired','This checkout has expired. Start a new purchase.','new_purchase')
             if state=='open':return _checkout_result(order,True)
         elif order.checkout_url:return _checkout_result(order,True)
         account=get_account(db,order.account_code);snapshot=order.product_snapshot
@@ -344,8 +348,7 @@ def checkout(db,*,user_id,email,product_type,code,idempotency_key,account_code=N
             for candidate in pending:
                 if not _checkout_pending(db,candidate):continue
                 state=_checkout_remote_state(db,candidate)
-                if state=='expired':
-                    wallet_lock(db,user_id);continue
+                if state=='expired':continue
                 if candidate.product_snapshot.get('code')!=code or (account_code and candidate.account_code!=account_code):
                     raise checkout_conflict(candidate,'pending_subscription_checkout','Finish or cancel your existing checkout before choosing another subscription.','resume_or_cancel',state=='open')
                 order=candidate;account=get_account(db,order.account_code);snapshot=order.product_snapshot;reused=True
@@ -370,7 +373,9 @@ def checkout(db,*,user_id,email,product_type,code,idempotency_key,account_code=N
     order=db.get(Order,order.id,populate_existing=True)
     if order.billing_mode=='subscription':
         state=_checkout_remote_state(db,order)
-        if state=='expired':raise checkout_conflict(order,'checkout_expired','This checkout has expired. Start a new purchase.','new_purchase')
+        if state=='expired':
+            db.commit()
+            raise checkout_conflict(order,'checkout_expired','This checkout has expired. Start a new purchase.','new_purchase')
         if state=='open':return _checkout_result(order,True)
     elif order.checkout_url:return _checkout_result(order,True)
     context=(order.checkout_context or {}).get('request')
@@ -399,7 +404,8 @@ def cancel_checkout(db,user_id,order_no):
         remote=stripe_request(db,order.account_code,'/checkout/sessions/'+urllib.parse.quote(order.external_txn_id,safe='')+'/expire',{},idempotency_key='expire:'+order.order_no)
         if remote.get('id')!=order.external_txn_id or remote.get('status')!='expired':
             raise checkout_conflict(order,'checkout_payment_pending','Stripe has not confirmed cancellation. Wait for payment status before retrying.','wait_for_payment')
-        order.status='failed';order.checkout_context={**(order.checkout_context or {}),'session_expired':True};db.commit()
+        order.status='failed';order.checkout_context={**(order.checkout_context or {}),'session_expired':True}
+    db.commit()
     return dict(order_no=order.order_no,status='failed',canceled=True)
 
 def credit_order(db,order,wallet):

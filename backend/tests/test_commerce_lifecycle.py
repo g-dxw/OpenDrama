@@ -277,3 +277,50 @@ def test_historical_failed_status_without_expiry_proof_cannot_release_pending_su
     with pytest.raises(BillingError) as error:checkout(session,user)
     assert error.value.detail['code']=='checkout_recovery_required'
     assert session.scalar(select(func.count()).select_from(Order))==1
+
+
+def test_expired_checkout_retains_wallet_mutex_until_replacement_is_reserved(session,commercial,engine,monkeypatch):
+    """A tab waiting on an expired Session must not enter the commit/relock gap."""
+    from threading import Event
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+    user,_,_=commercial;old=subscription_order(session,user)
+    user_id,email,old_id,old_session=user.id,user.email,old.id,old.external_txn_id
+    original_remote=c.stripe_request;original_state=c._checkout_remote_state
+    expired_checked=Event();allow_replacement=Event()
+    def remote(db,code,path,data=None,method='POST',idempotency_key=None):
+        if path=='/checkout/sessions/'+old_session:
+            return dict(id=old_session,status='expired',payment_status='unpaid')
+        return original_remote(db,code,path,data,method,idempotency_key)
+    def paused_expiry(db,order):
+        state=original_state(db,order)
+        if order.id==old_id and state=='expired':
+            expired_checked.set()
+            assert allow_replacement.wait(10),'competing checkout did not complete its lock probe'
+        return state
+    monkeypatch.setattr(c,'stripe_request',remote)
+    monkeypatch.setattr(c,'_checkout_remote_state',paused_expiry)
+    factory=sessionmaker(bind=engine,expire_on_commit=False)
+    def replacement():
+        with factory() as db:
+            return c.checkout(db,user_id=user_id,email=email,product_type='membership',code='monthly',idempotency_key='replacement-tab-one')
+    def competing_tab():
+        with factory() as db:
+            db.execute(text("SET LOCAL lock_timeout='250ms'"))
+            try:
+                return c.checkout(db,user_id=user_id,email=email,product_type='membership',code='monthly',idempotency_key='replacement-tab-two')
+            except DBAPIError as error:
+                assert (getattr(error.orig,'sqlstate',None) or getattr(error.orig,'pgcode',None))=='55P03'
+                db.rollback();return 'wallet-locked'
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first=pool.submit(replacement)
+        assert expired_checked.wait(10),'expired checkout was not inspected'
+        try:
+            second=pool.submit(competing_tab)
+            assert second.result(timeout=10)=='wallet-locked'
+        finally:allow_replacement.set()
+        result=first.result(timeout=10)
+    assert result['order_no']!=old.order_no
+    session.expire_all()
+    assert session.get(Order,old_id).status=='failed'
+    assert session.scalar(select(func.count()).select_from(Order).where(Order.status=='created'))==1
