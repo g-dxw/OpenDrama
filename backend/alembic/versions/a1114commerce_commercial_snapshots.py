@@ -32,6 +32,31 @@ def upgrade():
     op.execute("INSERT INTO stripe_accounts(code,name,status,is_default,livemode) VALUES ('env','Original Stripe account','active',true,false)")
 
 def downgrade():
+    # These records have no lossless representation in the previous schema.
+    # Check before any DROP and retain the locks through transactional DDL, so
+    # a payment/refund cannot write new evidence between the check and rollback.
+    if op.get_context().as_sql:
+        raise RuntimeError("Cannot downgrade a1114commerce offline: commercial data preflight requires a database connection")
+    op.execute("LOCK TABLE orders, subscriptions, coin_sources, coin_allocations, membership_grants, commerce_settlements, commerce_refunds IN ACCESS EXCLUSIVE MODE")
+    commercial_data = op.get_bind().scalar(sa.text("""
+        SELECT EXISTS (SELECT 1 FROM membership_grants)
+            OR EXISTS (SELECT 1 FROM commerce_settlements)
+            OR EXISTS (SELECT 1 FROM commerce_refunds)
+            OR EXISTS (SELECT 1 FROM coin_allocations)
+            OR EXISTS (SELECT 1 FROM coin_sources WHERE order_id IS NOT NULL OR reserved > 0)
+            OR EXISTS (SELECT 1 FROM subscriptions WHERE managed_commerce OR account_code <> 'env')
+            OR EXISTS (
+                SELECT 1 FROM orders
+                WHERE status NOT IN ('created', 'failed') AND (
+                    plan_version_id IS NULL OR product_type <> 'membership'
+                    OR product_snapshot <> '{}'::jsonb OR account_code <> 'env'
+                    OR checkout_key IS NOT NULL OR payment_intent_id IS NOT NULL
+                    OR invoice_id IS NOT NULL OR subscription_ref IS NOT NULL
+                )
+            )
+    """))
+    if commercial_data:
+        raise RuntimeError("Cannot downgrade a1114commerce: commercial entitlements, payment or refund records would be lost; preserve this schema and reconcile them before rollback")
     for name in ('commerce_refunds','commerce_settlements','membership_grants','coin_allocations','coin_sources','stripe_price_bindings','stripe_accounts','coin_pack_versions','coin_packs'):op.drop_table(name)
     for name in ('attribution_pid','subscription_ref','invoice_id','payment_intent_id','checkout_key','checkout_url','account_code','product_snapshot','product_type'):op.drop_column('orders',name)
     # Do not silently destroy paid coin orders during a schema rollback.
