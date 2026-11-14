@@ -94,6 +94,28 @@ const page = await browser.newPage(),
   calls = [],
   checks = [];
 page.on("pageerror", (e) => errors.push(e.message));
+await page.evaluateOnNewDocument(() => {
+  // Keep the parallel patch counter scoped to its own document across reloads.
+  const tracker = { pending: 0 };
+  window.__jjtvFetchTracker = tracker;
+  window.__jjtvPendingFetches = 0;
+  const originalFetch = window.fetch.bind(window);
+  window.fetch = async (...args) => {
+    tracker.pending++;
+    if (window.__jjtvFetchTracker === tracker)
+      window.__jjtvPendingFetches = tracker.pending;
+    try {
+      const response = await originalFetch(...args);
+      await response.clone().arrayBuffer();
+      return response;
+    } finally {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      tracker.pending--;
+      if (window.__jjtvFetchTracker === tracker)
+        window.__jjtvPendingFetches = tracker.pending;
+    }
+  };
+});
 let activeMember = false,
   playableFirst = false,
   media = Buffer.alloc(0),
@@ -929,6 +951,7 @@ try {
     sessionStorage.setItem("jjtv_h5_checkout_order", "NEW-OWNER-ORDER"),
   );
   await settleHeld(abandoned);
+  await page.waitForFunction(() => window.__jjtvPendingFetches === 0);
   assert(new URL(page.url()).hash.startsWith("#account/"));
   assert.equal(
     await page.evaluate(() => sessionStorage.getItem("jjtv_h5_checkout_order")),
@@ -950,6 +973,7 @@ try {
     sessionStorage.setItem("jjtv_h5_checkout_order", "OTHER-MOBILE-ORDER");
   });
   await settleHeld(changedOwner);
+  await page.waitForFunction(() => window.__jjtvPendingFetches === 0);
   assert.equal(new URL(page.url()).hash, "#price");
   assert.equal(
     await page.evaluate(() => sessionStorage.getItem("jjtv_h5_checkout_order")),
@@ -981,6 +1005,7 @@ try {
       call.path === "/v1/me" && call.headers["x-device-id"]?.startsWith("h5-"),
   ).length;
   await settleHeld(cancellation);
+  await page.waitForFunction(() => window.__jjtvPendingFetches === 0);
   assert.equal(
     calls.filter(
       (call) =>
