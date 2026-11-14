@@ -16,6 +16,7 @@ import {
 } from "./consumer-api";
 import { useAuth } from "./auth";
 import { Empty, Failure, Icon, Loading, Modal } from "./components";
+import "./player.css";
 export function Watch({
   dramaId,
   episodeId,
@@ -28,9 +29,12 @@ export function Watch({
     [selected, setSelected] = useState<number | undefined>(episodeId),
     [error, setError] = useState(""),
     [unlockOpen, setUnlockOpen] = useState(false),
+    [commentsOpen, setCommentsOpen] = useState(false),
+    [shareOpen, setShareOpen] = useState(false),
+    [copied, setCopied] = useState(false),
+    [expanded, setExpanded] = useState(false),
     [busy, setBusy] = useState(false),
     [revision, setRevision] = useState(0),
-    [tab, setTab] = useState("episodes"),
     [liked, setLiked] = useState(false),
     [favorited, setFavorited] = useState(false);
   const unlockKeys = useRef(new Map<number, string>());
@@ -63,7 +67,7 @@ export function Watch({
     return () => {
       loadRequest.current++;
     };
-  }, [dramaId, status, revision]);
+  }, [dramaId, status, user?.id, revision]);
   const episode = data?.items.find((e) => e.id === selected);
   const isMembershipOnly = (item: PlayEpisode) =>
     Boolean(item.membership_required) ||
@@ -72,8 +76,17 @@ export function Watch({
       data?.drama.coin_price_per_episode ??
       0) <= 0;
   const membershipOnly = episode ? isMembershipOnly(episode) : false;
+  const coinPrice =
+    episode?.coin_price ??
+    episode?.unlock?.coin_price ??
+    data?.drama.coin_price_per_episode ??
+    0;
   const next =
     data?.items[(data?.items.findIndex((e) => e.id === selected) ?? -1) + 1];
+  const membershipLink =
+    "#premium?drama=" + dramaId + "&episode=" + (episode?.id || "");
+  const coinsLink =
+    "#coins?drama=" + dramaId + "&episode=" + (episode?.id || "");
   function select(item: PlayEpisode) {
     setSelected(item.id);
     if (item.locked && !isMembershipOnly(item))
@@ -128,66 +141,57 @@ export function Watch({
   }
   if (!data)
     return error ? <Failure message={error} retry={load} /> : <Loading />;
+  const shareUrl = new URL(window.location.href);
+  shareUrl.search = "";
+  shareUrl.hash =
+    "watch/" + dramaId + (episode ? "?episode=" + episode.id : "");
   return (
     <div className="watch-page page-content">
-      <a className="back-link" href="#browse">
-        ← Back to dramas
-      </a>
       <div className="watch-layout">
-        <section className="watch-main">
-          {episode ? (
-            <div className="video-frame">
-              {episode.locked ? (
+        <section className="watch-main" aria-label="Drama player">
+          <div className="video-frame">
+            <span className="player-brand" aria-hidden="true">
+              JJ
+            </span>
+            {episode ? (
+              episode.locked ? (
                 <div className="locked-player">
-                  {data.drama.cover_url && (
-                    <img src={data.drama.cover_url} alt="" />
-                  )}
                   <div className="lock-copy">
-                    <Icon name="lock" size={36} />
-                    <h2>The story continues</h2>
-                    {membershipOnly ? (
-                      <>
-                        <p>This episode requires a membership.</p>
-                        <a
-                          className="button primary"
-                          href={
-                            "#premium?drama=" +
-                            dramaId +
-                            "&episode=" +
-                            episode.id
-                          }
-                        >
-                          See memberships
-                        </a>
-                      </>
-                    ) : (
-                      <>
-                        <p>
-                          Unlock episode {episode.episode_number} for{" "}
-                          {episode.coin_price ??
-                            episode.unlock?.coin_price ??
-                            data.drama.coin_price_per_episode}{" "}
-                          coins.
-                        </p>
-                        <button
-                          className="button primary"
-                          onClick={() => requireAuth(() => setUnlockOpen(true))}
-                        >
-                          {user ? "Unlock episode" : "Sign in to continue"}
-                        </button>
-                      </>
+                    <span className="player-lock-icon">
+                      <Icon name="lock" size={24} />
+                    </span>
+                    <h2>
+                      {membershipOnly ? "Members only" : "The story continues"}
+                    </h2>
+                    <p>
+                      {membershipOnly
+                        ? "This episode requires a membership."
+                        : "Unlock episode " +
+                          episode.episode_number +
+                          " to continue watching."}
+                    </p>
+                    {coinPrice > 0 && (
+                      <p className="player-lock-price">
+                        <strong>{coinPrice} coins</strong> / episode
+                      </p>
                     )}
-                    <a
-                      className="button secondary"
-                      href={
-                        "#premium?drama=" +
-                        dramaId +
-                        "&episode=" +
-                        (episode?.id || "")
-                      }
-                    >
-                      Explore membership
-                    </a>
+                    {membershipOnly ? (
+                      <a className="button primary" href={membershipLink}>
+                        See memberships
+                      </a>
+                    ) : (
+                      <button
+                        className="button primary"
+                        onClick={() => requireAuth(() => setUnlockOpen(true))}
+                      >
+                        {user ? "Unlock episode" : "Sign in to continue"}
+                      </button>
+                    )}
+                    <p className="player-lock-note">
+                      {membershipOnly
+                        ? "Membership access and any displayed episode price apply. Review the plan before buying."
+                        : "Unlock this episode once and keep watching from your account."}
+                    </p>
                   </div>
                 </div>
               ) : (
@@ -200,48 +204,49 @@ export function Watch({
                     if (next) setSelected(next.id);
                   }}
                 />
-              )}
-            </div>
-          ) : (
-            <Empty message="No episodes are available yet." />
-          )}
-          <div className="watch-heading">
-            <div>
-              <span className="eyebrow">
-                {episode ? "Episode " + episode.episode_number + " · " : ""}
-                {data.items.length} episodes
-              </span>
-              <h1>{data.drama.title}</h1>
-            </div>
-            <div className="reaction-actions">
-              <button
-                className={"button secondary " + (liked ? "selected" : "")}
-                disabled={busy}
-                aria-pressed={liked}
-                onClick={() =>
-                  requireAuth(() => {
-                    void react("like");
-                  })
-                }
-              >
-                <Icon name="heart" />
-                Like
-              </button>
-              <button
-                className={"button secondary " + (favorited ? "selected" : "")}
-                disabled={busy}
-                aria-pressed={favorited}
-                onClick={() =>
-                  requireAuth(() => {
-                    void react("favorite");
-                  })
-                }
-              >
-                <Icon name="check" />
-                My list
-              </button>
-            </div>
+              )
+            ) : (
+              <Empty message="No episodes are available yet." />
+            )}
           </div>
+        </section>
+        <aside
+          className="watch-sidebar"
+          aria-label="Drama details and episodes"
+        >
+          <nav className="watch-breadcrumb" aria-label="Breadcrumb">
+            <a href="#home">Home</a>
+            <span>/</span>
+            <a href="#browse">Dramas</a>
+            <span>/</span>
+            <span>{episode ? "EP " + episode.episode_number : "Details"}</span>
+          </nav>
+          <h1>{data.drama.title}</h1>
+          <p className="watch-episode-name">
+            {episode
+              ? "EP " +
+                episode.episode_number +
+                " · " +
+                (episode.title || "Episode " + episode.episode_number)
+              : data.items.length + " episodes"}
+          </p>
+          <p className="watch-side-label">Synopsis</p>
+          <p
+            id="drama-synopsis"
+            className={"synopsis " + (expanded ? "expanded" : "clamped")}
+          >
+            {data.drama.synopsis || "A new story is on its way."}
+          </p>
+          {data.drama.synopsis && (
+            <button
+              className="synopsis-more"
+              aria-expanded={expanded}
+              aria-controls="drama-synopsis"
+              onClick={() => setExpanded(!expanded)}
+            >
+              {expanded ? "less" : "more"}
+            </button>
+          )}
           <div className="tags">
             {data.drama.tags.map((tag) => (
               <a href={"#browse?tag=" + encodeURIComponent(tag)} key={tag}>
@@ -249,110 +254,207 @@ export function Watch({
               </a>
             ))}
           </div>
-          <p className="synopsis">{data.drama.synopsis}</p>
-          {error && <Failure message={error} />}{" "}
-          {episode && <Comments key={episode.id} episodeId={episode.id} />}
-        </section>
-        <aside className="watch-sidebar">
-          <div className="segmented">
+          <div className="reaction-actions">
             <button
-              aria-pressed={tab === "episodes"}
-              onClick={() => setTab("episodes")}
+              className={"watch-action " + (liked ? "selected" : "")}
+              disabled={busy}
+              aria-pressed={liked}
+              aria-label="Like"
+              onClick={() =>
+                requireAuth(() => {
+                  void react("like");
+                })
+              }
             >
-              Episodes
+              <Icon name="heart" />
+              <span>
+                {Math.max(
+                  0,
+                  data.drama.like_count +
+                    Number(liked) -
+                    Number(data.drama.liked),
+                ).toLocaleString()}
+              </span>
             </button>
             <button
-              aria-pressed={tab === "details"}
-              onClick={() => setTab("details")}
+              className={"watch-action " + (favorited ? "selected" : "")}
+              disabled={busy}
+              aria-pressed={favorited}
+              aria-label="My list"
+              onClick={() =>
+                requireAuth(() => {
+                  void react("favorite");
+                })
+              }
             >
-              About
+              <Icon name="star" />
+              <span>{favorited ? "Saved" : "Favorite"}</span>
+            </button>
+            <button
+              className="watch-action"
+              disabled={!episode}
+              onClick={() => setCommentsOpen(true)}
+            >
+              <Icon name="message" />
+              <span>Comment</span>
+            </button>
+            <button
+              className="watch-action"
+              onClick={() => {
+                setCopied(false);
+                setShareOpen(true);
+              }}
+            >
+              <svg
+                width="20"
+                height="20"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.7"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M12 16V3m-4 4 4-4 4 4M5 12v8h14v-8" />
+              </svg>
+              <span>Share</span>
             </button>
           </div>
-          {tab === "episodes" ? (
-            <>
-              <div className="episode-legend">
-                <span>Choose an episode</span>
-                <span>
-                  <Icon name="lock" size={13} />
-                  Locked
-                </span>
+          <div className="watch-episodes-heading">
+            <h2>Episodes</h2>
+            <span>All {data.items.length} episodes</span>
+          </div>
+          <div className="episode-legend">
+            <span>
+              <Icon name="lock" size={11} />
+              {data.items.filter((item) => item.locked).length} locked
+            </span>
+            <span>
+              {data.entitlement.member
+                ? "Membership active"
+                : data.entitlement.unlocked_episode_ids.length + " unlocked"}
+            </span>
+          </div>
+          <div className="episode-grid">
+            {data.items.map((item) => (
+              <button
+                key={item.id}
+                className={
+                  "episode-button " +
+                  (item.id === selected ? "active " : "") +
+                  (item.locked ? "locked" : "")
+                }
+                aria-label={
+                  "Episode " +
+                  item.episode_number +
+                  (item.locked ? ", locked" : "")
+                }
+                aria-current={item.id === selected ? "true" : undefined}
+                onClick={() => select(item)}
+              >
+                {item.locked && <Icon name="lock" size={9} />}
+                <span>{item.episode_number}</span>
+                {item.completed && (
+                  <span className="episode-done">
+                    <Icon name="check" size={9} />
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+          {episode?.locked ? (
+            <div className="sidebar-upsell">
+              <div>
+                <strong>
+                  {membershipOnly ? "Members only" : "Unlock this episode"}
+                </strong>
+                <p>
+                  {membershipOnly
+                    ? "Choose a membership to access this episode."
+                    : coinPrice +
+                      " coins · Your balance: " +
+                      (user?.coins ?? 0) +
+                      " coins"}
+                </p>
               </div>
-              <div className="episode-grid">
-                {data.items.map((item) => (
-                  <button
-                    key={item.id}
-                    className={
-                      "episode-button " + (item.id === selected ? "active" : "")
-                    }
-                    aria-label={
-                      "Episode " +
-                      item.episode_number +
-                      (item.locked ? ", locked" : "")
-                    }
-                    aria-current={item.id === selected ? "true" : undefined}
-                    onClick={() => select(item)}
-                  >
-                    {item.locked && <Icon name="lock" size={12} />}
-                    <span>{item.episode_number}</span>
-                    {item.completed && (
-                      <span className="episode-done">
-                        <Icon name="check" size={10} />
-                      </span>
-                    )}
-                  </button>
-                ))}
-              </div>
-              <p className="muted small">
-                {data.entitlement.member
-                  ? "Membership active"
-                  : data.entitlement.unlocked_episode_ids.length +
-                    " episodes unlocked"}
-              </p>
-            </>
+              {membershipOnly ? (
+                <a className="button primary" href={membershipLink}>
+                  See memberships
+                </a>
+              ) : (
+                <button
+                  className="button primary"
+                  onClick={() => requireAuth(() => setUnlockOpen(true))}
+                >
+                  Unlock episode
+                </button>
+              )}
+            </div>
           ) : (
-            <div className="details-copy">
-              <h2>{data.drama.title}</h2>
-              <p>{data.drama.synopsis}</p>
-              <p>{data.drama.play_count.toLocaleString()} views</p>
-              <p>{data.drama.free_episode_count} free episodes</p>
-              <p>Paid episode prices are displayed before you unlock.</p>
+            <div className="watch-access">
+              <span>
+                {data.drama.play_count.toLocaleString()} views ·{" "}
+                {Math.min(data.drama.free_episode_count, data.items.length)}{" "}
+                free episodes
+              </span>
+              <a href={membershipLink}>Membership</a>
+              <a href={coinsLink}>Get coins</a>
             </div>
           )}
-          <div className="sidebar-upsell">
-            <Icon name="crown" size={28} />
-            <h3>One more episode?</h3>
-            <p>Find your next membership or top up your coins.</p>
-            <a
-              className="button primary"
-              href={
-                "#premium?drama=" + dramaId + "&episode=" + (episode?.id || "")
-              }
-            >
-              See memberships
-            </a>
-            <a
-              className="text-button"
-              href={
-                "#coins?drama=" + dramaId + "&episode=" + (episode?.id || "")
-              }
-            >
-              Get coins
-            </a>
-          </div>
+          {error && <Failure message={error} />}
         </aside>
       </div>
+      {commentsOpen && episode && (
+        <Modal
+          title="Comments"
+          className="watch-comments-modal"
+          onClose={() => setCommentsOpen(false)}
+        >
+          <Comments key={episode.id} episodeId={episode.id} />
+        </Modal>
+      )}
+      {shareOpen && (
+        <Modal
+          title="Share this drama"
+          className="watch-share-modal"
+          onClose={() => setShareOpen(false)}
+        >
+          <label className="share-link-label">
+            Drama link
+            <input
+              aria-label="Drama link"
+              readOnly
+              value={shareUrl.toString()}
+            />
+          </label>
+          <button
+            className="button primary full-width"
+            onClick={async () => {
+              try {
+                await navigator.clipboard.writeText(shareUrl.toString());
+                setCopied(true);
+              } catch {
+                setCopied(false);
+              }
+            }}
+          >
+            {copied ? "Link copied" : "Copy link"}
+          </button>
+          <p className="muted small" role="status">
+            {copied
+              ? "The drama link is ready to share."
+              : "You can also select and copy the link above."}
+          </p>
+        </Modal>
+      )}
       {unlockOpen && episode && !membershipOnly && (
         <Modal
           title={"Unlock episode " + episode.episode_number}
           onClose={() => setUnlockOpen(false)}
         >
           <p>
-            Spend{" "}
-            <strong>
-              {episode.unlock?.coin_price ?? data.drama.coin_price_per_episode}{" "}
-              coins
-            </strong>{" "}
-            to unlock this episode.
+            Spend <strong>{coinPrice} coins</strong> to unlock this episode.
           </p>
           <p className="muted">Your balance: {user?.coins ?? 0} coins</p>
           {error && (
@@ -360,8 +462,7 @@ export function Watch({
               {error}
             </p>
           )}
-          {(user?.coins ?? 0) >=
-          (episode.unlock?.coin_price ?? data.drama.coin_price_per_episode) ? (
+          {(user?.coins ?? 0) >= coinPrice ? (
             <button
               className="button primary full-width"
               disabled={busy}
@@ -372,9 +473,7 @@ export function Watch({
           ) : (
             <a
               className="button primary full-width"
-              href={
-                "#coins?drama=" + dramaId + "&episode=" + (episode?.id || "")
-              }
+              href={coinsLink}
               onClick={() => setUnlockOpen(false)}
             >
               Get more coins
@@ -382,9 +481,7 @@ export function Watch({
           )}
           <a
             className="text-button"
-            href={
-              "#premium?drama=" + dramaId + "&episode=" + (episode?.id || "")
-            }
+            href={membershipLink}
             onClick={() => setUnlockOpen(false)}
           >
             See membership options
@@ -394,7 +491,7 @@ export function Watch({
     </div>
   );
 }
-function Video({
+export function Video({
   dramaId,
   episode,
   onFinished,
