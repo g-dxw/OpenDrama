@@ -264,24 +264,70 @@ export function ForYou() {
   const [items,setItems] = useState<FeedItem[]>([]), [cursor,setCursor] = useState<string|null>(null), [hasMore,setHasMore] = useState(true), [loading,setLoading] = useState(false), [error,setError] = useState("");
   const [active,setActive] = useState(0), [muted,setMuted] = useState(true), [settingsOpen,setSettingsOpen] = useState(false), [busy,setBusy] = useState<number|null>(null), [notice,setNotice] = useState(""), [comments,setComments] = useState<FeedItem|null>(null);
   const scroll=useRef<HTMLDivElement>(null), sequence=useRef(0), pending=useRef(false), owner=useRef(user?.id);
+  const completedReactions = useRef<{
+    owner: number | undefined;
+    revision: number;
+    byDrama: Map<number, {liked: boolean; revision: number}>;
+  }>({owner: user?.id, revision: 0, byDrama: new Map()});
   owner.current=user?.id;
+  if (completedReactions.current.owner !== user?.id) {
+    completedReactions.current = {owner: user?.id, revision: 0, byDrama: new Map()};
+  }
   async function load(reset=false) {
     if(pending.current)return;
+    const actor = owner.current;
+    const readRevision = completedReactions.current.revision;
     pending.current=true;const current=++sequence.current;setLoading(true);setError("");
     try {
       const result=await get<FeedPage>("/v1/feed?limit=6"+(!reset&&cursor?"&cursor="+encodeURIComponent(cursor):""));
-      if(current!==sequence.current)return;
-      setItems((previous)=>{const next=reset?[]:[...previous];for(const item of result.items)if(!next.some((old)=>(old.item_id||old.drama.id+":"+old.episode.id)===(item.item_id||item.drama.id+":"+item.episode.id)))next.push(item);return next;});
+      if(current!==sequence.current || owner.current!==actor)return;
+      setItems((previous)=>{
+        if(current!==sequence.current || owner.current!==actor)return previous;
+        // A completed reaction can overtake this read, including the first
+        // authenticated feed loaded while a guest action is being replayed.
+        // Reads begun after the reaction completed can trust the server again.
+        const reconcile = (row: FeedItem): FeedItem => {
+          const latest = completedReactions.current.byDrama.get(row.drama.id);
+          if(!latest || latest.revision<=readRevision)return row;
+          const delta = row.drama.liked===latest.liked ? 0 : latest.liked ? 1 : -1;
+          return {...row,drama:{...row.drama,liked:latest.liked,like_count:Math.max(0,row.drama.like_count+delta)}};
+        };
+        const next=reset?[]:previous.map(reconcile);
+        for(const raw of result.items){
+          const item=reconcile(raw);
+          if(!next.some((old)=>(old.item_id||old.drama.id+":"+old.episode.id)===(item.item_id||item.drama.id+":"+item.episode.id)))next.push(item);
+        }
+        return next;
+      });
       setCursor(result.next_cursor);setHasMore(result.has_more);
-    } catch(e) {if(current===sequence.current)setError(errorMessage(e));}
-    finally {if(current===sequence.current){pending.current=false;setLoading(false);}}
+    } catch(e) {if(current===sequence.current&&owner.current===actor)setError(errorMessage(e));}
+    finally {if(current===sequence.current&&owner.current===actor){pending.current=false;setLoading(false);}}
   }
-  useEffect(()=>{setItems([]);setActive(0);setNotice("");setBusy(null);scroll.current?.scrollTo(0,0);void load(true);return()=>{sequence.current++;pending.current=false;};},[user?.id]);
+  useEffect(()=>{
+    setItems([]);setCursor(null);setHasMore(true);setActive(0);setNotice("");setBusy(null);
+    scroll.current?.scrollTo(0,0);void load(true);
+    return()=>{sequence.current++;pending.current=false;};
+  },[user?.id]);
   useEffect(()=>{const root=scroll.current;if(!root)return;const observer=new IntersectionObserver((entries)=>{for(const entry of entries)if(entry.isIntersecting&&entry.intersectionRatio>.6)setActive(Number((entry.target as HTMLElement).dataset.index));},{root,threshold:[.6,.8]});root.querySelectorAll(".feed-item").forEach((item)=>observer.observe(item));return()=>observer.disconnect();},[items.length]);
   useEffect(()=>{setSettingsOpen(false);},[active]);
   useEffect(()=>{if(items.length&&active>=items.length-2&&hasMore&&!loading)void load();},[active,items.length,hasMore]);
   const move=(index:number)=>{const next=Math.max(0,Math.min(index,items.length-1));scroll.current?.scrollTo({top:next*scroll.current.clientHeight,behavior:window.matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth"});setActive(next);};
-  async function like(item:FeedItem){if(busy!==null)return;const actor=owner.current,desired=!item.drama.liked;setBusy(item.drama.id);setNotice("");try{await post("/v1/reactions",{target_type:"drama",target_id:item.drama.id,kind:"like",remove:!desired});if(owner.current!==actor)return;setItems((previous)=>previous.map((row)=>row.drama.id===item.drama.id?{...row,drama:{...row.drama,liked:desired,like_count:Math.max(0,row.drama.like_count+(row.drama.liked===desired?0:desired?1:-1))}}:row));}catch(e){if(owner.current===actor)setNotice(errorMessage(e));}finally{if(owner.current===actor)setBusy(null);}}
+  async function like(item:FeedItem) {
+    if(busy!==null)return;
+    const actor=owner.current, desired=!item.drama.liked;
+    setBusy(item.drama.id);setNotice("");
+    try {
+      const result=await post<{active?:boolean}>("/v1/reactions",{target_type:"drama",target_id:item.drama.id,kind:"like",remove:!desired});
+      if(owner.current!==actor)return;
+      const liked=typeof result.active==="boolean"?result.active:desired;
+      const revision=++completedReactions.current.revision;
+      completedReactions.current.byDrama.set(item.drama.id,{liked,revision});
+      setItems((previous)=>owner.current!==actor?previous:previous.map((row)=>row.drama.id===item.drama.id?{
+        ...row,drama:{...row.drama,liked,like_count:Math.max(0,row.drama.like_count+(row.drama.liked===liked?0:liked?1:-1))},
+      }:row));
+    } catch(e) {if(owner.current===actor)setNotice(errorMessage(e));}
+    finally {if(owner.current===actor)setBusy(null);}
+  }
   async function share(item:FeedItem){const link=new URL(window.location.href);link.search="";link.hash="watch/"+item.drama.id+"?episode="+item.episode.id;try{if(navigator.share)await navigator.share({title:item.drama.title,url:link.href});else{await navigator.clipboard.writeText(link.href);setNotice("Link copied.");}}catch(e){if(!(e instanceof Error&&e.name==="AbortError"))setNotice("Copy this link: "+link.href);}}
   return <div className="for-you-page">
     <h1 className="sr-only">For You</h1>
@@ -296,7 +342,7 @@ export function ForYou() {
           <div className="feed-caption"><h2><a href={link}>{item.drama.title}</a></h2><div className="feed-tags"><span>EP {item.episode.episode_number}</span>{item.drama.tags?.slice(0,3).map((tag)=><span key={tag}>{tag}</span>)}</div><p>{item.drama.synopsis}</p><a className="feed-episodes" href={link}><Icon name="menu" size={17}/>Episodes <Icon name="arrow" size={15}/></a></div>
         </div>
       </article>;})}
-      {error&&<div className="feed-feedback"><Failure message={error} retry={()=>void load()}/></div>}
+      {error&&<div className="feed-feedback"><Failure message={error} retry={()=>void load(items.length===0)}/></div>}
       {loading&&<div className="feed-feedback"><Loading/></div>}
       {!loading&&!items.length&&!error&&<Empty message="New episodes are on their way."/>}
     </div>
