@@ -5,6 +5,8 @@ import {
   cancelSubscription,
   getPlans,
   startCheckout,
+  membershipCheckoutIntent,
+  replaceExpiredMembershipIntent,
   type MeProfile,
   type Plan,
 } from "../api";
@@ -17,6 +19,12 @@ import { setMobileCheckoutActive } from "../../../shared/consumer/surface";
 
 type Membership = NonNullable<MeProfile["membership"]>;
 type BillingMode = "subscription" | "one_time";
+type ExpiredCheckout = {
+  ownerToken: string;
+  code: string;
+  intent: string;
+  message: string;
+};
 
 function formatDay(iso: string | null, locale: Locale): string {
   if (!iso) return "—";
@@ -51,6 +59,12 @@ export function PremiumSheet({
   const [showPlans, setShowPlans] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const [expired, setExpired] = useState<ExpiredCheckout | null>(null);
+  const expiredRef = useRef<ExpiredCheckout | null>(null);
+  const updateExpired = (value: ExpiredCheckout | null) => {
+    expiredRef.current = value;
+    setExpired(value);
+  };
   const mounted = useRef(false),
     generation = useRef(0),
     ownerToken = useRef(authToken()),
@@ -58,11 +72,14 @@ export function PremiumSheet({
   if (!pinOwner.current) pinOwner.current = "h5-premium-" + crypto.randomUUID();
   const awaitingAuth = useRef(false);
   const currentToken = authToken();
+  const ownedExpired = expired?.ownerToken === currentToken ? expired : null;
   useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
       generation.current++;
+      expiredRef.current = null;
+      awaitingAuth.current = false;
       setMobileCheckoutActive(pinOwner.current, false);
     };
   }, []);
@@ -70,6 +87,8 @@ export function PremiumSheet({
     if (ownerToken.current !== currentToken) {
       ownerToken.current = currentToken;
       generation.current++;
+      updateExpired(null);
+      setError("");
       setBusy(null);
       if (!awaitingAuth.current)
         setMobileCheckoutActive(pinOwner.current, false);
@@ -98,10 +117,13 @@ export function PremiumSheet({
     mounted.current &&
     generation.current === request.id &&
     authToken() === request.token;
-  const finishRequest = (request: { id: number; token: string }) => {
+  const finishRequest = (
+    request: { id: number; token: string },
+    keepPinned = false,
+  ) => {
     if (generation.current !== request.id) return;
     generation.current++;
-    setMobileCheckoutActive(pinOwner.current, false);
+    if (!keepPinned) setMobileCheckoutActive(pinOwner.current, false);
     if (mounted.current) setBusy(null);
   };
 
@@ -127,7 +149,7 @@ export function PremiumSheet({
   }, []);
 
   const subscribe = (code: string) => {
-    if (!mounted.current) return;
+    if (!mounted.current || ownedExpired) return;
     awaitingAuth.current = status !== "user";
     setMobileCheckoutActive(pinOwner.current, true);
     requireAuth(() => {
@@ -139,8 +161,10 @@ export function PremiumSheet({
   async function startSubscription(code: string) {
     const request = beginRequest(code);
     if (!request) return;
+    let intent = "";
     try {
-      const result = await startCheckout(code);
+      intent = membershipCheckoutIntent(code);
+      const result = await startCheckout(code, intent);
       if (!isCurrent(request)) {
         finishRequest(request);
         return;
@@ -153,6 +177,32 @@ export function PremiumSheet({
         finishRequest(request);
         return;
       }
+      const detail =
+        err instanceof ApiError &&
+        err.data &&
+        typeof err.data === "object" &&
+        "detail" in err.data
+          ? err.data.detail
+          : null;
+      if (
+        err instanceof ApiError &&
+        err.status === 409 &&
+        detail &&
+        typeof detail === "object" &&
+        "code" in detail &&
+        detail.code === "checkout_expired" &&
+        "action" in detail &&
+        detail.action === "new_purchase"
+      ) {
+        updateExpired({
+          ownerToken: request.token,
+          code,
+          intent,
+          message: err.message,
+        });
+        finishRequest(request, true);
+        return;
+      }
       finishRequest(request);
       if (err instanceof ApiError && err.status === 401)
         setError(t(locale, "premium_need_sign_in"));
@@ -161,6 +211,33 @@ export function PremiumSheet({
       else setError(t(locale, "premium_failed"));
     }
   }
+  const startNewCheckout = () => {
+    const recovery = expiredRef.current;
+    if (!mounted.current || !recovery || busy !== null) return;
+    if (authToken() !== recovery.ownerToken) {
+      updateExpired(null);
+      setMobileCheckoutActive(pinOwner.current, false);
+      return;
+    }
+    if (
+      !replaceExpiredMembershipIntent(
+        recovery.code,
+        recovery.intent,
+        recovery.ownerToken,
+      )
+    ) {
+      updateExpired(null);
+      setMobileCheckoutActive(pinOwner.current, false);
+      setError(
+        locale === "zh"
+          ? "支付意图已改变，请重新打开会员方案。"
+          : "This payment attempt changed. Reopen your membership plans.",
+      );
+      return;
+    }
+    updateExpired(null);
+    void startSubscription(recovery.code);
+  };
   async function stopRenewing() {
     const request = beginRequest("cancel");
     if (!request) return;
@@ -321,7 +398,7 @@ export function PremiumSheet({
                 <button
                   type="button"
                   className="premium-cta"
-                  disabled={busy !== null}
+                  disabled={busy !== null || !!ownedExpired}
                   onClick={() => subscribe(plan.code)}
                   data-testid={`premium-buy-${plan.code}`}
                 >
@@ -334,6 +411,23 @@ export function PremiumSheet({
               </div>
             ))}
           </div>
+          {ownedExpired && (
+            <div
+              className="premium-error"
+              role="alert"
+              data-testid="premium-expired-checkout"
+            >
+              <p>{ownedExpired.message}</p>
+              <button
+                className="premium-cta"
+                data-testid="premium-start-new-checkout"
+                onClick={startNewCheckout}
+                disabled={busy !== null}
+              >
+                {locale === "zh" ? "重新发起支付" : "Start new checkout"}
+              </button>
+            </div>
+          )}
           {error && <p className="premium-error">{error}</p>}
           <p className="premium-note">
             {mode === "one_time"

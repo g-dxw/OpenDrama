@@ -20,7 +20,9 @@ export function deviceId() {
   return value;
 }
 const client = createConsumerClient({
-  apiBase: import.meta.env.VITE_API_BASE ?? (import.meta.env.PROD ? "https://jjtv-api.8jj.net" : ""),
+  apiBase:
+    import.meta.env.VITE_API_BASE ??
+    (import.meta.env.PROD ? "https://jjtv-api.8jj.net" : ""),
   attributionPid: () => localStorage.getItem("jjtv_attribution_pid"),
   deviceId,
   tokenStore: {
@@ -247,14 +249,37 @@ export function getPlans(): Promise<PlansPayload> {
   return getJson<PlansPayload>("/v1/plans");
 }
 
-/** Create a Stripe Checkout session and send the browser to it. */
-export function startCheckout(planCode: string): Promise<CheckoutResult> {
-  const storageKey = "jjtv_checkout_membership_" + planCode;
-  let intent = sessionStorage.getItem(storageKey);
+const membershipIntentKey = (planCode: string) =>
+  "jjtv_checkout_membership_" + planCode;
+export function membershipCheckoutIntent(planCode: string): string {
+  const key = membershipIntentKey(planCode);
+  let intent = sessionStorage.getItem(key);
   if (!intent) {
     intent = crypto.randomUUID();
-    sessionStorage.setItem(storageKey, intent);
+    sessionStorage.setItem(key, intent);
   }
+  return intent;
+}
+/** Rotate only an explicitly expired intent still owned by this account and cache entry. */
+export function replaceExpiredMembershipIntent(
+  planCode: string,
+  expectedIntent: string,
+  ownerToken: string,
+): boolean {
+  const key = membershipIntentKey(planCode);
+  if (
+    authToken() !== ownerToken ||
+    sessionStorage.getItem(key) !== expectedIntent
+  )
+    return false;
+  sessionStorage.setItem(key, crypto.randomUUID());
+  return true;
+}
+/** Uncertain retries keep the exact same payment intent. */
+export function startCheckout(
+  planCode: string,
+  intent = membershipCheckoutIntent(planCode),
+): Promise<CheckoutResult> {
   return postJson<CheckoutResult>(
     "/v1/commerce/checkout",
     {
@@ -263,8 +288,14 @@ export function startCheckout(planCode: string): Promise<CheckoutResult> {
       idempotency_key: intent,
       attribution_pid:
         localStorage.getItem("jjtv_attribution_pid") || undefined,
-      success_url: window.location.origin + "/?checkout=success&surface=h5" + window.location.hash,
-      cancel_url: window.location.origin + "/?checkout=cancel&surface=h5" + window.location.hash,
+      success_url:
+        window.location.origin +
+        "/?checkout=success&surface=h5" +
+        window.location.hash,
+      cancel_url:
+        window.location.origin +
+        "/?checkout=cancel&surface=h5" +
+        window.location.hash,
     },
     { "Idempotency-Key": intent },
   );

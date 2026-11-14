@@ -99,6 +99,7 @@ let activeMember = false,
   media = Buffer.alloc(0),
   checkoutHold = null,
   cancelHold = null;
+const recoveryReplies = [];
 const pending = [],
   inFlight = new Set();
 page.on("requestfinished", (request) => inFlight.delete(request));
@@ -427,19 +428,25 @@ page.on("request", async (req) => {
     else if (/^\/v1\/playback\/(start|progress|complete)$/.test(p))
       result = { ok: true };
     else if (p === "/v1/commerce/checkout") {
-      const held = checkoutHold;
-      checkoutHold = null;
-      if (!held) {
-        unknown.push("Unplanned checkout");
-        status = 409;
-        result = { detail: "Unexpected purchase" };
+      if (recoveryReplies.length) {
+        const reply = recoveryReplies.shift();
+        status = reply.status;
+        result = reply.body;
       } else {
-        await fulfillHeld(req, held, {
-          url: origin + "/?checkout=cancel&surface=h5#account/orders",
-          session_id: "cs_fixture",
-          order_no: held.order,
-        });
-        return;
+        const held = checkoutHold;
+        checkoutHold = null;
+        if (!held) {
+          unknown.push("Unplanned checkout");
+          status = 409;
+          result = { detail: "Unexpected purchase" };
+        } else {
+          await fulfillHeld(req, held, {
+            url: origin + "/?checkout=cancel&surface=h5#account/orders",
+            session_id: "cs_fixture",
+            order_no: held.order,
+          });
+          return;
+        }
       }
     } else if (p === "/v1/billing/cancel") {
       const held = cancelHold;
@@ -988,6 +995,191 @@ try {
   );
   await resize(390);
 
+  const checkoutCalls = () =>
+    calls.filter((call) => call.path === "/v1/commerce/checkout");
+  const expiredReply = (message) => ({
+    status: 409,
+    body: {
+      detail: {
+        code: "checkout_expired",
+        action: "new_purchase",
+        order_no: "EXPIRED-ORDER",
+        message: message || "This checkout has expired. Start a new purchase.",
+      },
+    },
+  });
+  const unknownReply = {
+    status: 503,
+    body: { detail: "Fixture checkout result unknown" },
+  };
+  const freshPlans = async (intent) => {
+    await resize(390);
+    await page.evaluate((key) => {
+      localStorage.setItem("minitv_h5_token", "mobile-token");
+      sessionStorage.setItem("jjtv_checkout_membership_weekly", key);
+    }, intent);
+    await goto("#price");
+    await page.reload({ waitUntil: "networkidle0" });
+    await surface("mobile");
+    await page.waitForSelector('[data-testid="premium-buy-weekly"]');
+  };
+  const buyFailed = async (reply) => {
+    recoveryReplies.push(reply);
+    await page.click('[data-testid="premium-buy-weekly"]');
+    await page.waitForFunction(
+      () =>
+        document.querySelector(".premium-error") &&
+        !document.querySelector('[data-testid="premium-buy-weekly"]').disabled,
+    );
+  };
+  await freshPlans("expired-fixture-intent");
+  const beforeExpired = checkoutCalls().length;
+  recoveryReplies.push(expiredReply());
+  await page.click('[data-testid="premium-buy-weekly"]');
+  await page.waitForSelector('[data-testid="premium-start-new-checkout"]');
+  assert.equal(checkoutCalls().length, beforeExpired + 1);
+  assert.equal(
+    await page.evaluate(() =>
+      sessionStorage.getItem("jjtv_checkout_membership_weekly"),
+    ),
+    "expired-fixture-intent",
+  );
+  assert.equal(
+    await page.$eval(
+      '[data-testid="premium-buy-weekly"]',
+      (button) => button.disabled,
+    ),
+    true,
+  );
+  await page.reload({ waitUntil: "networkidle0" });
+  await surface("mobile");
+  await page.waitForSelector('[data-testid="premium-buy-weekly"]');
+  recoveryReplies.push(expiredReply());
+  await page.click('[data-testid="premium-buy-weekly"]');
+  await page.waitForSelector('[data-testid="premium-start-new-checkout"]');
+  assert(
+    checkoutCalls()
+      .slice(beforeExpired)
+      .every((call) => call.body.idempotency_key === "expired-fixture-intent"),
+  );
+  await resize(1440);
+  await surface("mobile");
+  await resize(390);
+  recoveryReplies.push(unknownReply);
+  await page.click('[data-testid="premium-start-new-checkout"]');
+  await page.waitForFunction(
+    () =>
+      document.querySelector(".premium-error") &&
+      !document.querySelector('[data-testid="premium-buy-weekly"]').disabled,
+  );
+  const freshIntent = checkoutCalls().at(-1).body.idempotency_key;
+  assert.notEqual(freshIntent, "expired-fixture-intent");
+  assert.equal(
+    await page.evaluate(() =>
+      sessionStorage.getItem("jjtv_checkout_membership_weekly"),
+    ),
+    freshIntent,
+  );
+  assert.equal(checkoutCalls().length, beforeExpired + 3);
+  await buyFailed(unknownReply);
+  assert.equal(checkoutCalls().at(-1).body.idempotency_key, freshIntent);
+  assert.equal(checkoutCalls().length, beforeExpired + 4);
+  pass(
+    "explicit expiry survives reopening and rotates only on Start new checkout; unknown retries reuse that fresh intent",
+  );
+  await freshPlans("uncertain-fixture-intent");
+  const beforeUnknown = checkoutCalls().length;
+  await buyFailed(unknownReply);
+  assert.equal(
+    await page.$('[data-testid="premium-start-new-checkout"]'),
+    null,
+  );
+  await buyFailed({
+    status: 409,
+    body: {
+      detail: {
+        code: "checkout_already_paid",
+        action: "view_orders",
+        order_no: "PAID-ORDER",
+        message: "The order is already paid.",
+      },
+    },
+  });
+  assert.equal(checkoutCalls().length, beforeUnknown + 2);
+  assert(
+    checkoutCalls()
+      .slice(beforeUnknown)
+      .every(
+        (call) => call.body.idempotency_key === "uncertain-fixture-intent",
+      ),
+  );
+  assert.equal(
+    await page.evaluate(() =>
+      sessionStorage.getItem("jjtv_checkout_membership_weekly"),
+    ),
+    "uncertain-fixture-intent",
+  );
+  assert.equal(
+    await page.$('[data-testid="premium-start-new-checkout"]'),
+    null,
+  );
+  pass(
+    "uncertain and already-paid conflicts never rotate keys or offer a fresh automatic purchase",
+  );
+  await freshPlans("stale-expired-intent");
+  recoveryReplies.push(expiredReply());
+  await page.click('[data-testid="premium-buy-weekly"]');
+  await page.waitForSelector('[data-testid="premium-start-new-checkout"]');
+  const beforeStale = checkoutCalls().length;
+  await page.evaluate(() =>
+    sessionStorage.setItem(
+      "jjtv_checkout_membership_weekly",
+      "newer-unconfirmed-intent",
+    ),
+  );
+  await page.click('[data-testid="premium-start-new-checkout"]');
+  await page.waitForSelector('[data-testid="premium-start-new-checkout"]', {
+    hidden: true,
+  });
+  assert.equal(checkoutCalls().length, beforeStale);
+  assert.equal(
+    await page.evaluate(() =>
+      sessionStorage.getItem("jjtv_checkout_membership_weekly"),
+    ),
+    "newer-unconfirmed-intent",
+  );
+  await freshPlans("old-owner-expired-intent");
+  recoveryReplies.push(expiredReply("PRIVATE OLD OWNER EXPIRED ORDER"));
+  await page.click('[data-testid="premium-buy-weekly"]');
+  await page.waitForSelector('[data-testid="premium-start-new-checkout"]');
+  await page.evaluate(() =>
+    localStorage.setItem("minitv_h5_token", "mobile-token-b"),
+  );
+  await resize(400);
+  await page.waitForSelector('[data-testid="premium-expired-checkout"]', {
+    hidden: true,
+  });
+  assert(
+    !(await page.$eval("body", (body) => body.innerText)).includes(
+      "PRIVATE OLD OWNER EXPIRED ORDER",
+    ),
+  );
+  assert.equal(
+    await page.$('[data-testid="premium-start-new-checkout"]'),
+    null,
+  );
+  assert.equal(
+    await page.evaluate(() =>
+      sessionStorage.getItem("jjtv_checkout_membership_weekly"),
+    ),
+    "old-owner-expired-intent",
+  );
+  await resize(1440);
+  await surface("desktop");
+  await resize(390);
+  pass(
+    "expired recovery cannot overwrite a newer cached intent or retain a previous account message and action",
+  );
   await goto("#coins");
   await surface("desktop");
   await page.waitForSelector(".desktop-route-notice a");
