@@ -25,7 +25,10 @@ export function Watch({
   episodeId?: number;
 }) {
   const { status, user, requireAuth, refresh } = useAuth();
-  const [data, setData] = useState<PlayPayload | null>(null),
+  const [ownedData, setOwnedData] = useState<{
+      identity: string;
+      payload: PlayPayload;
+    } | null>(null),
     [selected, setSelected] = useState<number | undefined>(episodeId),
     [error, setError] = useState(""),
     [unlockOpen, setUnlockOpen] = useState(false),
@@ -37,29 +40,40 @@ export function Watch({
     [revision, setRevision] = useState(0),
     [liked, setLiked] = useState(false),
     [favorited, setFavorited] = useState(false);
+  const identity = String(user?.id ?? "guest");
+  const identityRef = useRef(identity);
+  identityRef.current = identity;
+  const previousIdentity = useRef(identity);
+  const selectionIntent = useRef(episodeId);
+  const data = ownedData?.identity === identity ? ownedData.payload : null;
   const unlockKeys = useRef(new Map<number, string>());
   const loadRequest = useRef(0);
   const load = () => {
     const request = ++loadRequest.current;
+    const owner = identityRef.current;
     setError("");
     get<PlayPayload>("/v1/dramas/" + dramaId + "/play")
       .then((d) => {
-        if (request !== loadRequest.current) return;
-        setData(d);
-        setSelected((old) =>
-          old && d.items.some((e) => e.id === old)
-            ? old
+        if (request !== loadRequest.current || owner !== identityRef.current)
+          return;
+        setOwnedData({ identity: owner, payload: d });
+        const intent = selectionIntent.current;
+        setSelected(
+          intent && d.items.some((e) => e.id === intent)
+            ? intent
             : (d.resume?.episode_id ?? d.items[0]?.id),
         );
         setLiked(d.drama.liked);
         setFavorited(d.drama.favorited);
       })
       .catch((e) => {
-        if (request === loadRequest.current) setError(errorMessage(e));
+        if (request === loadRequest.current && owner === identityRef.current)
+          setError(errorMessage(e));
       });
   };
   useEffect(() => {
-    setData(null);
+    setOwnedData(null);
+    selectionIntent.current = episodeId;
     setSelected(episodeId);
   }, [dramaId, episodeId]);
   useEffect(() => {
@@ -68,6 +82,20 @@ export function Watch({
       loadRequest.current++;
     };
   }, [dramaId, status, user?.id, revision]);
+  useEffect(() => {
+    setBusy(false);
+    setError("");
+    unlockKeys.current.clear();
+    if (
+      previousIdentity.current !== identity &&
+      previousIdentity.current !== "guest"
+    ) {
+      setUnlockOpen(false);
+      setCommentsOpen(false);
+      setShareOpen(false);
+    }
+    previousIdentity.current = identity;
+  }, [identity]);
   const episode = data?.items.find((e) => e.id === selected);
   const isMembershipOnly = (item: PlayEpisode) =>
     Boolean(item.membership_required) ||
@@ -88,12 +116,14 @@ export function Watch({
   const coinsLink =
     "#coins?drama=" + dramaId + "&episode=" + (episode?.id || "");
   function select(item: PlayEpisode) {
+    selectionIntent.current = item.id;
     setSelected(item.id);
     if (item.locked && !isMembershipOnly(item))
       requireAuth(() => setUnlockOpen(true));
   }
   async function unlock() {
     if (!episode || isMembershipOnly(episode)) return;
+    const owner = identityRef.current;
     setBusy(true);
     setError("");
     let key = unlockKeys.current.get(episode.id);
@@ -107,10 +137,13 @@ export function Watch({
         { episode_id: episode.id },
         { "Idempotency-Key": key },
       );
+      if (owner !== identityRef.current) return;
       await refresh();
+      if (owner !== identityRef.current) return;
       setUnlockOpen(false);
       setRevision((x) => x + 1);
     } catch (e) {
+      if (owner !== identityRef.current) return;
       setError(
         e instanceof ApiError && e.status === 402
           ? "Not enough coins. Top up your wallet to continue."
@@ -118,10 +151,11 @@ export function Watch({
       );
       await refresh();
     } finally {
-      setBusy(false);
+      if (owner === identityRef.current) setBusy(false);
     }
   }
   async function react(kind: "like" | "favorite") {
+    const owner = identityRef.current;
     const previous = kind === "like" ? liked : favorited;
     setBusy(true);
     try {
@@ -131,12 +165,13 @@ export function Watch({
         kind,
         remove: previous,
       });
+      if (owner !== identityRef.current) return;
       if (kind === "like") setLiked(!previous);
       else setFavorited(!previous);
     } catch (e) {
-      setError(errorMessage(e));
+      if (owner === identityRef.current) setError(errorMessage(e));
     } finally {
-      setBusy(false);
+      if (owner === identityRef.current) setBusy(false);
     }
   }
   if (!data)
@@ -201,7 +236,10 @@ export function Watch({
                   episode={episode}
                   onDenied={() => setRevision((x) => x + 1)}
                   onFinished={() => {
-                    if (next) setSelected(next.id);
+                    if (next) {
+                      selectionIntent.current = next.id;
+                      setSelected(next.id);
+                    }
                   }}
                 />
               )
@@ -395,8 +433,7 @@ export function Watch({
             <div className="watch-access">
               <span>
                 {data.drama.play_count.toLocaleString()} views ·{" "}
-                {Math.min(data.drama.free_episode_count, data.items.length)}{" "}
-                free episodes
+                {data.items.filter((item) => item.free).length} free episodes
               </span>
               <a href={membershipLink}>Membership</a>
               <a href={coinsLink}>Get coins</a>
@@ -496,11 +533,15 @@ export function Video({
   episode,
   onFinished,
   onDenied,
+  muted = false,
+  poster,
 }: {
   dramaId: number;
   episode: PlayEpisode;
   onFinished: () => void;
   onDenied: () => void;
+  muted?: boolean;
+  poster?: string;
 }) {
   const video = useRef<HTMLVideoElement>(null),
     hls = useRef<Hls | null>(null),
@@ -691,6 +732,8 @@ export function Video({
     <>
       <video
         ref={video}
+        muted={muted}
+        poster={poster}
         controls
         playsInline
         preload="metadata"
@@ -785,39 +828,85 @@ export function Video({
     </>
   );
 }
-function Comments({ episodeId }: { episodeId: number }) {
+export function Comments({ episodeId }: { episodeId: number }) {
   const { requireAuth, user } = useAuth();
-  const [data, setData] = useState<CommentsPayload | null>(null),
-    [body, setBody] = useState(""),
+  const identity = String(user?.id ?? "guest") + ":" + episodeId;
+  const identityRef = useRef(identity);
+  identityRef.current = identity;
+  const previousUser = useRef(user?.id);
+  const request = useRef(0),
+    lifecycle = useRef(0);
+  const [ownedData, setOwnedData] = useState<{
+      identity: string;
+      payload: CommentsPayload;
+    } | null>(null),
+    [draft, setDraft] = useState({ identity, body: "" }),
+    [submitIntent, setSubmitIntent] = useState<string | null>(null),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false),
     [notice, setNotice] = useState("");
+  const data = ownedData?.identity === identity ? ownedData.payload : null;
+  const body = draft.identity === identity ? draft.body : "";
   function load(cursor: number | null = null) {
+    const current = ++request.current,
+      owner = identityRef.current;
     get<CommentsPayload>(
       "/v1/episodes/" +
         episodeId +
         "/comments?limit=20" +
         (cursor ? "&cursor=" + cursor : ""),
     )
-      .then((next) =>
-        setData((previous) =>
-          cursor && previous
-            ? { ...next, items: [...previous.items, ...next.items] }
-            : next,
-        ),
-      )
-      .catch((e) => setError(errorMessage(e)));
+      .then((next) => {
+        if (current !== request.current || owner !== identityRef.current)
+          return;
+        setOwnedData((previous) => ({
+          identity: owner,
+          payload:
+            cursor && previous?.identity === owner
+              ? { ...next, items: [...previous.payload.items, ...next.items] }
+              : next,
+        }));
+      })
+      .catch((e) => {
+        if (current === request.current && owner === identityRef.current)
+          setError(errorMessage(e));
+      });
   }
-  useEffect(() => load(), [episodeId]);
-  async function submit() {
+  useEffect(() => {
+    setError("");
+    setNotice("");
+    setBusy(false);
+    const keepGuestDraft = previousUser.current == null;
+    if (previousUser.current != null && previousUser.current !== user?.id)
+      setSubmitIntent(null);
+    setDraft((previous) => ({
+      identity,
+      body:
+        keepGuestDraft && previous.identity === "guest:" + episodeId
+          ? previous.body
+          : "",
+    }));
+    previousUser.current = user?.id;
+    load();
+    return () => {
+      request.current++;
+      lifecycle.current++;
+    };
+  }, [episodeId, identity]);
+  async function submit(text: string) {
+    const owner = identityRef.current,
+      generation = lifecycle.current;
+    const current = () =>
+      owner === identityRef.current && generation === lifecycle.current;
     setBusy(true);
     setError("");
     try {
       const result = await post<{ status: string }>(
         "/v1/episodes/" + episodeId + "/comments",
-        { body },
+        { body: text },
       );
-      setBody("");
+      if (!current()) return;
+      setDraft({ identity: owner, body: "" });
       setNotice(
         result.status === "pending"
           ? "Your comment was submitted for review."
@@ -825,11 +914,17 @@ function Comments({ episodeId }: { episodeId: number }) {
       );
       load();
     } catch (e) {
-      setError(errorMessage(e));
+      if (current()) setError(errorMessage(e));
     } finally {
-      setBusy(false);
+      if (current()) setBusy(false);
     }
   }
+  useEffect(() => {
+    if (user && submitIntent != null) {
+      setSubmitIntent(null);
+      void submit(submitIntent);
+    }
+  }, [user?.id, submitIntent]);
   return (
     <section className="comments">
       <h2>Comments {data ? "(" + data.total + ")" : ""}</h2>
@@ -837,9 +932,8 @@ function Comments({ episodeId }: { episodeId: number }) {
         className="form"
         onSubmit={(e) => {
           e.preventDefault();
-          requireAuth(() => {
-            void submit();
-          });
+          if (user) void submit(body);
+          else requireAuth(() => setSubmitIntent(body));
         }}
       >
         <label className="sr-only" htmlFor="comment-body">
@@ -854,7 +948,7 @@ function Comments({ episodeId }: { episodeId: number }) {
           }
           rows={3}
           value={body}
-          onChange={(e) => setBody(e.target.value)}
+          onChange={(e) => setDraft({ identity, body: e.target.value })}
         />
         <button className="button secondary" disabled={busy || !body.trim()}>
           {busy ? "Posting…" : "Post comment"}
