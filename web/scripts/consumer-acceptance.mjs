@@ -765,6 +765,53 @@ async function clickText(value) {
     button.click();
   }, value);
 }
+async function assertFeedViewport(index, label) {
+  await page.waitForFunction(
+    (index) => {
+      const scroll = document.querySelector(".feed-scroll"),
+        item = document.querySelector('.feed-item[data-index="' + index + '"]');
+      return (
+        scroll &&
+        item &&
+        Math.abs(
+          item.getBoundingClientRect().top - scroll.getBoundingClientRect().top,
+        ) < 0.5
+      );
+    },
+    {},
+    index,
+  );
+  const geometry = await page.evaluate((index) => {
+    const scroll = document.querySelector(".feed-scroll"),
+      item = document.querySelector('.feed-item[data-index="' + index + '"]');
+    return {
+      windowY: window.scrollY,
+      containerTop: scroll.getBoundingClientRect().top,
+      itemTop: item.getBoundingClientRect().top,
+      innerScrollTop: scroll.scrollTop,
+    };
+  }, index);
+  assert.equal(
+    geometry.windowY,
+    0,
+    label + " moved the outer page: " + JSON.stringify(geometry),
+  );
+  assert.equal(
+    geometry.containerTop,
+    64,
+    label + " moved the feed container: " + JSON.stringify(geometry),
+  );
+  assert.equal(
+    geometry.itemTop,
+    64,
+    label + " did not align the active item: " + JSON.stringify(geometry),
+  );
+  if (index > 0)
+    assert(
+      geometry.innerScrollTop > 0,
+      label + " did not scroll the inner feed",
+    );
+}
 const checks = [];
 function pass(name) {
   checks.push(name);
@@ -955,6 +1002,7 @@ try {
     );
   });
   await page.$eval(".for-you-page video", (video) => video.pause());
+  await assertFeedViewport(1, "Manual Next to free episode");
   pass(
     "vertical feed plays the active free episode, protects guest reactions and advances to the next video",
   );
@@ -982,8 +1030,47 @@ try {
     ),
     "#watch/3?episode=1002",
   );
+  await assertFeedViewport(2, "Manual Next to locked episode");
   pass(
     "a locked feed episode opens the actual watch route without requesting media authorization",
+  );
+  await page.click('button[aria-label="Previous episode"]');
+  await page.waitForFunction(() => {
+    const video = document.querySelector(".for-you-page video");
+    return (
+      video?.closest(".feed-item")?.dataset.index === "1" &&
+      video.currentTime > 0.2
+    );
+  });
+  await page.$eval(".for-you-page video", async (video) => {
+    window.__consumerAutomaticEnded = false;
+    video.pause();
+    video.addEventListener(
+      "ended",
+      () => {
+        window.__consumerAutomaticEnded = true;
+      },
+      { once: true },
+    );
+    if (Number.isFinite(video.duration) && video.duration > 0.4)
+      video.currentTime = video.duration - 0.25;
+    await video.play();
+  });
+  await page.waitForFunction(
+    () =>
+      window.__consumerAutomaticEnded === true &&
+      !document.querySelector(".for-you-page video"),
+  );
+  await assertFeedViewport(2, "Actual media ended to locked episode");
+  assert.equal(
+    requests.filter(
+      (request) =>
+        request.path === "/v1/playback" && request.body.episode_id === 1002,
+    ).length,
+    0,
+  );
+  pass(
+    "real media ending advances only the inner feed while the page and active item remain at the 64px header",
   );
   await go("#watch/1");
   await page.waitForFunction(
