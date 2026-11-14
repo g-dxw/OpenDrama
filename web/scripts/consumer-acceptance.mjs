@@ -48,6 +48,45 @@ let unlocked = false,
   coins = 120,
   ticket = null,
   replyMessages = [];
+let privateComments = false,
+  holdOldComments = false,
+  expireCommentOwner = false,
+  releaseOldComments,
+  oldCommentsStarted;
+let checkoutConflictCode = null,
+  cancelConflictCode = null,
+  checkoutConflictSequence = [];
+const conflictMessages = {
+  pending_subscription_checkout: "Resume or cancel your existing checkout.",
+  checkout_payment_pending:
+    "Your payment is awaiting its invoice confirmation.",
+  checkout_in_progress: "Your checkout session is still being prepared.",
+  checkout_expired: "This payment attempt has expired.",
+  checkout_recovery_required:
+    "Please contact support about this pending order.",
+  checkout_already_paid: "This order has already been paid.",
+};
+const conflictActions = {
+  pending_subscription_checkout: "resume_or_cancel",
+  checkout_payment_pending: "wait_for_payment",
+  checkout_in_progress: "retry",
+  checkout_expired: "new_purchase",
+  checkout_recovery_required: "contact_support",
+  checkout_already_paid: "view_orders",
+};
+function fixtureConflict(code) {
+  return {
+    detail: {
+      code,
+      message: conflictMessages[code],
+      order_no: "ORDER-FIXTURE",
+      action: conflictActions[code],
+      ...(code === "pending_subscription_checkout"
+        ? { checkout_url: origin + "/?checkout=cancel#price" }
+        : {}),
+    },
+  };
+}
 let expireSupportA = false,
   holdOldSupport = false,
   holdSecondSupport = false;
@@ -87,7 +126,13 @@ const profile = (second = false) => ({
   membership: { active: false, plan_code: null, until: null, canceling: false },
 });
 const play = () => ({
-  drama: dramas[0],
+  drama: {
+    ...dramas[0],
+    synopsis:
+      "A long browser fixture synopsis makes the expand and collapse controls observable. ".repeat(
+        9,
+      ),
+  },
   items: [
     {
       id: 10,
@@ -217,6 +262,20 @@ page.on("request", async (req) => {
           },
         ],
       };
+    else if (p === "/v1/config")
+      result = {
+        tabs: [
+          {
+            code: "discover",
+            title_en: "Discover",
+            title_zh: "发现",
+            position: 0,
+            locked: true,
+            group_id: null,
+          },
+        ],
+        copies: {},
+      };
     else if (p === "/v1/catalog") {
       const offset = Number(url.searchParams.get("offset") || 0);
       const q = url.searchParams.get("q");
@@ -231,11 +290,28 @@ page.on("request", async (req) => {
       };
     } else if (p === "/v1/feed")
       result = {
+        session_id: "fixture-feed-session",
+        page_size: Number(url.searchParams.get("limit") || 12),
         items: dramas
-          .slice(0, 12)
-          .map((drama) => ({ drama, episode: {}, item_id: String(drama.id) })),
+          .slice(0, Number(url.searchParams.get("limit") || 12))
+          .map((drama, index) => ({
+            drama: index === 2 ? { ...drama, free_episode_count: 0 } : drama,
+            episode: {
+              id: index === 0 ? 10 : 1000 + index,
+              episode_number: 1,
+              title: "Episode 1",
+              duration_seconds: 60,
+              free: index !== 2,
+              comment_count: 0,
+            },
+            item_id: String(drama.id),
+            resume_seconds: 0,
+            entry_reason: "browser_fixture",
+            score: 1,
+          })),
         next_cursor: null,
         has_more: false,
+        preload: { fetch_when_remaining: 3 },
       };
     else if (p === "/v1/auth/providers")
       result = {
@@ -284,9 +360,40 @@ page.on("request", async (req) => {
         episode_id: 11,
         balance_after: coins,
       };
-    } else if (p.includes("/comments"))
-      result = { items: [], total: 0, next_cursor: null };
-    else if (p === "/v1/plans")
+    } else if (p.includes("/comments")) {
+      if (!privateComments) result = { items: [], total: 0, next_cursor: null };
+      else if (req.method() === "POST") {
+        if (secondUser && expireCommentOwner) {
+          status = 401;
+          result = { detail: "Comment session expired" };
+        } else result = { status: "pending" };
+      } else if (secondUser) {
+        if (holdOldComments && url.searchParams.get("cursor")) {
+          oldCommentsStarted?.();
+          await new Promise((resolve) => {
+            releaseOldComments = resolve;
+          });
+        }
+        result = {
+          items: [
+            {
+              id: url.searchParams.get("cursor") ? 9002 : 9001,
+              body: url.searchParams.get("cursor")
+                ? "PRIVATE LATE PENDING COMMENT FROM FIRST ACCOUNT"
+                : "PRIVATE PENDING COMMENT FROM FIRST ACCOUNT",
+              status: "pending",
+              user: { id: 84, display_name: "Second viewer" },
+              created_at: "2026-11-14T00:00:00Z",
+            },
+          ],
+          total: 2,
+          next_cursor: url.searchParams.get("cursor") ? null : 9001,
+        };
+      } else if (req.headers().authorization) {
+        status = 404;
+        result = { detail: "Comments are unavailable" };
+      } else result = { items: [], total: 0, next_cursor: null };
+    } else if (p === "/v1/plans")
       result = {
         billing_mode: "one_time",
         items: [
@@ -341,13 +448,33 @@ page.on("request", async (req) => {
           },
         ],
       };
-    else if (p === "/v1/commerce/checkout")
-      result = {
-        url: origin + "/?checkout=success#account/orders",
-        session_id: "fixture-session",
-        order_no: "ORDER-FIXTURE",
-      };
-    else if (p === "/v1/commerce/orders")
+    else if (p === "/v1/commerce/checkout") {
+      const code = checkoutConflictSequence.length
+        ? checkoutConflictSequence.shift()
+        : checkoutConflictCode;
+      if (code === "service_unavailable") {
+        status = 503;
+        result = { detail: "Temporary checkout gateway unavailable" };
+      } else if (code) {
+        status = 409;
+        result = fixtureConflict(code);
+      } else
+        result = {
+          url: origin + "/?checkout=success#account/orders",
+          session_id: "fixture-session",
+          order_no: "ORDER-FIXTURE",
+        };
+    } else if (p === "/v1/commerce/orders/ORDER-FIXTURE/cancel") {
+      if (cancelConflictCode) {
+        status = 409;
+        result = fixtureConflict(cancelConflictCode);
+      } else
+        result = {
+          order_no: "ORDER-FIXTURE",
+          status: "failed",
+          canceled: true,
+        };
+    } else if (p === "/v1/commerce/orders")
       result = {
         items: [
           {
@@ -722,6 +849,76 @@ try {
       );
     }),
   );
+  await go("#foryou");
+  await page.waitForFunction(
+    () => document.querySelector(".for-you-page video")?.currentTime > 0.2,
+  );
+  assert.equal(
+    await page.$$(".for-you-page video").then((videos) => videos.length),
+    1,
+  );
+  await page.$eval(".for-you-page video", (video) => video.pause());
+  const reactionsBeforeFeedLogin = requests.filter(
+    (request) => request.path === "/v1/reactions",
+  ).length;
+  await page.click(
+    '.feed-item[data-index="0"] button[aria-label="Like drama"]',
+  );
+  await page.waitForSelector('[role="dialog"]');
+  assert.equal(
+    requests.filter((request) => request.path === "/v1/reactions").length,
+    reactionsBeforeFeedLogin,
+  );
+  await page.keyboard.press("Escape");
+  await page.screenshot({
+    path: path.join(OUT, "for-you-desktop.png"),
+    fullPage: true,
+  });
+  const secondFeedPlayback = page.waitForRequest(
+    (request) =>
+      new URL(request.url()).pathname === "/v1/playback" &&
+      JSON.parse(request.postData() || "{}").episode_id === 1001,
+  );
+  await page.click('button[aria-label="Next episode"]');
+  await secondFeedPlayback;
+  await page.waitForFunction(() => {
+    const video = document.querySelector(".for-you-page video");
+    return (
+      video?.closest(".feed-item")?.dataset.index === "1" &&
+      video.currentTime > 0.2
+    );
+  });
+  await page.$eval(".for-you-page video", (video) => video.pause());
+  pass(
+    "vertical feed plays the active free episode, protects guest reactions and advances to the next video",
+  );
+  await page.click('button[aria-label="Next episode"]');
+  await page.waitForFunction(() => {
+    const item = document.querySelector('.feed-item[data-index="2"]'),
+      scroll = document.querySelector(".feed-scroll");
+    return (
+      !document.querySelector(".for-you-page video") &&
+      Math.abs(
+        item.getBoundingClientRect().top - scroll.getBoundingClientRect().top,
+      ) < 4
+    );
+  });
+  assert.equal(
+    requests.filter(
+      (request) =>
+        request.path === "/v1/playback" && request.body.episode_id === 1002,
+    ).length,
+    0,
+  );
+  assert.equal(
+    await page.$eval('.feed-item[data-index="2"] .feed-locked a', (link) =>
+      link.getAttribute("href"),
+    ),
+    "#watch/3?episode=1002",
+  );
+  pass(
+    "a locked feed episode opens the actual watch route without requesting media authorization",
+  );
   await go("#watch/1");
   await page.waitForFunction(
     () => document.querySelector("video")?.currentTime > 0.2,
@@ -736,6 +933,109 @@ try {
   pass(
     "real fixture media decodes and legacy SRT captions/speed controls work",
   );
+  await page.$eval("video", (video) => video.pause());
+  const playerLayout = await page.evaluate(() => {
+    const frame = document
+        .querySelector(".video-frame")
+        .getBoundingClientRect(),
+      side = document.querySelector(".watch-sidebar").getBoundingClientRect();
+    return {
+      ratio: frame.width / frame.height,
+      height: frame.height,
+      frameRight: frame.right,
+      sideLeft: side.left,
+      sideWidth: side.width,
+      columns: getComputedStyle(
+        document.querySelector(".episode-grid"),
+      ).gridTemplateColumns.split(" ").length,
+    };
+  });
+  assert(Math.abs(playerLayout.ratio - 9 / 16) < 0.01);
+  assert(playerLayout.height >= 600 && playerLayout.height <= 740);
+  assert(playerLayout.sideLeft > playerLayout.frameRight);
+  assert(Math.abs(playerLayout.sideWidth - 400) < 3);
+  assert.equal(playerLayout.columns, 10);
+  const collapsedSynopsis = await page.$eval(
+    ".synopsis",
+    (el) => el.getBoundingClientRect().height,
+  );
+  await clickText("more");
+  assert.equal(
+    await page.$eval(".synopsis-more", (button) =>
+      button.getAttribute("aria-expanded"),
+    ),
+    "true",
+  );
+  assert(
+    (await page.$eval(".synopsis", (el) => el.getBoundingClientRect().height)) >
+      collapsedSynopsis,
+  );
+  await clickText("less");
+  pass(
+    "desktop player keeps a portrait stage, right-side episode grid and expandable synopsis",
+  );
+  await page.click("aria/Comment");
+  await page.waitForSelector(".watch-comments-modal");
+  assert(
+    await page.$eval(".watch-comments-modal", (dialog) =>
+      dialog.contains(document.activeElement),
+    ),
+  );
+  await page.keyboard.press("Tab");
+  assert.equal(
+    await page.evaluate(() =>
+      document.activeElement?.getAttribute("aria-label"),
+    ),
+    "Close dialog",
+  );
+  await page.keyboard.press("Escape");
+  assert.equal(await page.$(".watch-comments-modal"), null);
+  assert.equal(
+    await page.evaluate(() => document.activeElement?.textContent),
+    "Comment",
+  );
+  pass(
+    "player comments open a keyboard-focused dialog and restore the comment control",
+  );
+  await page.evaluate(() => {
+    history.replaceState(
+      {},
+      "",
+      "/?checkout=success&code=fixture-oauth&state=fixture-state#watch/1?episode=10",
+    );
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (value) => {
+          window.__fixtureSharedLink = value;
+        },
+      },
+    });
+  });
+  await page.click("aria/Share");
+  await page.waitForSelector('input[aria-label="Drama link"]');
+  const sharedLink = await page.$eval(
+    'input[aria-label="Drama link"]',
+    (input) => input.value,
+  );
+  const sharedUrl = new URL(sharedLink);
+  assert.equal(sharedUrl.origin, origin);
+  assert.equal(sharedUrl.search, "");
+  assert.equal(sharedUrl.hash, "#watch/1?episode=10");
+  await clickText("Copy link");
+  await text("Link copied");
+  assert.equal(
+    await page.evaluate(() => window.__fixtureSharedLink),
+    sharedLink,
+  );
+  await page.keyboard.press("Escape");
+  pass(
+    "player sharing copies the selected episode link without checkout or OAuth query data",
+  );
+  await page.screenshot({
+    path: path.join(OUT, "watch-desktop.png"),
+    fullPage: true,
+  });
   await go("#watch/1?episode=11");
   await text("The story continues");
   assert.equal(
@@ -784,7 +1084,7 @@ try {
   membersOnly = false;
   pass("members-only episodes offer membership without a coin deduction");
   await page.screenshot({
-    path: path.join(OUT, "watch-desktop.png"),
+    path: path.join(OUT, "membership-paywall-destination.png"),
     fullPage: true,
   });
   await go("#coins?drama=1&episode=11");
@@ -1087,6 +1387,164 @@ try {
   await text("Open your order history to check payment confirmation.");
   assert.equal(await page.$(".checkout-confirmed"), null);
   pass("failed and unknown payment returns never claim a confirmed payment");
+  const openPrice = async () => {
+    await go("#price");
+    await page.reload({ waitUntil: "networkidle0" });
+    await page.waitForFunction(() =>
+      [...document.querySelectorAll(".membership-card button")].some(
+        (button) =>
+          button.textContent.trim() === "Subscribe" && !button.disabled,
+      ),
+    );
+  };
+  const checkouts = () =>
+    requests.filter((request) => request.path === "/v1/commerce/checkout");
+  const lastCheckout = () => checkouts().at(-1);
+  orderState = "paid";
+  checkoutConflictCode = "pending_subscription_checkout";
+  await openPrice();
+  await clickText("Subscribe");
+  await text("A membership checkout is already open");
+  await page.setViewport({ width: 390, height: 1000 });
+  assert(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  );
+  await page.screenshot({
+    path: path.join(OUT, "checkout-recovery-390.png"),
+    fullPage: true,
+  });
+  await page.setViewport({ width: 1440, height: 1000 });
+  assert(
+    await page.$$eval(".membership-card button", (buttons) =>
+      buttons.every((button) => button.disabled),
+    ),
+  );
+  const beforeResume = checkouts().length;
+  await clickText("Continue checkout");
+  await text("Checkout was cancelled.");
+  assert.equal(checkouts().length, beforeResume);
+  assert.equal(
+    await page.evaluate(() => sessionStorage.getItem("jjtv_checkout_order")),
+    "ORDER-FIXTURE",
+  );
+  pass(
+    "a pending subscription can resume its existing checkout without creating another session",
+  );
+  await openPrice();
+  await clickText("Subscribe");
+  await text("A membership checkout is already open");
+  const cancelledKey = lastCheckout().body.idempotency_key;
+  await clickText("Cancel pending checkout");
+  await text("Pending checkout cancelled. You can choose your plan again.");
+  assert(
+    requests.some(
+      (request) =>
+        request.path === "/v1/commerce/orders/ORDER-FIXTURE/cancel" &&
+        request.method === "POST",
+    ),
+  );
+  checkoutConflictCode = null;
+  await clickText("Subscribe");
+  await text("Payment confirmed.");
+  assert.notEqual(lastCheckout().body.idempotency_key, cancelledKey);
+  pass(
+    "confirmed checkout cancellation releases the UI and creates a fresh purchase intent",
+  );
+  checkoutConflictCode = "service_unavailable";
+  await openPrice();
+  await clickText("Buy coins");
+  await text("Temporary checkout gateway unavailable");
+  const unknownCoinKey = lastCheckout().body.idempotency_key;
+  checkoutConflictCode = "pending_subscription_checkout";
+  await clickText("Subscribe");
+  await text("A membership checkout is already open");
+  await clickText("Cancel pending checkout");
+  await text("Pending checkout cancelled. You can choose your plan again.");
+  checkoutConflictCode = null;
+  await clickText("Buy coins");
+  await text("Payment confirmed.");
+  assert.equal(lastCheckout().body.product_type, "coin_pack");
+  assert.equal(lastCheckout().body.idempotency_key, unknownCoinKey);
+  pass(
+    "cancelling a membership preserves an unrelated coin purchase key whose previous result was unknown",
+  );
+  checkoutConflictSequence = ["checkout_in_progress", null];
+  await openPrice();
+  await clickText("Subscribe");
+  await text("Checkout is being prepared");
+  const retryKey = lastCheckout().body.idempotency_key;
+  await clickText("Retry checkout");
+  await text("Payment confirmed.");
+  assert.equal(lastCheckout().body.idempotency_key, retryKey);
+  pass("an in-progress checkout retries the original idempotency key");
+  checkoutConflictSequence = ["checkout_expired", "service_unavailable", null];
+  await openPrice();
+  await clickText("Subscribe");
+  await text("This checkout has expired");
+  const expiredKey = lastCheckout().body.idempotency_key;
+  await clickText("Start new checkout");
+  await text("Temporary checkout gateway unavailable");
+  const freshKey = lastCheckout().body.idempotency_key;
+  assert.notEqual(freshKey, expiredKey);
+  await clickText("Retry checkout");
+  await text("Payment confirmed.");
+  assert.equal(lastCheckout().body.idempotency_key, freshKey);
+  pass(
+    "an expired checkout creates an explicit fresh intent and preserves its key after a service failure",
+  );
+  checkoutConflictCode = "pending_subscription_checkout";
+  cancelConflictCode = "checkout_payment_pending";
+  orderState = "created";
+  await openPrice();
+  await clickText("Subscribe");
+  await text("A membership checkout is already open");
+  const beforePending = checkouts().length;
+  await clickText("Cancel pending checkout");
+  await text("Payment is being confirmed");
+  assert.equal(await page.$(".checkout-recovery .button.primary"), null);
+  assert(
+    await page.$$eval(".membership-card button", (buttons) =>
+      buttons.every((button) => button.disabled),
+    ),
+  );
+  await clickText("Check payment status");
+  await text("Payment is still being confirmed.");
+  assert.equal(checkouts().length, beforePending);
+  orderState = "paid";
+  await clickText("Check payment status");
+  await text("Payment confirmed. This order has been paid.");
+  assert.equal(checkouts().length, beforePending);
+  pass(
+    "a completed checkout cannot be cancelled into a second payment and waits for confirmed order status",
+  );
+  cancelConflictCode = null;
+  for (const code of ["checkout_recovery_required", "checkout_already_paid"]) {
+    checkoutConflictCode = code;
+    await openPrice();
+    await clickText("Subscribe");
+    await text(conflictMessages[code]);
+    assert.equal(await page.$(".checkout-recovery button"), null);
+    assert(
+      (
+        await page.$eval(".checkout-recovery .text-button", (link) =>
+          link.getAttribute("href"),
+        )
+      ).includes("order=ORDER-FIXTURE"),
+    );
+    assert(
+      (
+        await page.$eval(".checkout-recovery .button.secondary", (link) =>
+          link.getAttribute("href"),
+        )
+      ).includes("account/orders"),
+    );
+  }
+  checkoutConflictCode = null;
+  pass(
+    "manual recovery and already-paid conflicts expose order and support links without another purchase",
+  );
   await go("#support?ticket=T-1");
   await text("An episode needs help.");
   await page.evaluate(() => {
@@ -1180,6 +1638,99 @@ try {
   pass(
     "support account switching discards private caches, drafts and late responses despite 404 and list failures",
   );
+  privateComments = true;
+  await go("#watch/1?episode=10");
+  await page.waitForFunction(
+    () => document.querySelector("video")?.currentTime > 0.1,
+  );
+  await page.$eval("video", (video) => video.pause());
+  await page.click("aria/Comment");
+  await text("PRIVATE PENDING COMMENT FROM FIRST ACCOUNT");
+  await page.type("#comment-body", "PRIVATE COMMENT DRAFT FROM FIRST ACCOUNT");
+  holdOldComments = true;
+  const commentStarted = new Promise((resolve) => {
+    oldCommentsStarted = resolve;
+  });
+  await clickText("More comments");
+  await commentStarted;
+  expireCommentOwner = true;
+  await clickText("Post comment");
+  await page.waitForSelector(".sign-in");
+  const assertPrivateCommentsAbsent = async () => {
+    const state = await page.evaluate(() => ({
+      text: document.body.textContent,
+      draft: document.querySelector("#comment-body")?.value || "",
+    }));
+    for (const privateText of [
+      "PRIVATE PENDING COMMENT FROM FIRST ACCOUNT",
+      "PRIVATE LATE PENDING COMMENT FROM FIRST ACCOUNT",
+      "PRIVATE COMMENT DRAFT FROM FIRST ACCOUNT",
+    ])
+      assert(
+        !state.text.includes(privateText) && !state.draft.includes(privateText),
+        "Previous account comment remained: " + privateText,
+      );
+  };
+  await assertPrivateCommentsAbsent();
+  await page.waitForFunction(
+    () => document.querySelector("video")?.currentTime > 0.1,
+  );
+  await page.$eval("video", (video) => video.pause());
+  if (!(await page.$(".watch-comments-modal")))
+    await page.click("aria/Comment");
+  await page.waitForSelector("#comment-body");
+  const guestComment = "Guest comment replay after account change.";
+  await page.type("#comment-body", guestComment);
+  await clickText("Post comment");
+  await page.waitForSelector("input[type=email]");
+  await page.type("input[type=email]", "viewer@example.com");
+  await clickText("I already have a code");
+  await page.type("input[autocomplete=one-time-code]", "123456");
+  const guestCommentRequest = page.waitForRequest(
+    (request) =>
+      new URL(request.url()).pathname === "/v1/episodes/10/comments" &&
+      request.method() === "POST" &&
+      JSON.parse(request.postData() || "{}").body === guestComment,
+  );
+  await clickText("Sign in / Create account");
+  await guestCommentRequest;
+  await text("Your comment was submitted for review.");
+  assert.equal(
+    requests.filter(
+      (request) =>
+        request.path === "/v1/episodes/10/comments" &&
+        request.method === "POST" &&
+        request.body.body === guestComment,
+    ).length,
+    1,
+  );
+  pass(
+    "guest comment intent survives the player login transition and submits exactly once",
+  );
+  await text("Comments are unavailable");
+  const oldCommentsResponse = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/v1/episodes/10/comments" &&
+      new URL(response.url()).searchParams.get("cursor") === "9001",
+  );
+  releaseOldComments();
+  await oldCommentsResponse;
+  await page.evaluate(
+    () =>
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      ),
+  );
+  await assertPrivateCommentsAbsent();
+  assert.equal(
+    await page
+      .$$(".watch-comments-modal .comment")
+      .then((items) => items.length),
+    0,
+  );
+  pass(
+    "pending comments and drafts stay private across account changes, a new-owner 404 and late old replies",
+  );
   assert.deepEqual(unknown, []);
   assert.deepEqual(errors, []);
   pass("no unknown API contracts or uncaught browser errors");
@@ -1204,6 +1755,7 @@ try {
 } finally {
   releaseOldSupport?.();
   releaseSecondSupport?.();
+  releaseOldComments?.();
   await browser.close();
   await server.close();
 }

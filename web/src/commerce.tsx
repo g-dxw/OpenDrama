@@ -4,12 +4,70 @@ import {
   post,
   errorMessage,
   money,
+  ApiError,
+  authToken,
   type Pack,
   type Plan,
   type Order,
 } from "./consumer-api";
 import { useAuth } from "./auth";
 import { Failure, Icon, Loading, Modal } from "./components";
+type CheckoutConflictCode =
+  | "pending_subscription_checkout"
+  | "checkout_payment_pending"
+  | "checkout_in_progress"
+  | "checkout_expired"
+  | "checkout_recovery_required"
+  | "checkout_already_paid";
+interface CheckoutConflict {
+  code: CheckoutConflictCode;
+  message: string;
+  order_no: string;
+  checkout_url?: string;
+  action: string;
+}
+interface PurchaseIntent {
+  product: "membership" | "coin_pack";
+  code: string;
+  account: string;
+  key: string;
+  mapKey: string;
+  returnHash: string;
+  sourceDramaId?: number;
+  ownerToken: string | null;
+}
+interface RecoveryState {
+  conflict: CheckoutConflict;
+  intent: PurchaseIntent;
+}
+const conflictTitles: Record<CheckoutConflictCode, string> = {
+  pending_subscription_checkout: "A membership checkout is already open",
+  checkout_payment_pending: "Payment is being confirmed",
+  checkout_in_progress: "Checkout is being prepared",
+  checkout_expired: "This checkout has expired",
+  checkout_recovery_required: "This checkout needs support",
+  checkout_already_paid: "This order has already been paid",
+};
+function checkoutConflict(error: unknown): CheckoutConflict | null {
+  if (!(error instanceof ApiError) || error.status !== 409) return null;
+  const detail = (error.data as { detail?: unknown } | null)?.detail;
+  if (!detail || typeof detail !== "object") return null;
+  const value = detail as Partial<CheckoutConflict>;
+  if (
+    !value.code ||
+    !Object.prototype.hasOwnProperty.call(conflictTitles, value.code) ||
+    typeof value.message !== "string"
+  )
+    return null;
+  return {
+    code: value.code,
+    message: value.message,
+    order_no: typeof value.order_no === "string" ? value.order_no : "",
+    checkout_url:
+      typeof value.checkout_url === "string" ? value.checkout_url : undefined,
+    action: typeof value.action === "string" ? value.action : "",
+  };
+}
 export function Store({
   kind = "membership",
   sourceDramaId,
@@ -30,9 +88,28 @@ export function Store({
     [loading, setLoading] = useState(true),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(""),
-    [cancelOpen, setCancelOpen] = useState(false);
+    [cancelOpen, setCancelOpen] = useState(false),
+    [recovery, setRecovery] = useState<RecoveryState | null>(null),
+    [purchaseNotice, setPurchaseNotice] = useState("");
   const keys = useRef(new Map<string, string>()),
-    submitting = useRef(false);
+    submitting = useRef(false),
+    mounted = useRef(true);
+  const viewerToken = authToken();
+  const activeRecovery =
+    recovery?.intent.ownerToken === viewerToken ? recovery : null;
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  useEffect(() => {
+    keys.current.clear();
+    submitting.current = false;
+    setBusy("");
+    setRecovery(null);
+    setPurchaseNotice("");
+  }, [viewerToken]);
   const load = () => {
     setLoading(true);
     setError("");
@@ -83,46 +160,184 @@ export function Store({
         .getElementById("membership-plans")
         ?.scrollIntoView({ block: "start" });
   }
-  async function purchase(product: "membership" | "coin_pack", code: string) {
-    if (submitting.current) return;
-    submitting.current = true;
-    const selection = product + ":" + code;
-    setBusy(selection);
-    setError("");
-    const intent = selection + ":" + account;
-    let key = keys.current.get(intent);
+  function newIntent(
+    product: "membership" | "coin_pack",
+    code: string,
+  ): PurchaseIntent {
+    const mapKey = product + ":" + code + ":" + account;
+    let key = keys.current.get(mapKey);
     if (!key) {
       key = crypto.randomUUID();
-      keys.current.set(intent, key);
+      keys.current.set(mapKey, key);
     }
-    const returnHash = sourceDramaId
-      ? "#watch/" +
-        sourceDramaId +
-        (sourceEpisodeId ? "?episode=" + sourceEpisodeId : "")
-      : window.location.hash;
+    return {
+      product,
+      code,
+      account,
+      key,
+      mapKey,
+      ownerToken: authToken(),
+      returnHash: sourceDramaId
+        ? "#watch/" +
+          sourceDramaId +
+          (sourceEpisodeId ? "?episode=" + sourceEpisodeId : "")
+        : window.location.hash,
+      sourceDramaId,
+    };
+  }
+  const isCurrentIntent = (intent: PurchaseIntent) =>
+    mounted.current && intent.ownerToken === authToken();
+  function showConflict(error: unknown, intent: PurchaseIntent) {
+    const conflict = checkoutConflict(error);
+    if (conflict) {
+      setRecovery({ conflict, intent });
+      setError("");
+    } else setError(errorMessage(error));
+  }
+  async function purchase(
+    product: "membership" | "coin_pack",
+    code: string,
+    previous?: PurchaseIntent,
+  ) {
+    if (submitting.current) return;
+    const intent = previous ?? newIntent(product, code);
+    if (!isCurrentIntent(intent)) return;
+    submitting.current = true;
+    setBusy(product + ":" + code);
+    setError("");
+    setPurchaseNotice("");
     try {
       const result = await post<{ url: string; order_no: string }>(
         "/v1/commerce/checkout",
         {
-          product_type: product,
-          code,
-          account_code: account || undefined,
-          idempotency_key: key,
+          product_type: intent.product,
+          code: intent.code,
+          account_code: intent.account || undefined,
+          idempotency_key: intent.key,
           success_url:
-            window.location.origin + "/?checkout=success" + returnHash,
-          cancel_url: window.location.origin + "/?checkout=cancel" + returnHash,
+            window.location.origin + "/?checkout=success" + intent.returnHash,
+          cancel_url:
+            window.location.origin + "/?checkout=cancel" + intent.returnHash,
           attribution_pid:
             localStorage.getItem("jjtv_attribution_pid") || undefined,
-          source_drama_id: sourceDramaId,
+          source_drama_id: intent.sourceDramaId,
         },
       );
+      if (!isCurrentIntent(intent)) return;
       sessionStorage.setItem("jjtv_checkout_order", result.order_no);
       window.location.assign(result.url);
-    } catch (e) {
-      setError(errorMessage(e));
-      setBusy("");
+    } catch (error) {
+      if (isCurrentIntent(intent)) showConflict(error, intent);
     } finally {
-      submitting.current = false;
+      if (isCurrentIntent(intent)) {
+        submitting.current = false;
+        setBusy("");
+      }
+    }
+  }
+  function retryCheckout(fresh = false) {
+    if (!activeRecovery || submitting.current) return;
+    let intent = activeRecovery.intent;
+    if (fresh) {
+      intent = { ...intent, key: crypto.randomUUID() };
+      keys.current.set(intent.mapKey, intent.key);
+      // A new attempt that loses its response must retry this new key, not mint another.
+      setRecovery({
+        intent,
+        conflict: {
+          code: "checkout_in_progress",
+          action: "retry",
+          order_no: "",
+          message:
+            "Opening your new checkout. If the connection fails, retry this same payment attempt.",
+        },
+      });
+    }
+    void purchase(intent.product, intent.code, intent);
+  }
+  function resumeCheckout() {
+    if (
+      !activeRecovery?.conflict.checkout_url ||
+      !isCurrentIntent(activeRecovery.intent)
+    )
+      return;
+    if (activeRecovery.conflict.order_no)
+      sessionStorage.setItem(
+        "jjtv_checkout_order",
+        activeRecovery.conflict.order_no,
+      );
+    window.location.assign(activeRecovery.conflict.checkout_url);
+  }
+  async function cancelPendingCheckout() {
+    if (!activeRecovery || submitting.current) return;
+    const { intent, conflict } = activeRecovery;
+    if (!conflict.order_no) return;
+    submitting.current = true;
+    setBusy("cancel-checkout");
+    setError("");
+    setPurchaseNotice("");
+    try {
+      const result = await post<{
+        order_no: string;
+        status: string;
+        canceled: boolean;
+      }>(
+        "/v1/commerce/orders/" +
+          encodeURIComponent(conflict.order_no) +
+          "/cancel",
+        undefined,
+      );
+      if (!isCurrentIntent(intent)) return;
+      if (!result.canceled)
+        throw new Error(
+          "Cancellation is not confirmed. Check the order before retrying.",
+        );
+      keys.current.delete(intent.mapKey);
+      setRecovery(null);
+      setPurchaseNotice(
+        "Pending checkout cancelled. You can choose your plan again.",
+      );
+    } catch (error) {
+      if (isCurrentIntent(intent)) showConflict(error, intent);
+    } finally {
+      if (isCurrentIntent(intent)) {
+        submitting.current = false;
+        setBusy("");
+      }
+    }
+  }
+  async function checkPendingPayment() {
+    if (!activeRecovery || submitting.current) return;
+    const { intent, conflict } = activeRecovery;
+    submitting.current = true;
+    setBusy("check-payment");
+    setError("");
+    setPurchaseNotice("");
+    try {
+      const result = await get<{ items: Order[] }>(
+        "/v1/commerce/orders?limit=100",
+      );
+      if (!isCurrentIntent(intent)) return;
+      const order = result.items.find(
+        (item) => item.order_no === conflict.order_no,
+      );
+      if (order?.status === "paid") {
+        await refresh();
+        if (!isCurrentIntent(intent)) return;
+        keys.current.delete(intent.mapKey);
+        setRecovery(null);
+        setPurchaseNotice("Payment confirmed. This order has been paid.");
+      } else
+        setPurchaseNotice(
+          "Payment is still being confirmed. Check your order history or try again shortly.",
+        );
+    } catch (error) {
+      if (isCurrentIntent(intent)) setError(errorMessage(error));
+    } finally {
+      if (isCurrentIntent(intent)) {
+        submitting.current = false;
+        setBusy("");
+      }
     }
   }
   const firstCurrency = plans[0]?.currency;
@@ -183,6 +398,89 @@ export function Store({
         </div>
       )}
       {error && <Failure message={error} retry={load} />}
+      {activeRecovery && (
+        <section className="checkout-recovery" role="alert">
+          <h2>{conflictTitles[activeRecovery.conflict.code]}</h2>
+          <p>{activeRecovery.conflict.message}</p>
+          {activeRecovery.conflict.order_no && (
+            <p>Order {activeRecovery.conflict.order_no}</p>
+          )}
+          <div className="button-row">
+            {activeRecovery.conflict.code ===
+              "pending_subscription_checkout" && (
+              <>
+                {activeRecovery.conflict.checkout_url && (
+                  <button
+                    className="button primary"
+                    disabled={!!busy}
+                    onClick={resumeCheckout}
+                  >
+                    Continue checkout
+                  </button>
+                )}
+                <button
+                  className="button secondary"
+                  disabled={!!busy || !activeRecovery.conflict.order_no}
+                  onClick={() => void cancelPendingCheckout()}
+                >
+                  {busy === "cancel-checkout"
+                    ? "Cancelling…"
+                    : "Cancel pending checkout"}
+                </button>
+              </>
+            )}
+            {activeRecovery.conflict.code === "checkout_in_progress" && (
+              <button
+                className="button primary"
+                disabled={!!busy}
+                onClick={() => retryCheckout()}
+              >
+                {busy ? "Retrying…" : "Retry checkout"}
+              </button>
+            )}
+            {activeRecovery.conflict.code === "checkout_expired" && (
+              <button
+                className="button primary"
+                disabled={!!busy}
+                onClick={() => retryCheckout(true)}
+              >
+                Start new checkout
+              </button>
+            )}
+            {activeRecovery.conflict.code === "checkout_payment_pending" && (
+              <button
+                className="button secondary"
+                disabled={!!busy}
+                onClick={() => void checkPendingPayment()}
+              >
+                {busy === "check-payment"
+                  ? "Checking…"
+                  : "Check payment status"}
+              </button>
+            )}
+            <a className="button secondary" href="#account/orders">
+              View orders
+            </a>
+            <a
+              className="text-button"
+              href={
+                "#support?new=1" +
+                (activeRecovery.conflict.order_no
+                  ? "&order=" +
+                    encodeURIComponent(activeRecovery.conflict.order_no)
+                  : "")
+              }
+            >
+              Contact support
+            </a>
+          </div>
+        </section>
+      )}
+      {purchaseNotice && (
+        <p className="purchase-notice" role="status">
+          {purchaseNotice}
+        </p>
+      )}
       {loading ? (
         <Loading />
       ) : (
@@ -259,7 +557,7 @@ export function Store({
                   </ul>
                   <button
                     className="button secondary full-width"
-                    disabled={!!busy || !channels.length}
+                    disabled={!!busy || !!activeRecovery || !channels.length}
                     onClick={() =>
                       requireAuth(() => {
                         void purchase("membership", plan.code);
@@ -327,7 +625,7 @@ export function Store({
                     <strong>{money(pack.price_cents, pack.currency)}</strong>
                     <button
                       className="button secondary"
-                      disabled={!!busy || !channels.length}
+                      disabled={!!busy || !!activeRecovery || !channels.length}
                       onClick={() =>
                         requireAuth(() => {
                           void purchase("coin_pack", pack.code);
