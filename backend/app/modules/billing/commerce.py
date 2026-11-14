@@ -347,8 +347,8 @@ def checkout(db,*,user_id,email,product_type,code,idempotency_key,account_code=N
     if order:
         if order.product_type!=product_type or order.product_snapshot.get('code')!=code:raise BillingError(409,'idempotency key was used for another product')
         if account_code and order.account_code!=account_code:raise BillingError(409,'idempotency key was used for another payment channel')
+        if order.status=='failed' and (order.checkout_context or {}).get('session_expired'):raise checkout_conflict(order,'checkout_expired','This checkout has expired. Start a new purchase.','new_purchase')
         if order.billing_mode=='subscription':
-            if order.status=='failed' and (order.checkout_context or {}).get('session_expired'):raise checkout_conflict(order,'checkout_expired','This checkout has expired. Start a new purchase.','new_purchase')
             if not _checkout_pending(db,order):raise checkout_conflict(order,'checkout_already_paid','This order was already paid. View your orders.','view_orders')
             state=_checkout_remote_state(db,order)
             if state=='expired':
@@ -388,6 +388,7 @@ def checkout(db,*,user_id,email,product_type,code,idempotency_key,account_code=N
     # creating a Session so concurrent tabs reuse the same remote idempotency key.
     wallet_lock(db,user_id)
     order=db.get(Order,order.id,populate_existing=True)
+    if order.status=='failed' and (order.checkout_context or {}).get('session_expired'):raise checkout_conflict(order,'checkout_expired','This checkout has expired. Start a new purchase.','new_purchase')
     if order.billing_mode=='subscription':
         state=_checkout_remote_state(db,order)
         if state=='expired':
