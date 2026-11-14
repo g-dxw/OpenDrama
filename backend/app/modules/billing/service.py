@@ -1304,6 +1304,12 @@ def cancel_subscription(session:Session,user_id:int)->None:
 
 _legacy_revoke_membership = revoke_membership
 
+def _existing_managed_subscription_bindings(session:Session,user_id:int)->list[dict]:
+    bindings=set(session.execute(select(Subscription.account_code,Subscription.stripe_subscription_id).where(Subscription.user_id==user_id,Subscription.managed_commerce.is_(True),Subscription.stripe_subscription_id.is_not(None))).all())
+    bindings.update(session.execute(select(Order.account_code,Order.subscription_ref).where(Order.user_id==user_id,Order.product_type=='membership',Order.billing_mode=='subscription',Order.checkout_key.is_not(None),Order.subscription_ref.is_not(None))).all())
+    return [dict(account_code=account,stripe_subscription_id=subscription) for account,subscription in sorted(bindings)]
+
+
 def revoke_membership(session:Session,*,user_id:int,mode:str,reason:str,actor_id:int)->dict:
     from app.modules.billing import commerce
     from app.modules.billing.commerce_models import MembershipGrant
@@ -1312,7 +1318,8 @@ def revoke_membership(session:Session,*,user_id:int,mode:str,reason:str,actor_id
     commerce.wallet_lock(session,user_id)
     grants=list(session.scalars(select(MembershipGrant).where(MembershipGrant.user_id==user_id,MembershipGrant.status=='active',MembershipGrant.ends_at>_now()).with_for_update()))
     row=active_subscription(session,user_id,for_update=True)
-    if not grants and (row is None or not row.managed_commerce):
+    revoked_bindings=_existing_managed_subscription_bindings(session,user_id) if mode=='now' else []
+    if not grants and (row is None or not row.managed_commerce) and not revoked_bindings:
         with managed_stripe_runtime(session,row.account_code if row else "env"):
             return _legacy_revoke_membership(session,user_id=user_id,mode=mode,reason=reason,actor_id=actor_id)
     before=access_until(session,user_id)
@@ -1339,7 +1346,12 @@ def revoke_membership(session:Session,*,user_id:int,mode:str,reason:str,actor_id
     if mode=='now':
         for grant in grants:grant.status='revoked'
         if row:row.pass_end=moment;row.current_period_end=moment;row.status='canceled'
-    session.add(AuditLog(actor_type='admin',actor_id=actor_id,action='membership_revoke',target_type='user',target_id=user_id,payload=dict(mode=mode,reason=reason,before_until=before.isoformat(),after_until=before.isoformat() if mode=='period_end' else moment.isoformat(),stripe_canceled=bool(stripe_id))))
+    payload=dict(mode=mode,reason=reason,before_until=before.isoformat(),after_until=before.isoformat() if mode=='period_end' else moment.isoformat(),stripe_canceled=bool(stripe_id))
+    if mode=='now':
+        # Freeze only bindings already known when all existing grants are revoked.
+        # Original managed orders retain historical identities if a row was replaced.
+        payload.update(cutoff_at=moment.isoformat(),revoked_subscription_bindings=revoked_bindings)
+    session.add(AuditLog(actor_type='admin',actor_id=actor_id,action='membership_revoke',target_type='user',target_id=user_id,payload=payload))
     session.commit()
     return dict(mode=mode,before_until=before.isoformat(),after_until=before.isoformat() if mode=='period_end' else moment.isoformat(),stripe_canceled=bool(stripe_id))
 
