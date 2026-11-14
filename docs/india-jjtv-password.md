@@ -2,6 +2,8 @@
 
 仅用于现有 India Short Drama 租户。首次连接无需验证码；直接登录旧站仍保留原验证器。此功能需要旧 API 的独立 jjtv_client_password provider，部署 JJTV 消费端不会自动开启旧 API 能力。
 
+若已配套启用 [India 角色委托授权](india-jjtv-role-auth.md)，员工改为只使用 JJTV 租户角色，本文的手动连接流程不再适用。委托模式默认关闭；配置错误不会自动降级到本文模式。
+
 ## 配置
 
 默认关闭。JJTV 后端需 INDIA_JJTV_CLIENT_ENABLED=true、INDIA_JJTV_CLIENT_SECRET_FILE=/run/secrets/india-client/jjtv.key，并保留既有 INDIA_API_BASE_URL 与 TENANT_CONNECTION_KEY。密钥为独立的至少32随机字节base64url文本，43–128字符；只写入受保护文件，不复用验证器/支付密钥、不返回浏览器、不写入Git或发布附件。

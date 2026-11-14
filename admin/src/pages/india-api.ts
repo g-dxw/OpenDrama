@@ -2,7 +2,7 @@ import { api, ApiError, API_BASE, getToken, forceReauth, isDeadCredential } from
 import { getCurrentTenantId, INDIA_TENANT_ID } from "../tenant-scope";
 
 export const INDIA_BASE = "/admin/v1/tenants/" + INDIA_TENANT_ID + "/india";
-export type IndiaSession = { connected: boolean; configured?: boolean; auth_mode: "jjtv_client_password" | "unavailable"; username?: string; role?: string; expires_at?: string; state?: string };
+export type IndiaSession = { connected: boolean; configured?: boolean; auth_mode: "jjtv_delegated" | "jjtv_client_password" | "unavailable"; username?: string; role?: string; permissions?: string[]; actor_scope?: string; expires_at?: string; state?: string };
 export type IndiaEpisode = { id: string; episode_no: number; title: string; duration_ms: number; media_status: string; current_upload_id?: string; subtitle_languages?: string[]; subtitle_availability?: string };
 export type IndiaSeries = {
   id: string; title: string; title_hi?: string; synopsis: string; genre: string; language: string;
@@ -18,6 +18,10 @@ const ERRORS: Record<string, string> = {
   india_login_rejected: "旧站账号或密码不正确，请重新输入。",
   india_client_unavailable: "旧站专用连接暂未配置完成，请联系平台管理员。",
   india_client_contract_invalid: "旧站专用连接返回异常，请联系平台管理员检查配置。",
+  india_delegated_unavailable: "India 运营授权暂不可用，请联系平台管理员检查配置。",
+  india_delegated_identity_invalid: "India 运营身份验证未通过，请联系平台管理员检查配置。",
+  india_connection_not_required: "当前使用租户角色授权，无需连接旧站账号。",
+  india_forbidden: "当前租户角色没有此项操作权限，请联系租户管理员。",
   india_invalid_response: "旧站专用连接返回异常，请联系平台管理员检查配置。",
   india_rate_limited: "旧站验证或请求过于频繁，请稍后重试。",
   india_not_configured: "India 内容服务暂未配置完成，请联系平台管理员。",
@@ -36,6 +40,13 @@ const ERRORS: Record<string, string> = {
   JJTV_CLIENT_PROOF_INVALID: "旧站专用连接验证未通过，请联系平台管理员检查配置。",
   JJTV_CLIENT_BINDING_MISMATCH: "旧站连接身份已失效，请重新连接。",
   JJTV_SCOPE_FORBIDDEN: "当前连接仅允许短剧和视频运营。",
+  JJTV_DELEGATED_DISABLED: "India 运营授权暂未启用，请联系平台管理员。",
+  JJTV_DELEGATED_UNAVAILABLE: "India 运营授权暂时不可用，请联系平台管理员检查配置。",
+  JJTV_DELEGATED_PROOF_INVALID: "India 运营授权验证未通过，请联系平台管理员检查配置。",
+  JJTV_DELEGATED_PROOF_REPLAYED: "本次运营授权已使用，请刷新后重新操作。",
+  JJTV_DELEGATED_PERMISSION_DENIED: "当前租户角色没有此项操作权限，请联系租户管理员。",
+  JJTV_DELEGATED_IDEMPOTENCY_REQUIRED: "操作验证信息不完整，请刷新后重新操作。",
+  JJTV_DELEGATED_SELF_REVIEW_FORBIDDEN: "请由另一位审核员审核此内容。",
   JJTV_CLIENT_FORBIDDEN: "此旧站账号尚未获准通过 JJTV 连接，请联系平台管理员。",
   RATE_LIMITED: "旧站验证或请求过于频繁，请稍后重试。",
   FRESH_AUTH_REQUIRED: "旧站授权已失效，请重新输入旧站账号和密码连接。",
