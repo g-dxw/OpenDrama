@@ -14,7 +14,7 @@ from app.modules.common.auth import require_user
 from app.modules.billing import commerce as service
 from app.modules.billing.models import Plan,PlanVersion
 from app.modules.billing.commerce_models import CoinPack,StripePriceBinding
-from app.modules.billing.service import BillingError, PLAN_DAYS, INTERVAL_OF, billing_mode
+from app.modules.billing.service import BillingError, PLAN_DAYS, INTERVAL_OF, billing_mode, apply_stripe_event
 from app.modules.wallet.models import CoinLedgerEntry,WalletAccount
 from app.modules.ops.managed_settings import get_config,save_config
 
@@ -103,6 +103,10 @@ async def webhook(code:str,request:Request,stripe_signature:str=Header(default='
     call(db,service.signature,db,code,body,stripe_signature)
     try:payload=__import__('json').loads(body)
     except (ValueError,TypeError):raise HTTPException(400,'invalid JSON')
+    # Both URLs for the original merchant must retain pre-commerce dispatch.
+    # Other merchants never enter the legacy account's compatibility handler.
+    if code=='env':
+        return call(db,apply_stripe_event,db,body=body,signature=stripe_signature,payload=payload)
     result=call(db,service.process_event,db,code,payload)
     return {'received':True,**(result or {'ignored':payload.get('type')})}
 
