@@ -22,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 from contextlib import contextmanager
 from contextvars import ContextVar
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.modules.billing.models import BillingSettings, Order, Plan, PlanVersion, Subscription
@@ -480,12 +480,38 @@ def grant_membership(
     if not reason:
         raise BillingError(422, "请填写调整原因")
 
+    # Checkout settlement and refunds use the wallet as the per-user entitlement
+    # mutex. Read source facts only after acquiring the same lock.
+    from app.modules.billing.commerce import wallet_lock
+    from app.modules.billing.commerce_models import MembershipGrant
+
+    wallet_lock(session, user_id)
     before_until = access_until(session, user_id)
     row = active_subscription(session, user_id, for_update=True)
     if mode == "restart" and row is not None and row.stripe_subscription_id:
         # We cannot move Stripe's billing period, so "restart" would silently
         # leave the subscription window in place.
         raise BillingError(409, "该用户有自动续费订阅，请改用「顺延」")
+    if mode == "restart":
+        protected_source = session.scalar(
+            select(MembershipGrant.id)
+            .where(
+                MembershipGrant.user_id == user_id,
+                or_(
+                    MembershipGrant.status == "pending_refund",
+                    (MembershipGrant.status == "active") & (MembershipGrant.ends_at > _now()),
+                ),
+            )
+            .limit(1)
+            .with_for_update()
+        )
+        if protected_source is not None:
+            # Rewriting a legacy pass does not overwrite paid/frozen order grants.
+            # Preserve those source facts instead of auditing a fictitious end date.
+            raise BillingError(
+                409,
+                "该用户存在未到期的订单会员权益或退款冻结权益，不能「从今天重算」，请改用「顺延」",
+            )
 
     if row is None:
         row = Subscription(
