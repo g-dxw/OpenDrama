@@ -117,8 +117,12 @@ export function getFavorites(
   );
 }
 
-export function getHistory(): Promise<HistoryPayload> {
-  return getJson<HistoryPayload>("/v1/me/history");
+export function getHistory(limit?: number, offset = 0): Promise<HistoryPayload> {
+  // Preserve the original no-argument request for existing callers.
+  const url = limit == null && offset === 0
+    ? "/v1/me/history"
+    : `/v1/me/history?limit=${limit ?? 60}&offset=${offset}`;
+  return getJson<HistoryPayload>(url);
 }
 
 export function getLikes(): Promise<LikesPayload> {

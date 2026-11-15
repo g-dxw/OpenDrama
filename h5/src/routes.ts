@@ -1,4 +1,4 @@
-export type MobileTab = "home" | "foryou" | "rewards" | "me";
+export type MobileTab = "home" | "foryou" | "rewards" | "mylist" | "me";
 export type MeTab = "history" | "favorites" | "likes";
 export type MeSheet =
   | "edit"
@@ -19,7 +19,7 @@ export function readMobileRoute(hash = window.location.hash) {
   const dramaId =
     candidate != null && Number.isSafeInteger(candidate) ? candidate : null;
   const episode = Number(params.get("episode"));
-  const section = parts[1] || "history";
+  const section = parts[1] || (parts[0] === "mylist" ? "favorites" : "history");
   const library =
     section === "favorites" || section === "likes"
       ? section
@@ -35,7 +35,7 @@ export function readMobileRoute(hash = window.location.hash) {
   };
   const premium = path === "premium" || path === "price";
   const tab: MobileTab =
-    parts[0] === "account" || parts[0] === "me" || premium
+    parts[0] === "mylist" ? "mylist" : parts[0] === "account" || parts[0] === "me" || premium
       ? "me"
       : path === "foryou" || path === "rewards"
         ? path
@@ -44,6 +44,7 @@ export function readMobileRoute(hash = window.location.hash) {
     ["", "home", "foryou", "rewards", "search", "premium"].includes(path) ||
     (path === "price" && params.get("tab") !== "coins") ||
     dramaId != null ||
+    /^mylist(\/(history|favorites|likes))?$/.test(path) ||
     /^(account|me)(\/(history|favorites|likes|profile|ledger|orders|messages|settings))?$/.test(
       path,
     );
@@ -56,7 +57,7 @@ export function readMobileRoute(hash = window.location.hash) {
     searching: path === "search",
     query: params.get("q") || "",
     meTab,
-    meSheet: premium
+    meSheet: parts[0] === "mylist" ? null : premium
       ? "premium"
       : params.get("sheet") === "signout" && section === "settings"
         ? "signout"

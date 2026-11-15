@@ -3,17 +3,18 @@ import { useEffect, useState, type ReactNode } from "react";
 import { AuthProvider, useAuth } from "./auth/AuthProvider";
 import { LoginSheet } from "./auth/LoginSheet";
 import { loadLocale, saveLocale, t, type Locale } from "./copy";
-import { IconForYou, IconHome, IconMe, IconRewards, IconSearch } from "./icons";
+import { IconNavDiscover, IconNavHome, IconNavList, IconNavProfile, IconNavRewards, IconSearch } from "./icons";
 import { ForYouPage } from "./pages/ForYouPage";
 import { HomePage } from "./pages/HomePage";
 import { MePage } from "./pages/MePage";
+import { MyListPage } from "./pages/MyListPage";
 import { PlayPage } from "./pages/PlayPage";
 import { RewardsPage } from "./pages/RewardsPage";
 import { SearchPage } from "./pages/SearchPage";
 import { toast, ToastHost } from "./ui/toast";
-import { readMobileRoute } from "./routes";
+import { readMobileRoute, type MobileTab } from "./routes";
 
-type Tab = "home" | "foryou" | "rewards" | "me";
+type Tab = MobileTab;
 
 interface TabItem {
   id: Tab;
@@ -25,22 +26,27 @@ const TABS: TabItem[] = [
   {
     id: "home",
     key: "nav.home",
-    renderIcon: (active) => <IconHome active={active} />,
+    renderIcon: (active) => <IconNavHome active={active} />,
   },
   {
     id: "foryou",
     key: "nav.foryou",
-    renderIcon: (active) => <IconForYou active={active} />,
+    renderIcon: (active) => <IconNavDiscover active={active} />,
   },
   {
     id: "rewards",
     key: "nav.rewards",
-    renderIcon: (active) => <IconRewards active={active} />,
+    renderIcon: (active) => <IconNavRewards active={active} />,
+  },
+  {
+    id: "mylist",
+    key: "nav.mylist",
+    renderIcon: (active) => <IconNavList active={active} />,
   },
   {
     id: "me",
     key: "nav.me",
-    renderIcon: (active) => <IconMe active={active} />,
+    renderIcon: (active) => <IconNavProfile active={active} />,
   },
 ];
 
@@ -60,8 +66,8 @@ function AppShell() {
   const setTab = (next: Tab) => {
     window.location.hash = next;
   };
-  const setDramaId = (id: number | null) => {
-    window.location.hash = id == null ? "home" : "watch/" + id;
+  const setDramaId = (id: number | null, episodeId?: number) => {
+    window.location.hash = id == null ? "home" : "watch/" + id + (episodeId ? "?episode=" + episodeId : "");
   };
   const setSearching = (active: boolean) => {
     window.location.hash = active ? "search" : "home";
@@ -110,6 +116,8 @@ function AppShell() {
   const switchLocale = () => changeLocale(locale === "zh" ? "en" : "zh");
 
   const playing = dramaId != null;
+  const visibleTabs = TABS.filter(item => item.id !== "rewards" || siteFeature("rewards"));
+  const activeTabIsVisible = visibleTabs.some(item => item.id === tab);
 
   return (
     <div className="app" id="app">
@@ -195,6 +203,9 @@ function AppShell() {
           <HomePage locale={locale} onOpen={setDramaId} />
         ) : tab === "foryou" ? (
           <ForYouPage locale={locale} onOpenDrama={setDramaId} />
+        ) : tab === "mylist" ? (
+          <MyListPage locale={locale} initialTab={route.meTab} onOpen={setDramaId}
+            onTab={(next) => { window.location.hash = "mylist/" + next; }} />
         ) : tab === "me" ? (
           <MePage
             locale={locale}
@@ -216,25 +227,41 @@ function AppShell() {
         )}
       </main>
       {!playing && !searching && !loginOpen && (
-        <nav className="tabs" role="tablist">
-          {TABS.filter(item=>item.id!=="rewards"||siteFeature("rewards")).map((item) => {
+        <div className="mobile-bottom">
+        <nav className="tabs" role="tablist" aria-label={t(locale, "nav.label")}>
+          {visibleTabs.map((item, itemIndex) => {
             const active = item.id === tab;
             return (
               <button
                 key={item.id}
                 type="button"
                 role="tab"
+                id={"mobile-tab-" + item.id}
+                tabIndex={active || (!activeTabIsVisible && itemIndex === 0) ? 0 : -1}
                 data-tab={item.id}
                 aria-selected={active}
                 className={active ? "tab-item on" : "tab-item"}
                 onClick={() => setTab(item.id)}
+                onKeyDown={(event) => {
+                  const delta = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
+                  if (!delta && event.key !== "Home" && event.key !== "End") return;
+                  event.preventDefault();
+                  const nextIndex = event.key === "Home" ? 0 : event.key === "End" ? visibleTabs.length - 1
+                    : (itemIndex + delta + visibleTabs.length) % visibleTabs.length;
+                  const next = visibleTabs[nextIndex];
+                  setTab(next.id);
+                  document.getElementById("mobile-tab-" + next.id)?.focus();
+                }}
               >
+                {active && <span className="tab-active-line" aria-hidden="true" />}
                 <span className="tab-icon">{item.renderIcon(active)}</span>
                 <span className="tab-label">{t(locale, item.key)}</span>
               </button>
             );
           })}
         </nav>
+        <div className="mobile-powered-by"><span aria-hidden="true" />Made with MiniTV</div>
+        </div>
       )}
       <LoginSheet locale={locale} />
       <ToastHost />
