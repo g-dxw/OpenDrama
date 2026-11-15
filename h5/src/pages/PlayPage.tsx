@@ -481,7 +481,6 @@ export function PlayPage({
             {payload.drama.tags.map((tag) => `#${tag}`).join(" ")}
           </p>
         )}
-        <p className="ai">{t(locale, "ai_disclaimer")}</p>
       </div>
       <button className="ep-bar" onClick={() => setSheet("episodes")}>
         <IconEpisodes size={18} />
