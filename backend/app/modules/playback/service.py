@@ -150,18 +150,13 @@ def authorize(
         return {"allowed": False, "reason": "not_available"}
     from app.modules.library.service import assert_distribution_allowed, playback_ttl
     try:
-        grant = assert_distribution_allowed(session, drama, purpose='play', country=country, episode=episode)
+        grant = assert_distribution_allowed(session, drama, purpose='play', episode=episode)
     except HTTPException as exc:
         detail = exc.detail if isinstance(exc.detail, dict) else {}
         return {'allowed': False, 'reason': detail.get('code', 'not_available')}
     ttl = playback_ttl(grant, maximum=TOKEN_TTL_SECONDS)
     if ttl <= 0:
         return {'allowed': False, 'reason': 'distribution_expired'}
-    if drama.country_allowlist and country:
-        allowed_countries = {c.strip().upper() for c in drama.country_allowlist.split(",") if c.strip()}
-        if country.upper() not in allowed_countries:
-            return {"allowed": False, "reason": "region_blocked"}
-
     member = _active_subscription(session, user_id)
     unlocked = _has_unlock(session, user_id, episode.id)
     policy = episode_access(drama, episode, member=member, unlocked=unlocked)

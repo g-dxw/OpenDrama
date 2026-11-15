@@ -94,10 +94,14 @@ def resolve_public_site(db, request: Request):
     request.state.site = tenant
     db.info["content_tenant_id"] = tenant.id
     # Geographic headers are accepted only from explicitly trusted reverse proxies.
+    # Explicit unknown values prevent stale context or an optional client field
+    # from becoming an authorization fallback.
+    db.info["trusted_country"] = None
+    db.info["viewer_country"] = None
     trusted = {x.strip() for x in os.environ.get("SITE_TRUSTED_PROXIES", "").split(",") if x.strip()}
     if request.client and request.client.host in trusted:
         country = request.headers.get("x-site-country", "").upper()
-        if len(country) == 2 and country.isalpha():
+        if len(country) == 2 and country.isascii() and country.isalpha():
             db.info["trusted_country"] = country
             db.info["viewer_country"] = country
     return tenant

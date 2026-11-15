@@ -95,6 +95,7 @@ def _drama_card(drama: Drama, totals: dict[int, int]) -> dict:
 class PlaybackIn(BaseModel):
     drama_id: int
     episode_id: int
+    # Retained for older clients; a client-entered region never grants access.
     country: str | None = None
 
 
@@ -160,7 +161,7 @@ class ReactionIn(BaseModel):
 @router.post("/playback")
 def playback_auth(body: PlaybackIn, user: User | None = Depends(_optional_user), db: Session = Depends(get_db)):
     result = playback.authorize(
-        db, drama_id=body.drama_id, episode_id=body.episode_id, user_id=None if user is None else user.id, country=body.country
+        db, drama_id=body.drama_id, episode_id=body.episode_id, user_id=None if user is None else user.id
     )
     if result.get("reason") == "not_available":
         raise HTTPException(status_code=404, detail="not available")

@@ -218,15 +218,27 @@ def grant_active(grant, *, purpose='play', now=None, country=None):
             refuse('distribution_region_blocked', '此地区不能使用该内容授权', 403)
 
 
+def _assert_drama_region(db, drama, purpose):
+    """Apply site-local restrictions to legacy and distributed content alike."""
+    if purpose not in {'play', 'sale'} or not drama.country_allowlist:
+        return
+    allowed = {code.strip().upper() for code in drama.country_allowlist.split(',') if code.strip()}
+    country = db.info.get('viewer_country')
+    if not isinstance(country, str) or country.upper() not in allowed:
+        refuse('region_blocked', '此地区不能观看或购买该内容', 403)
+
+
 def assert_distribution_allowed(db, drama, *, purpose='play', country=None, now=None, episode=None):
     """Shared guard for publication, checkout/unlock and every playback URL.
 
-    Existing private records have no library refs and retain their old behavior.
-    Regions come from the trusted site/edge request context, never query filters.
+    Private records retain their own restrictions without needing library refs.
+    The compatibility country argument never supplies authorization evidence;
+    viewer regions come exclusively from the trusted site/edge request context.
     """
     if drama.library_title_id is None:
         if episode is not None and episode.media_asset_id is not None:
             refuse('distribution_source_invalid', '站点内容来源不完整', 403)
+        _assert_drama_region(db, drama, purpose)
         return None
     scoped_tenant = db.info.get('content_tenant_id')
     if scoped_tenant and scoped_tenant != drama.tenant_id:
@@ -237,7 +249,8 @@ def assert_distribution_allowed(db, drama, *, purpose='play', country=None, now=
             grant.tenant_id != drama.tenant_id or grant.library_title_id != drama.library_title_id or
             grant.title_version != drama.library_version):
         refuse('distribution_source_invalid', '内容分发来源无效或已归档', 403)
-    grant_active(grant, purpose=purpose, now=now, country=db.info.get('viewer_country', country))
+    grant_active(grant, purpose=purpose, now=now, country=db.info.get('viewer_country'))
+    _assert_drama_region(db, drama, purpose)
     snapshot = revision_for(db, title.id, drama.library_version).snapshot
     selected_language = (drama.language or snapshot['original_language']).lower()
     if grant.languages and selected_language not in grant.languages:
