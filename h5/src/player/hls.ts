@@ -1,69 +1,96 @@
 import Hls from "hls.js";
+import { qualityLevel, qualityOptions } from "./playback-state";
 
 export interface PlayerHandle {
   video: HTMLVideoElement;
+  handlesMediaErrors: boolean;
   destroy: () => void;
   setQuality: (quality: string) => void;
 }
 
-/**
- * One HLS surface. Safari plays natively; everyone else goes through hls.js.
- * The caller owns when the URL is minted — this class never talks to the API.
- */
+/** The view owns authorization; recovery here never reuses a different user's URL. */
 export function attachHls(
   video: HTMLVideoElement,
   url: string,
-  onLevels?: (levels: string[]) => void
+  onLevels?: (levels: string[]) => void,
+  onFatal?: () => void,
 ): PlayerHandle {
   let hls: Hls | null = null;
-  if (url.includes(".m3u8") && Hls.isSupported()) {
+  let destroyed = false;
+  let terminal = false;
+  let requestedQuality = "Auto";
+  let networkRecoveries = 0;
+  let mediaRecoveries = 0;
+  let recoveryTimer: ReturnType<typeof setTimeout> | undefined;
+  const fail = () => {
+    if (destroyed || terminal) return;
+    terminal = true;
+    hls?.stopLoad();
+    if (recoveryTimer) clearTimeout(recoveryTimer);
+    recoveryTimer = undefined;
+    onFatal?.();
+  };
+  const applyQuality = () => {
+    if (hls?.levels.length)
+      hls.currentLevel = qualityLevel(requestedQuality, hls.levels);
+  };
+  const isHlsSource = /\.m3u8(?:$|[?#])/i.test(url);
+  if (isHlsSource && Hls.isSupported()) {
+    onLevels?.(["Auto"]);
     hls = new Hls({ enableWorker: true, lowLatencyMode: false });
+    hls.on(Hls.Events.MANIFEST_PARSED, (_, data) => {
+      if (destroyed) return;
+      onLevels?.(qualityOptions(data.levels || []));
+      applyQuality();
+    });
+    hls.on(Hls.Events.ERROR, (_, data) => {
+      if (destroyed || terminal || !data.fatal) return;
+      if (data.type === Hls.ErrorTypes.NETWORK_ERROR && networkRecoveries < 2) {
+        networkRecoveries++;
+        if (recoveryTimer) clearTimeout(recoveryTimer);
+        recoveryTimer = setTimeout(() => {
+          recoveryTimer = undefined;
+          if (!destroyed && !terminal) {
+            try {
+              hls?.startLoad();
+            } catch {
+              fail();
+            }
+          }
+        }, networkRecoveries * 400);
+      } else if (
+        data.type === Hls.ErrorTypes.MEDIA_ERROR &&
+        mediaRecoveries < 1
+      ) {
+        mediaRecoveries++;
+        try {
+          hls?.recoverMediaError();
+        } catch {
+          fail();
+        }
+      } else fail();
+    });
     hls.loadSource(url);
     hls.attachMedia(video);
-    hls.on(Hls.Events.MANIFEST_PARSED, (_, data) => {
-      if (data.levels && data.levels.length > 0) {
-        // 短剧为竖屏视频，按短边归一化标准清晰度（例如 480x854 -> 480P, 360x640 -> 360P, 720x1280 -> 720P）
-        const pList = data.levels.map((l) => {
-          const shortSide = Math.min(l.width || 0, l.height || 0) || l.height;
-          if (shortSide >= 1000) return 1080;
-          if (shortSide >= 700) return 720;
-          if (shortSide >= 450) return 480;
-          if (shortSide >= 340) return 360;
-          return shortSide;
-        });
-        const distinct = Array.from(new Set(pList.filter((p) => p > 0))).sort((a, b) => b - a);
-        const qList = ["Auto", ...distinct.map((p) => `${p}P`)];
-        onLevels?.(qList);
-      }
-    });
   } else {
+    // Native HLS retains browser-managed ABR; a fixed file has one original source.
+    onLevels?.(isHlsSource ? ["Auto"] : ["Original"]);
     video.src = url;
   }
   return {
     video,
-    setQuality(q: string) {
-      if (!hls || !hls.levels || hls.levels.length === 0) return;
-      if (q === "Auto" || q === "auto" || !q) {
-        hls.currentLevel = -1;
-        return;
-      }
-      const targetP = parseInt(q.replace(/\D/g, ""), 10);
-      if (isNaN(targetP)) return;
-      let closestIdx = 0;
-      let minDiff = Infinity;
-      hls.levels.forEach((l, idx) => {
-        const shortSide = Math.min(l.width || 0, l.height || 0) || l.height;
-        const diff = Math.abs(shortSide - targetP);
-        if (diff < minDiff) {
-          minDiff = diff;
-          closestIdx = idx;
-        }
-      });
-      hls.currentLevel = closestIdx;
+    handlesMediaErrors: !!hls,
+    setQuality(quality) {
+      requestedQuality = quality;
+      applyQuality();
     },
     destroy() {
+      if (destroyed) return;
+      destroyed = true;
+      if (recoveryTimer) clearTimeout(recoveryTimer);
       hls?.destroy();
       hls = null;
+      video.pause();
       video.removeAttribute("src");
       video.load();
     },

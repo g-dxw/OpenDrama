@@ -174,8 +174,8 @@ function AppShell() {
             episodeId={route.episodeId}
             locale={locale}
             onBack={() => setDramaId(null)}
-            onOpenRewards={() => {
-              setTab("rewards");
+            onOpenCoins={() => {
+              if (siteFeature("coins")) window.location.assign(siteLink("web").replace(/\/$/, "") + "/#coins");
             }}
           />
         ) : searching ? (

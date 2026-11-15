@@ -1,6 +1,6 @@
 import { RightsNotice } from "../ui/RightsNotice";
-import { siteFeature } from "../../../shared/site";
-import { useEffect, useRef, useState } from "react";
+import { siteFeature, siteStorageKey } from "../../../shared/site";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { authToken, getJson, postJson, type UnlockResult } from "../api";
 import { useAuth } from "../auth/AuthProvider";
 import type { Locale } from "../copy";
@@ -19,21 +19,24 @@ import {
   IconShare,
   IconSpeed,
   IconStar,
+  IconSearch,
 } from "../icons";
 import { EpisodeView } from "../player/EpisodeView";
+import { classifyEpisodeSwipe } from "../player/gestures";
 import type { PlayEpisode, PlayPayload } from "../types";
 import { CommentSheet } from "../ui/CommentSheet";
 import { PremiumSheet } from "../ui/PremiumSheet";
 import { toast } from "../ui/toast";
 import { replaceMobileHash } from "../routes";
 import { UnlockSheet } from "../ui/UnlockSheet";
+import { Sheet } from "../ui/Sheet";
 
 interface Props {
   dramaId: number;
   episodeId?: number;
   locale: Locale;
   onBack: () => void;
-  onOpenRewards: () => void;
+  onOpenCoins: () => void;
 }
 
 const RANGE = 30;
@@ -45,9 +48,9 @@ export function PlayPage({
   episodeId,
   locale,
   onBack,
-  onOpenRewards,
+  onOpenCoins,
 }: Props) {
-  const { requireAuth, user: profile, status, refresh } = useAuth();
+  const { requireAuth, user: profile, status, refresh, loginOpen } = useAuth();
   const ownerToken = authToken();
   const user = status === "user" ? profile : null;
   const mounted = useRef(false);
@@ -74,7 +77,13 @@ export function PlayPage({
     episodeId: number;
   } | null>(null);
   const [index, setIndex] = useState(0);
-  const [expanded, setExpanded] = useState(false);
+  const [controlsVisible, setControlsVisible] = useState(true);
+  const [clearScreen, setClearScreen] = useState(false);
+  const [playing, setPlaying] = useState(false);
+  const [controlsPulse, setControlsPulse] = useState(0);
+  const [controlsFocused, setControlsFocused] = useState(false);
+  const keyboardMode = useRef(false);
+  const progressCache = useRef(new Map<number, number>());
   const [sheet, setSheet] = useState<
     "episodes" | "synopsis" | "settings" | "comments" | null
   >(null);
@@ -88,29 +97,52 @@ export function PlayPage({
   const [favorited, setFavorited] = useState(false);
   const [likeCount, setLikeCount] = useState(0);
   const [speed, setSpeed] = useState<number>(() => {
-    const saved = localStorage.getItem("minitv_speed");
-    return saved ? parseFloat(saved) : 1.0;
+    const saved = readPlayerPreference("minitv_speed");
+    const value = Number(saved);
+    return SPEED_OPTIONS.includes(value) ? value : 1.0;
   });
   const [quality, setQuality] = useState<string>(() => {
-    return localStorage.getItem("minitv_quality") || "Auto";
+    return readPlayerPreference("minitv_quality") || "Auto";
   });
-  const [availableQualities, setAvailableQualities] = useState<string[]>([
-    "Auto",
-    "1080P",
-    "720P",
-    "480P",
-    "360P",
-  ]);
-  const startY = useRef(0);
+  const [availableQualities, setAvailableQualities] = useState<string[]>([]);
+  const touchStart = useRef<{ x: number; y: number } | null>(null);
+  const activeEpisodeId = payload?.items[index]?.id;
+  const overlayOpen = Boolean(sheet || unlockTarget || premiumOpen || loginOpen);
+  const showControls = useCallback(() => {
+    setControlsVisible(true);
+    setControlsPulse((value) => value + 1);
+  }, []);
+  const rememberProgress = useCallback((id: number, seconds: number) => {
+    if (mounted.current && authToken() === ownerToken && Number.isFinite(seconds))
+      progressCache.current.set(id, Math.max(0, seconds));
+  }, [ownerToken]);
+
+  useEffect(() => {
+    setClearScreen(false);
+    setControlsVisible(true);
+    setPlaying(false);
+    setAvailableQualities([]);
+    touchStart.current = null;
+  }, [activeEpisodeId, ownerToken]);
+
+  useEffect(() => {
+    if (clearScreen) return;
+    if (!playing || overlayOpen || controlsFocused) {
+      setControlsVisible(true);
+      return;
+    }
+    const timer = window.setTimeout(() => setControlsVisible(false), 3200);
+    return () => window.clearTimeout(timer);
+  }, [playing, overlayOpen, controlsFocused, controlsPulse, clearScreen]);
 
   const changeSpeed = (s: number) => {
     setSpeed(s);
-    localStorage.setItem("minitv_speed", String(s));
+    savePlayerPreference("minitv_speed", String(s));
   };
 
   const changeQuality = (q: string) => {
     setQuality(q);
-    localStorage.setItem("minitv_quality", q);
+    savePlayerPreference("minitv_quality", q);
   };
 
   useEffect(() => {
@@ -155,6 +187,7 @@ export function PlayPage({
     setUnlockTarget(null);
     setPremiumOpen(false);
     setCommentCounts({});
+    progressCache.current.clear();
     unlockKeys.current.clear();
     setPendingUnlock((pending) =>
       pending?.owner === ownerToken ? pending : null,
@@ -170,7 +203,6 @@ export function PlayPage({
     const selected = payload.items.findIndex((item) => item.id === episodeId);
     if (selected >= 0) {
       setIndex(selected);
-      setExpanded(false);
     }
   }, [episodeId, payload]);
   useEffect(() => {
@@ -183,8 +215,8 @@ export function PlayPage({
     // A login replay must use the freshly authorized episode, not its guest copy.
     if (!episode?.locked) return;
     if (episode.membership_required || (episode.unlock?.coin_price ?? 0) <= 0)
-      setPremiumOpen(true);
-    else setUnlockTarget(episode);
+      setPremiumOpen(siteFeature("membership"));
+    else if (siteFeature("coins")) setUnlockTarget(episode);
   }, [payload, pendingUnlock, ownerToken]);
 
   const openUnlock = (episode: PlayEpisode) =>
@@ -198,6 +230,8 @@ export function PlayPage({
         return;
       setPendingUnlock({ owner: currentOwner, episodeId: episode.id });
     });
+
+  const openMembership = () => { if (siteFeature("membership")) setPremiumOpen(true); };
 
   const unlockKeyFor = (episodeId: number) => {
     const existing = unlockKeys.current.get(episodeId);
@@ -271,11 +305,21 @@ export function PlayPage({
     return <div className="center">{t(locale, "empty")}</div>;
 
   const current = payload.items[index];
+  const episodeTotal = payload.items.reduce((total, item) => Math.max(total, item.episode_number), 0);
+  const chromeShown = current.locked || (!clearScreen && controlsVisible);
+  const sheetPayload: PlayPayload = {
+    ...payload,
+    items: payload.items.map((item) => ({
+      ...item,
+      progress_seconds: progressCache.current.get(item.id) ?? item.progress_seconds,
+    })),
+  };
   const commentCount = commentCounts[current.id] ?? current.comment_count;
   const go = (next: number) => {
     if (next < 0 || next >= payload.items.length) return;
     setIndex(next);
-    setExpanded(false);
+    setSheet(null);
+    showControls();
     const params = new URLSearchParams(
       window.location.hash.split("?")[1] || "",
     );
@@ -325,15 +369,51 @@ export function PlayPage({
 
   return (
     <div
-      className={current.locked ? "play locked-view" : "play"}
-      onTouchStart={(event) => {
-        startY.current = event.touches[0].clientY;
+      className={`play player-page${current.locked ? " locked-view" : ""}${chromeShown ? "" : " chrome-hidden"}${clearScreen ? " clear-screen" : ""}`}
+      onClickCapture={showControls}
+      onPointerDownCapture={() => { keyboardMode.current = false; setControlsFocused(false); }}
+      onKeyDownCapture={(event) => {
+        if (event.key === "Tab") {
+          keyboardMode.current = true;
+          setControlsFocused(true);
+          showControls();
+        }
       }}
+      onFocusCapture={(event) => {
+        setControlsFocused(keyboardMode.current && isSwipeControl(event.target));
+        showControls();
+      }}
+      onBlurCapture={(event) => setControlsFocused(keyboardMode.current && isSwipeControl(event.relatedTarget))}
+      onTouchStart={(event) => {
+        keyboardMode.current = false;
+        setControlsFocused(false);
+        touchStart.current = !overlayOpen && event.touches.length === 1 && !isSwipeControl(event.target)
+          ? { x: event.touches[0].clientX, y: event.touches[0].clientY }
+          : null;
+      }}
+      onTouchMove={(event) => {
+        if (event.touches.length !== 1) touchStart.current = null;
+      }}
+      onTouchCancel={() => { touchStart.current = null; }}
       onTouchEnd={(event) => {
-        if (sheet) return;
-        const delta = startY.current - event.changedTouches[0].clientY;
-        if (Math.abs(delta) < 40) return;
-        go(delta > 0 ? index + 1 : index - 1);
+        const start = touchStart.current;
+        touchStart.current = null;
+        if (!start || overlayOpen || event.touches.length !== 0 || event.changedTouches.length !== 1) return;
+        const end = event.changedTouches[0];
+        const delta = classifyEpisodeSwipe({ dx: end.clientX - start.x, dy: end.clientY - start.y,
+          startX: start.x, viewportWidth: window.innerWidth });
+        const next = index + delta;
+        if (delta && next >= 0 && next < payload.items.length) {
+          if (event.cancelable) event.preventDefault();
+          go(next);
+        }
+      }}
+      onKeyDown={(event) => {
+        if (overlayOpen || isSwipeControl(event.target)) return;
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+          event.preventDefault();
+          go(index + (event.key === "ArrowDown" ? 1 : -1));
+        }
       }}
     >
       <div
@@ -350,57 +430,74 @@ export function PlayPage({
                   signedIn={Boolean(user)}
                   balance={user?.coins ?? 0}
                   onUnlock={() => openUnlock(episode)}
-                  onMember={() => openUnlock(episode)}
-                  onNeedCoins={onOpenRewards}
+                  onMember={openMembership}
+                  onNeedCoins={onOpenCoins}
                 />
               ) : (
                 <EpisodeView
                   dramaId={dramaId}
                   episodeId={episode.id}
-                  resumeSeconds={episode.progress_seconds}
+                  resumeSeconds={episode.completed ? 0 : (progressCache.current.get(episode.id) ?? episode.progress_seconds)}
                   active
                   playable
                   playbackSpeed={speed}
                   quality={quality}
-                  onQualitiesChange={(levels) => {
-                    if (levels && levels.length > 0) {
-                      setAvailableQualities(levels);
-                    }
+                  locale={locale}
+                  controlsVisible={chromeShown}
+                  suspended={overlayOpen}
+                  onPlayingChange={setPlaying}
+                  onProgress={rememberProgress}
+                  onInteraction={showControls}
+                  onVideoTap={() => {
+                    if (!clearScreen) return false;
+                    setClearScreen(false);
+                    showControls();
+                    return true;
                   }}
-                  onFinished={() => go(position + 1)}
+                  onQualitiesChange={(levels) => {
+                    setAvailableQualities(levels);
+                    setQuality((selected) => levels.includes(selected) ? selected : levels[0] || "Original");
+                  }}
+                  onFinished={() => {
+                    setSnapshot((previous) => previous?.owner === ownerToken && previous.dramaId === dramaId
+                      ? { ...previous, data: { ...previous.data, items: previous.data.items.map((item) =>
+                        item.id === episode.id ? { ...item, completed: true } : item) } } : previous);
+                    go(position + 1);
+                  }}
                 />
               ))}
           </div>
         ))}
       </div>
-      <div className="back">
+      <div className="back player-chrome">
         <button
           className="icon-btn back-btn"
           onClick={onBack}
-          aria-label="Back"
+          aria-label={t(locale, "player.back")}
         >
           <IconBack size={20} />
         </button>
-        <span className="back-title">
-          {t(locale, "episode_short", { number: current.episode_number })}
-        </span>
-        <span style={{ flex: 1 }} />
+        <button className="back-title player-title-button" onClick={() => setSheet("synopsis")}
+          aria-label={t(locale, "player.details")}>
+          <span>{payload.drama.title}</span>
+          <small>{t(locale, "player.episodeCounter", { number: current.episode_number, total: episodeTotal })}</small>
+        </button>
         <button
           type="button"
           className="icon-btn setting-btn"
-          onClick={() => setSheet("settings")}
-          aria-label={t(locale, "playback_settings")}
+          onClick={() => { window.location.hash = "search"; }}
+          aria-label={t(locale, "search")}
         >
-          <IconMoreDots size={20} />
+          <IconSearch />
         </button>
       </div>
-      <div className="scrim" />
-      <div className="rail">
+      <div className="rail player-chrome">
         <button
           type="button"
-          className={liked ? "rail-btn on" : "rail-btn"}
+          className={liked ? "rail-btn player-social on" : "rail-btn player-social"}
           onClick={() => toggleReaction("like")}
-          aria-label="Like"
+          aria-label={t(locale, "player.like")}
+          aria-pressed={liked}
         >
           <span className="rail-icon">
             <IconHeart active={liked} size={30} />
@@ -411,7 +508,7 @@ export function PlayPage({
         {siteFeature("comments") && (
           <button
             type="button"
-            className="rail-btn"
+            className="rail-btn player-social"
             onClick={() => setSheet("comments")}
             aria-label={t(locale, "comments")}
           >
@@ -428,9 +525,10 @@ export function PlayPage({
 
         <button
           type="button"
-          className={favorited ? "rail-btn on" : "rail-btn"}
+          className={favorited ? "rail-btn player-social on" : "rail-btn player-social"}
           onClick={() => toggleReaction("favorite")}
           aria-label={t(locale, "favorite")}
+          aria-pressed={favorited}
         >
           <span className="rail-icon">
             <IconStar active={favorited} size={30} />
@@ -440,7 +538,7 @@ export function PlayPage({
 
         <button
           type="button"
-          className="rail-btn"
+          className="rail-btn player-social"
           onClick={() => {
             if (navigator.share) {
               navigator
@@ -462,19 +560,32 @@ export function PlayPage({
           </span>
           <span className="rail-label">{t(locale, "share")}</span>
         </button>
+        <button type="button" className="rail-btn" onClick={() => setSheet("episodes")}
+          aria-label={t(locale, "all_episodes_bar", { count: payload.items.length })}>
+          <span className="rail-icon"><IconEpisodes size={28} /></span>
+          <span className="rail-label">{current.episode_number}/{episodeTotal}</span>
+        </button>
+        <button type="button" className="rail-btn" onClick={() => setSheet("settings")}
+          aria-label={t(locale, "playback_settings")}>
+          <span className="rail-icon"><IconMoreDots size={28} /></span>
+          <span className="rail-label">{t(locale, "more")}</span>
+        </button>
       </div>
-      <div className="meta">
-        <h2>{payload.drama.title}</h2>
+      <div className="meta player-chrome">
+        <button type="button" className="player-meta-title" onClick={() => setSheet("synopsis")}>
+          <h2>{payload.drama.title}</h2>
+          <span className="player-episode-chip">{t(locale, "player.episodeCounter", { number: current.episode_number, total: episodeTotal })}</span>
+        </button>
         <RightsNotice rights={payload.drama} locale={locale} />
         {payload.drama.synopsis && (
-          <p
-            className={expanded ? "syn open" : "syn"}
-            onClick={() => setExpanded(!expanded)}
+          <button type="button"
+            className="syn player-synopsis"
+            onClick={() => setSheet("synopsis")}
           >
             {t(locale, "episode_short", { number: current.episode_number })} |{" "}
             {payload.drama.synopsis}{" "}
-            {expanded ? t(locale, "collapse") : t(locale, "expand")}
-          </p>
+            {t(locale, "expand")}
+          </button>
         )}
         {payload.drama.tags.length > 0 && (
           <p className="tags">
@@ -482,16 +593,10 @@ export function PlayPage({
           </p>
         )}
       </div>
-      <button className="ep-bar" onClick={() => setSheet("episodes")}>
-        <IconEpisodes size={18} />
-        <span style={{ flex: 1, textAlign: "left" }}>
-          {t(locale, "all_episodes_bar", { count: payload.items.length })}
-        </span>
-        <IconChevronUp size={16} />
-      </button>
+      {clearScreen && <button type="button" className="player-exit-clear" onClick={() => { setClearScreen(false); showControls(); }}>
+        <IconClose size={18} />{t(locale, "player.exitClear")}
+      </button>}
       {sheet === "settings" && (
-        <>
-          <button className="sheet-mask" onClick={() => setSheet(null)} />
           <PlaybackSettingsSheet
             locale={locale}
             speed={speed}
@@ -499,9 +604,10 @@ export function PlayPage({
             quality={quality}
             onQualityChange={changeQuality}
             availableQualities={availableQualities}
+            onClearScreen={() => { setSheet(null); setClearScreen(true); setControlsVisible(false); }}
+            onDetails={() => setSheet("synopsis")}
             onClose={() => setSheet(null)}
           />
-        </>
       )}
       {siteFeature("comments") && sheet === "comments" && (
         <>
@@ -518,20 +624,18 @@ export function PlayPage({
         </>
       )}
       {sheet && sheet !== "settings" && sheet !== "comments" && (
-        <>
-          <button className="sheet-mask" onClick={() => setSheet(null)} />
           <EpisodeSheet
-            payload={payload}
+            payload={sheetPayload}
             index={index}
             tab={sheet}
             locale={locale}
             onTab={setSheet}
+            onClose={() => setSheet(null)}
             onPick={(picked) => {
               setSheet(null);
               go(picked);
             }}
           />
-        </>
       )}
       {siteFeature("coins") && unlockTarget && (
         <UnlockSheet
@@ -547,7 +651,7 @@ export function PlayPage({
           onNeedCoins={() => {
             setUnlockTarget(null);
             void refresh();
-            onOpenRewards();
+            onOpenCoins();
           }}
         />
       )}
@@ -568,100 +672,51 @@ export function PlayPage({
 }
 
 function PlaybackSettingsSheet({
-  locale,
-  speed,
-  onSpeedChange,
-  quality,
-  onQualityChange,
-  availableQualities,
-  onClose,
+  locale, speed, onSpeedChange, quality, onQualityChange, availableQualities,
+  onClose, onClearScreen, onDetails,
 }: {
-  locale: Locale;
-  speed: number;
-  onSpeedChange: (s: number) => void;
-  quality: string;
-  onQualityChange: (q: string) => void;
-  availableQualities: string[];
-  onClose: () => void;
+  locale: Locale; speed: number; onSpeedChange: (s: number) => void;
+  quality: string; onQualityChange: (q: string) => void; availableQualities: string[];
+  onClose: () => void; onClearScreen: () => void; onDetails: () => void;
 }) {
+  const qualityLabel = (value: string) => value === "Auto" ? t(locale, "auto_quality")
+    : value === "Original" ? t(locale, "player.original") : value;
   return (
-    <div
-      className="sheet settings-sheet"
-      role="dialog"
-      aria-modal="true"
-      aria-label={t(locale, "playback_settings")}
-    >
-      <div className="sheet-handle" />
-      <header className="settings-header">
-        <h3>{t(locale, "playback_settings")}</h3>
-        <button
-          type="button"
-          className="close-btn"
-          onClick={onClose}
-          aria-label={t(locale, "close")}
-        >
-          <IconClose size={18} />
+    <Sheet title={t(locale, "playback_settings")} closeLabel={t(locale, "close")}
+      onClose={onClose} className="player-sheet settings-sheet">
+      <section className="settings-group" aria-label={t(locale, "speed")}>
+        <div className="group-title"><span aria-hidden="true"><IconSpeed size={18} /></span>
+          <span className="group-label">{t(locale, "speed")}</span><span className="group-current">{speed}×</span></div>
+        <div className="pills-grid" role="group" aria-label={t(locale, "speed")}>
+          {SPEED_OPTIONS.map((value) => <button type="button" key={value}
+            className={speed === value ? "setting-pill on" : "setting-pill"}
+            aria-pressed={speed === value} onClick={() => onSpeedChange(value)}>{value}×</button>)}
+        </div>
+      </section>
+      <section className="settings-group" aria-label={t(locale, "quality")}>
+        <div className="group-title"><span aria-hidden="true"><IconQuality size={18} /></span>
+          <span className="group-label">{t(locale, "quality")}</span>
+          <span className="group-current">{availableQualities.length ? qualityLabel(quality) : "—"}</span></div>
+        {availableQualities.length > 1 ? <div className="pills-grid qualities" role="group" aria-label={t(locale, "quality")}>
+          {availableQualities.map((value) => <button type="button" key={value}
+            className={quality === value ? "setting-pill on" : "setting-pill"}
+            aria-pressed={quality === value} onClick={() => onQualityChange(value)}>{qualityLabel(value)}</button>)}
+        </div> : <p className="player-source-note" role="status">{t(locale,
+          availableQualities.length ? (availableQualities[0] === "Auto" ? "player.autoQualityOnly" : "player.originalOnly") : "player.qualityLoading")}</p>}
+      </section>
+      <div className="player-setting-actions">
+        <button type="button" onClick={onClearScreen}>
+          <span className="player-setting-icon" aria-hidden="true"><IconQuality size={21} /></span>
+          <span><b>{t(locale, "player.clear")}</b><small>{t(locale, "player.clearHint")}</small></span>
+          <span className="player-setting-arrow" aria-hidden="true"><IconChevronUp size={16} /></span>
         </button>
-      </header>
-
-      <div className="settings-body">
-        {/* 倍速调节 */}
-        <div className="settings-group">
-          <div className="group-title">
-            <span className="group-icon">
-              <IconSpeed size={18} />
-            </span>
-            <span className="group-label">{t(locale, "speed")}</span>
-            <span className="group-current">
-              {speed === 1.0 ? "1.0x" : `${speed}x`}
-            </span>
-          </div>
-          <div className="pills-grid">
-            {SPEED_OPTIONS.map((val) => {
-              const active = Math.abs(val - speed) < 0.01;
-              return (
-                <button
-                  key={val}
-                  type="button"
-                  className={active ? "setting-pill on" : "setting-pill"}
-                  onClick={() => onSpeedChange(val)}
-                >
-                  {val === 1.0 ? "1.0x" : `${val}x`}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* 分辨率/清晰度调节 */}
-        <div className="settings-group">
-          <div className="group-title">
-            <span className="group-icon">
-              <IconQuality size={18} />
-            </span>
-            <span className="group-label">{t(locale, "quality")}</span>
-            <span className="group-current">
-              {quality === "Auto" ? t(locale, "auto_quality") : quality}
-            </span>
-          </div>
-          <div className="pills-grid qualities">
-            {availableQualities.map((item) => {
-              const active = item.toLowerCase() === quality.toLowerCase();
-              return (
-                <button
-                  key={item}
-                  type="button"
-                  className={active ? "setting-pill on" : "setting-pill"}
-                  onClick={() => onQualityChange(item)}
-                >
-                  {item === "Auto" ? t(locale, "auto_quality") : item}
-                </button>
-              );
-            })}
-          </div>
-        </div>
+        <button type="button" onClick={onDetails}>
+          <span className="player-setting-icon" aria-hidden="true"><IconEpisodes size={21} /></span>
+          <span><b>{t(locale, "player.details")}</b><small>{t(locale, "player.detailsHint")}</small></span>
+          <span className="player-setting-arrow" aria-hidden="true"><IconChevronUp size={16} /></span>
+        </button>
       </div>
-    </div>
+    </Sheet>
   );
 }
 
@@ -707,7 +762,7 @@ function LockedEpisode({
           </p>
         )}
 
-        {coinOnly &&
+        {coinOnly && siteFeature("coins") &&
           (!signedIn ? (
             <button
               type="button"
@@ -749,115 +804,96 @@ function LockedEpisode({
               : t(locale, "premium_strip_cta")}
           </button>
         )}
+        {!(coinOnly && siteFeature("coins")) && !siteFeature("membership") && <p role="status">{t(locale, "player.purchaseUnavailable")}</p>}
       </div>
     </div>
   );
 }
 
-function EpisodeSheet({
-  payload,
-  index,
-  tab,
-  locale,
-  onTab,
-  onPick,
-}: {
-  payload: PlayPayload;
-  index: number;
-  tab: "episodes" | "synopsis";
-  locale: Locale;
-  onTab: (tab: "episodes" | "synopsis") => void;
-  onPick: (index: number) => void;
+function EpisodeSheet({ payload, index, tab, locale, onTab, onPick, onClose }: {
+  payload: PlayPayload; index: number; tab: "episodes" | "synopsis"; locale: Locale;
+  onTab: (tab: "episodes" | "synopsis") => void; onPick: (index: number) => void; onClose: () => void;
 }) {
   const ranges: number[] = [];
-  for (let start = 0; start < payload.items.length; start += RANGE)
-    ranges.push(start);
+  for (let start = 0; start < payload.items.length; start += RANGE) ranges.push(start);
   const [range, setRange] = useState(Math.floor(index / RANGE) * RANGE);
+  const currentRef = useRef<HTMLButtonElement>(null);
   const slice = payload.items.slice(range, range + RANGE);
-
-  // Counted across the whole drama so the line stays put when the viewer
-  // pages through ranges.
   const watched = payload.items.filter((episode) => episode.completed).length;
-  const watching = payload.items.filter(
-    (episode) =>
-      !episode.completed && !episode.locked && episode.progress_seconds > 0,
-  ).length;
-  const summary = [
-    watched > 0 ? t(locale, "ep_watched", { count: watched }) : "",
-    watching > 0 ? t(locale, "ep_watching", { count: watching }) : "",
-  ]
-    .filter(Boolean)
-    .join(" · ");
-
+  const watching = payload.items.filter((episode) => !episode.completed && !episode.locked && episode.progress_seconds > 0).length;
+  const summary = [watched ? t(locale, "ep_watched", { count: watched }) : "",
+    watching ? t(locale, "ep_watching", { count: watching }) : ""].filter(Boolean).join(" · ");
+  useEffect(() => {
+    currentRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [range, tab]);
   return (
-    <div className="sheet">
-      <header>
-        <button
-          className={tab === "synopsis" ? "on" : ""}
-          onClick={() => onTab("synopsis")}
-        >
-          {t(locale, "synopsis")}
-        </button>
-        <button
-          className={tab === "episodes" ? "on" : ""}
-          onClick={() => onTab("episodes")}
-        >
-          {t(locale, "episodes_tab")}
-        </button>
-      </header>
-      <div className="body">
-        {tab === "synopsis" ? (
-          <p className="syn-full">
-            {payload.drama.synopsis || t(locale, "empty")}
-          </p>
-        ) : (
-          <>
-            <div className="ranges-row">
-              <div className="ranges">
-                {ranges.map((start) => (
-                  <button
-                    key={start}
-                    className={start === range ? "on" : ""}
-                    onClick={() => setRange(start)}
-                  >
-                    {start + 1}-{Math.min(start + RANGE, payload.items.length)}
-                  </button>
-                ))}
-              </div>
-              {summary && <span className="ep-summary">{summary}</span>}
-            </div>
-            <div className="ep-grid">
-              {slice.map((episode) => {
-                const position = payload.items.indexOf(episode);
-                const total = episode.duration_seconds || 0;
-                const ratio =
-                  total > 0 && !episode.locked && !episode.completed
-                    ? Math.min(1, episode.progress_seconds / total)
-                    : 0;
-                const state = episode.completed
-                  ? "done"
-                  : ratio > 0
-                    ? "partial"
-                    : "";
-                return (
-                  <button
-                    key={episode.id}
-                    className={`${position === index ? "on" : ""} ${episode.locked ? "locked" : ""} ${state}`}
-                    onClick={() => onPick(position)}
-                  >
-                    {episode.episode_number}
-                    {state === "partial" && (
-                      <span className="ep-progress">
-                        <i style={{ width: `${Math.round(ratio * 100)}%` }} />
-                      </span>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          </>
-        )}
+    <Sheet title={t(locale, "player.series")} closeLabel={t(locale, "close")} onClose={onClose} className="player-sheet player-episodes-sheet">
+      <div className="player-series-summary">
+        {payload.drama.cover_url && <img src={payload.drama.cover_url} alt="" />}
+        <div><h3>{payload.drama.title}</h3><p>{t(locale, "all_episodes_bar", { count: payload.items.length })}</p>
+          {summary && <p className="player-watch-summary">{summary}</p>}</div>
       </div>
-    </div>
+      <div className="player-sheet-tabs" role="tablist" aria-label={t(locale, "player.series")}
+        onKeyDown={(event) => {
+          if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+          event.preventDefault();
+          const next = event.key === "Home" ? "episodes" : event.key === "End" ? "synopsis" : tab === "episodes" ? "synopsis" : "episodes";
+          onTab(next);
+          document.getElementById(next === "episodes" ? "player-episode-tab" : "player-synopsis-tab")?.focus();
+        }}>
+        <button type="button" role="tab" aria-selected={tab === "episodes"}
+          tabIndex={tab === "episodes" ? 0 : -1}
+          aria-controls="player-episode-panel" id="player-episode-tab" onClick={() => onTab("episodes")}>{t(locale, "episodes_tab")}</button>
+        <button type="button" role="tab" aria-selected={tab === "synopsis"}
+          tabIndex={tab === "synopsis" ? 0 : -1}
+          aria-controls="player-synopsis-panel" id="player-synopsis-tab" onClick={() => onTab("synopsis")}>{t(locale, "synopsis")}</button>
+      </div>
+      {tab === "synopsis" ? <div id="player-synopsis-panel" role="tabpanel" aria-labelledby="player-synopsis-tab">
+        <RightsNotice rights={payload.drama} locale={locale} />
+        <p className="syn-full">{payload.drama.synopsis || t(locale, "empty")}</p>
+        {payload.drama.tags.length > 0 && <p className="player-series-tags">{payload.drama.tags.join(" · ")}</p>}
+      </div> : <div id="player-episode-panel" role="tabpanel" aria-labelledby="player-episode-tab">
+        <div className="ranges-row">
+          <div className="ranges" role="group" aria-label={t(locale, "player.episodeRanges")}>
+            {ranges.map((start) => <button type="button" key={start} className={start === range ? "on" : ""}
+              aria-pressed={start === range} onClick={() => setRange(start)}>
+              {payload.items[start].episode_number}–{payload.items[Math.min(start + RANGE, payload.items.length) - 1].episode_number}
+            </button>)}
+          </div>
+          {!(index >= range && index < range + RANGE) && <button type="button" className="player-current-link"
+            onClick={() => setRange(Math.floor(index / RANGE) * RANGE)}>{t(locale, "player.current")}</button>}
+        </div>
+        <div className="ep-grid">
+          {slice.map((episode, offset) => {
+            const position = range + offset;
+            const ratio = episode.duration_seconds > 0 && !episode.locked && !episode.completed
+              ? Math.min(1, episode.progress_seconds / episode.duration_seconds) : 0;
+            const state = episode.locked ? "locked" : episode.completed ? "done" : ratio > 0 ? "partial" : "";
+            const stateLabel = t(locale, episode.locked ? "player.locked" : episode.completed ? "player.watched" : ratio > 0 ? "player.watching" : episode.free ? "player.free" : "player.available");
+            return <button type="button" key={episode.id} ref={position === index ? currentRef : undefined}
+              className={(position === index ? "on " : "") + state} aria-current={position === index ? "true" : undefined}
+              aria-label={t(locale, "episode_short", { number: episode.episode_number }) + " · " + stateLabel + (position === index ? " · " + t(locale, "player.current") : "")}
+              onClick={() => onPick(position)}>
+              <span className="player-episode-number">{episode.episode_number}</span>
+              <span className="player-episode-state">{episode.locked && <IconLock size={11} />}{stateLabel}</span>
+              {state === "partial" && <span className="ep-progress"><i style={{ width: (ratio * 100) + "%" }} /></span>}
+            </button>;
+          })}
+        </div>
+      </div>}
+    </Sheet>
   );
+}
+
+function isSwipeControl(target: EventTarget | null): boolean {
+  return target instanceof Element && Boolean(target.closest(
+    'button,a,input,select,textarea,[role="button"]:not(video),[role="dialog"],[contenteditable="true"],[data-player-control]:not([data-player-control="video"])',
+  ));
+}
+
+function readPlayerPreference(key: string): string | null {
+  try { return localStorage.getItem(siteStorageKey(key)) ?? localStorage.getItem(key); } catch { return null; }
+}
+function savePlayerPreference(key: string, value: string) {
+  try { localStorage.setItem(siteStorageKey(key), value); } catch { /* Playback remains usable without storage. */ }
 }

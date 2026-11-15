@@ -10,7 +10,7 @@ import {
 } from "../api";
 import type { Locale } from "../copy";
 import { t } from "../copy";
-import { IconClose } from "../icons";
+import { Sheet } from "../ui/Sheet";
 import { useAuth } from "./AuthProvider";
 import { facebookAccessToken, prepareFacebookLogin } from "./facebook";
 import { renderGoogleButton } from "./google";
@@ -227,17 +227,14 @@ function LoginForm({
   const disabled = busy !== "idle";
 
   return (
-    <>
-      <button className="sheet-mask auth-mask" onClick={onClose} aria-label={t(locale, "close")} />
-      <div className="sheet auth-sheet" role="dialog" aria-modal="true" aria-label={t(locale, "sign_in")} data-testid="login-sheet">
-        <div className="sheet-handle" />
-        <header className="auth-head">
-          <h3>{step === "email" ? t(locale, "sign_in") : t(locale, "enter_code")}</h3>
-          <button type="button" className="close-btn" onClick={onClose} aria-label={t(locale, "close")}>
-            <IconClose size={18} />
-          </button>
-        </header>
-
+    <Sheet
+      title={step === "email" ? t(locale, "sign_in") : t(locale, "enter_code")}
+      closeLabel={t(locale, "close")}
+      onClose={onClose}
+      className="auth-sheet"
+      maskClassName="auth-mask"
+      testId="login-sheet"
+    >
         <div className="auth-body">
           {step === "email" ? (
             <>
@@ -345,7 +342,6 @@ function LoginForm({
           {error && <p className="auth-error" role="alert">{error}</p>}
           <p className="auth-terms">{t(locale, "terms")}</p>
         </div>
-      </div>
-    </>
+    </Sheet>
   );
 }
