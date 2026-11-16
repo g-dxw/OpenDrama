@@ -316,7 +316,9 @@ def import_title(db, *, tenant, title_id, grant_id, actor, overrides, adopt_new_
     drama = Drama(tenant_id=tenant.id, library_title_id=title_id, distribution_grant_id=grant.id,
                   library_version=grant.title_version, title=overrides.get('title') or default_title,
                   synopsis=overrides.get('synopsis', snapshot['synopsis']), cover_url=overrides.get('cover_url', snapshot['cover_url']),
-                  language=snapshot['original_language'], country_allowlist=','.join(grant.countries), status='draft',
+                  # Grant geography is enforced independently; this bounded local field
+                  # starts unrestricted and can only further narrow that scope.
+                  language=snapshot['original_language'], country_allowlist='', status='draft',
                   free_episode_count=0, coin_price_per_episode=0)
     db.add(drama)
     try:
@@ -352,9 +354,14 @@ def create_upload(db, title, episode, *, actor, values):
     from app.modules.content.upload_service import ALLOWED_MIME, MAX_BYTES, sign_callback
     if values['mime'] not in ALLOWED_MIME or not 0 < values['size_bytes'] <= MAX_BYTES:
         refuse('library_upload_invalid', '请上传不超过 200MB 的 MP4 或 MOV 文件', 422)
+    title = title_for(db, title.id, lock=True)
+    episode = db.scalar(select(LibraryEpisode).where(LibraryEpisode.id == episode.id,
+                        LibraryEpisode.library_title_id == title.id).with_for_update().execution_options(populate_existing=True))
+    if episode is None:
+        refuse('library_episode_not_found', '分集不存在', 404)
     if title.status == 'archived':
         refuse('library_archived', '归档内容不能上传')
-    current = db.get(MediaAsset, episode.media_asset_id) if episode.media_asset_id else None
+    current = db.scalar(select(MediaAsset).where(MediaAsset.id == episode.media_asset_id).with_for_update().execution_options(populate_existing=True)) if episode.media_asset_id else None
     if current is not None and current.status in {'created', 'transcoding'}:
         refuse('library_upload_in_progress', '此分集已有上传任务，请先完成或确认失败')
     version = (db.scalar(select(func.max(MediaAsset.version)).where(MediaAsset.library_episode_id == episode.id)) or 0) + 1
@@ -378,7 +385,74 @@ def create_upload(db, title, episode, *, actor, values):
                 status=asset.status, episode_id=episode.id, version=title.version)
 
 
+def locked_asset_context(db, asset):
+    """All library state transitions lock title -> episode -> asset.
+
+    Read immutable parent IDs from SQL, then populate existing identity-map rows:
+    a caller may hold an old 'created' object after another request abandoned it.
+    """
+    episode_id = db.scalar(select(MediaAsset.library_episode_id).where(MediaAsset.id == asset.id))
+    title_id = db.scalar(select(LibraryEpisode.library_title_id).where(LibraryEpisode.id == episode_id))
+    if title_id is None:
+        refuse('library_episode_not_found', '分集不存在', 404)
+    title = title_for(db, title_id, lock=True)
+    episode = db.scalar(select(LibraryEpisode).where(LibraryEpisode.id == episode_id).with_for_update().execution_options(populate_existing=True))
+    current = db.scalar(select(MediaAsset).where(MediaAsset.id == asset.id).with_for_update().execution_options(populate_existing=True))
+    if current is None:
+        refuse('library_asset_not_found', '视频资源不存在', 404)
+    return title, episode, current
+
+
+def abandon_upload(db, asset, *, actor):
+    """Fence an incomplete transfer locally; never delete a shared provider object.
+
+    Bunny TUS tickets cannot be revoked here. A late writer can only finish its
+    old video_id, whose terminal failed row can no longer be synced or approved.
+    Serialize with new uploads/approval on the title, then lock the asset.
+    """
+    title, episode, asset = locked_asset_context(db, asset)
+    # Core table selection deliberately covers references in every tenant. No
+    # tenant-scoped ORM loader may hide an already imported shared resource.
+    if db.scalar(select(Episode.__table__.c.id).where(Episode.__table__.c.media_asset_id == asset.id).limit(1)) is not None:
+        refuse('library_media_in_use', '已有站点引用此视频，不能放弃上传')
+    if db.scalar(select(LibraryRevision.id).where(
+            LibraryRevision.snapshot.contains({'episodes': [{'media_asset_id': asset.id}]})).limit(1)) is not None:
+        refuse('library_media_approved', '此视频已包含在审核版本中，不能放弃上传')
+    if asset.status == 'failed':
+        return dict(asset_out(asset, private=True), abandoned=True, already_abandoned=True)
+    if asset.status not in {'created', 'transcoding'}:
+        refuse('library_upload_not_cancellable', '只有未完成且未被引用的上传可以放弃，请同步状态')
+    if episode.media_asset_id != asset.id:
+        refuse('library_upload_not_current', '当前分集已切换上传任务，请刷新')
+    if bunny.live():
+        remote = bunny.stream_video(asset.provider_video_id)
+        if remote.get('guid') not in (None, asset.provider_video_id):
+            refuse('library_media_mismatch', '视频服务返回了不匹配的资源', 502)
+        if remote.get('status') == 4:
+            asset.status = 'ready'
+            asset.duration_seconds = max(0, int(remote.get('length') or asset.duration_seconds))
+            asset.width = max(0, int(remote.get('width') or asset.width))
+            asset.height = max(0, int(remote.get('height') or asset.height))
+            commit(db)
+            refuse('library_upload_not_cancellable', '视频已在服务端完成，不能放弃，请刷新状态')
+    asset.status = 'failed'
+    # Preserve archived status; abandoning a transfer must never unarchive it.
+    if title.status == 'archived':
+        title.version += 1
+    else:
+        touch(title)
+    audit(db, actor, 'library_upload_abandoned', title.id,
+          dict(episode_id=episode.id, asset_id=asset.id, provider_video_id=asset.provider_video_id))
+    commit(db)
+    return dict(asset_out(asset, private=True), abandoned=True, already_abandoned=False)
+
+
 def sync_asset(db, asset):
+    _, _, asset = locked_asset_context(db, asset)
+    # An abandoned/failed upload is terminal even if a stale TUS request later
+    # completes at the provider. A retry always has a fresh asset and video_id.
+    if asset.status in {'failed', 'retired'}:
+        return asset_out(asset, private=True)
     if not bunny.live():
         return asset_out(asset, private=True)
     remote = bunny.stream_video(asset.provider_video_id)

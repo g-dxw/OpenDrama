@@ -22,7 +22,7 @@ import {
   message,
 } from "antd";
 import { useNavigate } from "react-router-dom";
-import { api, errorText } from "../api";
+import { api, errorText, getToken } from "../api";
 import { ManagementPageHeader } from "../components/ManagementPage";
 import { directUpload, probeVideo, type UploadSession } from "./episodeUpload";
 type Asset = {
@@ -33,6 +33,14 @@ type Asset = {
   width?: number;
   height?: number;
   size_bytes?: number;
+};
+type UploadAttempt = {
+  assetId: string;
+  owner: string | null;
+  cancelled: boolean;
+  transferred: boolean;
+  rejectCancel: (error: Error) => void;
+  abandoning?: Promise<unknown>;
 };
 type Subtitle = { language: string; label?: string; url: string };
 type Episode = {
@@ -122,6 +130,22 @@ export default function LibraryPage({
   const [file, setFile] = useState<File | null>(null),
     [progress, setProgress] = useState<number | null>(null);
   const xhr = useRef<XMLHttpRequest | null>(null);
+  const activeUpload = useRef<UploadAttempt | null>(null);
+  const mounted = useRef(false);
+  const [uploadActive, setUploadActive] = useState(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      const pending = activeUpload.current;
+      if (pending && !pending.transferred) {
+        pending.cancelled = true;
+        pending.rejectCancel(new Error("Upload interrupted"));
+      }
+      xhr.current?.abort();
+      xhr.current = null;
+    };
+  }, []);
   const generation = useRef(0);
   const load = useCallback(async () => {
     setLoading(true);
@@ -154,7 +178,6 @@ export default function LibraryPage({
         .catch((e) => setError(errorText(e)));
     return () => {
       generation.current++;
-      xhr.current?.abort();
     };
   }, [load, platform]);
   const loadDetail = useCallback(
@@ -213,70 +236,46 @@ export default function LibraryPage({
       setBusy(false);
     }
   };
-  const addEpisode = async () => {
-    if (!detail) return;
-    const values = await episodeForm.validateFields().catch(() => null);
-    if (!values) return;
-    setBusy(true);
-    setDetailError("");
-    try {
-      const episode = await api<Episode>(P + "/" + detail.id + "/episodes", {
-        method: "POST",
-        body: JSON.stringify(values),
-      });
-      if (file) {
-        const meta = await probeVideo(file);
-        const session = await api<UploadSession & { asset_id: string }>(
-          P + "/" + detail.id + "/episodes/" + episode.id + "/upload-session",
-          {
-            method: "POST",
-            body: JSON.stringify({
-              filename: file.name,
-              mime: file.type || "video/mp4",
-              size_bytes: file.size,
-              width: meta.width,
-              height: meta.height,
-              duration_seconds: meta.durationSeconds,
-              language: values.language,
-            }),
-          },
-        );
-        setProgress(0);
-        await directUpload(
-          { ...session, episode_id: Number(episode.id) },
-          file,
-          setProgress,
-          (value) => {
-            xhr.current = value;
-          },
-        );
-        await api(P + "/assets/" + session.asset_id + "/sync-status", {
-          method: "POST",
-          body: "{}",
-        });
-      }
-      episodeForm.resetFields();
-      setFile(null);
-      await loadDetail(detail.id);
-      await load();
-      message.success(
-        l(
-          "分集已添加，编码状态以服务器为准",
-          "Episode added. Encoding status is confirmed by the server.",
+  const abandonAttempt = (attempt: UploadAttempt): Promise<unknown> => {
+    if (getToken() !== attempt.owner)
+      return Promise.reject(
+        new Error(
+          l(
+            "登录身份已变化，请返回公司内容库处理未完成上传",
+            "Your session changed. Reopen the company library to recover the incomplete upload.",
+          ),
         ),
       );
-    } catch (e) {
-      setDetailError(errorText(e));
-    } finally {
-      setBusy(false);
-    }
+    if (!attempt.abandoning)
+      attempt.abandoning = api(P + "/assets/" + attempt.assetId + "/abandon", {
+        method: "POST",
+        body: "{}",
+      });
+    return attempt.abandoning;
   };
-  const uploadEpisode = async (episode: Episode, nextFile: File) => {
+  const cancelUpload = () => {
+    const attempt = activeUpload.current;
+    if (!attempt || attempt.transferred) return;
+    attempt.cancelled = true;
+    attempt.rejectCancel(new Error(l("上传已取消", "Upload cancelled")));
+    xhr.current?.abort();
+    xhr.current = null;
+    // POST-stage XHR has no abort callback in the shared uploader. The explicit
+    // cancellation promise releases it here and the API fences the old asset.
+    void abandonAttempt(attempt).catch(() => undefined);
+  };
+  const transferEpisode = async (
+    episode: Episode,
+    nextFile: File,
+    uploadLanguage: string,
+  ) => {
     if (!detail) return;
-    setBusy(true);
-    setDetailError("");
+    const owner = getToken();
+    let attempt: UploadAttempt | null = null;
     try {
       const meta = await probeVideo(nextFile);
+      if (!mounted.current || getToken() !== owner)
+        throw new Error(l("上传已中断", "Upload interrupted"));
       const session = await api<UploadSession & { asset_id: string }>(
         P + "/" + detail.id + "/episodes/" + episode.id + "/upload-session",
         {
@@ -288,30 +287,168 @@ export default function LibraryPage({
             width: meta.width,
             height: meta.height,
             duration_seconds: meta.durationSeconds,
-            language: episode.asset?.language || detail.original_language,
+            language: uploadLanguage,
           }),
         },
       );
+      attempt = {
+        assetId: String(session.asset_id),
+        owner,
+        cancelled: false,
+        transferred: false,
+        rejectCancel: () => {},
+      };
+      const current = attempt;
+      activeUpload.current = current;
+      const cancelled = new Promise<void>((_, reject) => {
+        current.rejectCancel = reject;
+      });
+      if (!mounted.current || getToken() !== owner)
+        throw new Error(l("上传已中断", "Upload interrupted"));
       setProgress(0);
-      await directUpload(
-        { ...session, episode_id: Number(episode.id) },
-        nextFile,
-        setProgress,
-        (value) => {
-          xhr.current = value;
-        },
-      );
+      setUploadActive(true);
+      await Promise.race([
+        directUpload(
+          { ...session, episode_id: Number(episode.id) },
+          nextFile,
+          (value) => {
+            if (mounted.current && activeUpload.current === current)
+              setProgress(value);
+          },
+          (value) => {
+            if (
+              value &&
+              (current.cancelled || !mounted.current || getToken() !== owner)
+            )
+              throw new Error(l("上传已取消", "Upload cancelled"));
+            if (activeUpload.current === current) xhr.current = value;
+          },
+        ),
+        cancelled,
+      ]);
+      if (current.cancelled)
+        throw new Error(l("上传已取消", "Upload cancelled"));
+      current.transferred = true;
+      if (mounted.current) setUploadActive(false);
+      // Once all bytes were accepted, a failed status poll is not a failed
+      // transfer. Keep it for explicit reconciliation, never abandon it here.
       await api(P + "/assets/" + session.asset_id + "/sync-status", {
+        method: "POST",
+        body: "{}",
+      });
+    } catch (error) {
+      let reason = errorText(error);
+      if (attempt && !attempt.transferred) {
+        try {
+          await abandonAttempt(attempt);
+          reason +=
+            " " +
+            l(
+              "未完成上传已放弃，可在该分集重新上传。",
+              "The incomplete upload was abandoned. Upload a new file on this episode to retry.",
+            );
+        } catch (recoveryError) {
+          reason +=
+            " " +
+            l("尚未确认放弃：", "Abandonment was not confirmed: ") +
+            errorText(recoveryError) +
+            " " +
+            l(
+              "请同步状态，或再次点击“放弃未完成上传”。",
+              "Sync status or explicitly choose Abandon incomplete upload again.",
+            );
+        }
+      }
+      throw new Error(reason);
+    } finally {
+      if (activeUpload.current === attempt) {
+        activeUpload.current = null;
+        xhr.current = null;
+      }
+      if (mounted.current) {
+        setUploadActive(false);
+        setProgress(null);
+      }
+    }
+  };
+  const abandonEpisode = async (episode: Episode) => {
+    if (!detail || !episode.media_asset_id) return;
+    setBusy(true);
+    setDetailError("");
+    try {
+      await api(P + "/assets/" + episode.media_asset_id + "/abandon", {
         method: "POST",
         body: "{}",
       });
       await loadDetail(detail.id);
       await load();
-      message.success(l("视频已上传", "Video uploaded"));
-    } catch (e) {
-      setDetailError(errorText(e));
+      message.success(
+        l(
+          "未完成上传已放弃，现在可重新上传",
+          "Incomplete upload abandoned. You can upload again.",
+        ),
+      );
+    } catch (error) {
+      await loadDetail(detail.id);
+      setDetailError(errorText(error));
     } finally {
       setBusy(false);
+    }
+  };
+  const addEpisode = async () => {
+    if (!detail) return;
+    const values = await episodeForm.validateFields().catch(() => null);
+    if (!values) return;
+    setBusy(true);
+    setDetailError("");
+    let created = false;
+    try {
+      const episode = await api<Episode>(P + "/" + detail.id + "/episodes", {
+        method: "POST",
+        body: JSON.stringify(values),
+      });
+      created = true;
+      episodeForm.resetFields();
+      setFile(null);
+      if (file) await transferEpisode(episode, file, values.language);
+      await loadDetail(detail.id);
+      await load();
+      message.success(
+        l(
+          "分集已添加，编码状态以服务器为准",
+          "Episode added. Encoding status is confirmed by the server.",
+        ),
+      );
+    } catch (error) {
+      await loadDetail(detail.id);
+      await load();
+      setDetailError(
+        (created ? l("分集已创建；", "Episode created; ") : "") +
+          errorText(error),
+      );
+    } finally {
+      if (mounted.current) setBusy(false);
+    }
+  };
+  const uploadEpisode = async (episode: Episode, nextFile: File) => {
+    if (!detail) return;
+    setBusy(true);
+    setDetailError("");
+    try {
+      await transferEpisode(
+        episode,
+        nextFile,
+        episode.asset?.language || detail.original_language,
+      );
+      await loadDetail(detail.id);
+      await load();
+      message.success(l("视频已上传", "Video uploaded"));
+    } catch (error) {
+      await loadDetail(detail.id);
+      await load();
+      setDetailError(errorText(error));
+    } finally {
+      if (mounted.current) setBusy(false);
     }
   };
   const editSubtitles = (episode: Episode) => {
@@ -864,7 +1001,32 @@ export default function LibraryPage({
                                   {
                                     title: l("操作", "Actions"),
                                     render: (_: unknown, ep: Episode) => (
-                                      <Space>
+                                      <Space wrap>
+                                        {ep.media_asset_id &&
+                                          ["created", "transcoding"].includes(
+                                            ep.asset?.status || "",
+                                          ) && (
+                                            <Popconfirm
+                                              title={l(
+                                                "放弃此未完成上传？",
+                                                "Abandon this incomplete upload?",
+                                              )}
+                                              description={l(
+                                                "可重新上传文件；已完成或被引用的资源会被服务器拒绝放弃。",
+                                                "You can upload a new file. Completed or referenced assets cannot be abandoned.",
+                                              )}
+                                              onConfirm={() =>
+                                                abandonEpisode(ep)
+                                              }
+                                            >
+                                              <Button danger disabled={busy}>
+                                                {l(
+                                                  "放弃未完成上传",
+                                                  "Abandon incomplete upload",
+                                                )}
+                                              </Button>
+                                            </Popconfirm>
+                                          )}
                                         <label>
                                           <input
                                             type="file"
@@ -922,8 +1084,8 @@ export default function LibraryPage({
                               percent={progress}
                               status={detailError ? "exception" : undefined}
                             />
-                            {xhr.current && (
-                              <Button onClick={() => xhr.current?.abort()}>
+                            {uploadActive && (
+                              <Button onClick={cancelUpload}>
                                 {l("取消上传", "Cancel upload")}
                               </Button>
                             )}

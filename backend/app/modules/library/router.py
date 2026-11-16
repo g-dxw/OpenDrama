@@ -81,6 +81,10 @@ class Upload(Strict):
     language: str | None = Field(default=None, max_length=16)
 
 
+class AbandonUpload(Strict):
+    pass
+
+
 class Version(Strict):
     version: int = Field(ge=1)
 
@@ -168,9 +172,18 @@ def preview_asset(asset_id: int, db: Session = Depends(get_db), actor: AdminUser
 @platform_router.post('/assets/{asset_id}/sync-status')
 def sync_asset(asset_id: int, db: Session = Depends(get_db), actor: AdminUser = Depends(require_platform_admin)):
     try:
-        return service.sync_asset(db, asset_for(db, asset_id, lock=True))
+        return service.sync_asset(db, asset_for(db, asset_id))
     except bunny.BunnyError:
         raise HTTPException(502, detail='视频服务暂时不可用，请稍后同步') from None
+
+
+@platform_router.post('/assets/{asset_id}/abandon')
+def abandon_upload(asset_id: int, body: AbandonUpload | None = None, db: Session = Depends(get_db),
+                   actor: AdminUser = Depends(require_platform_admin)):
+    try:
+        return service.abandon_upload(db, asset_for(db, asset_id), actor=actor)
+    except bunny.BunnyError:
+        raise HTTPException(502, detail='暂时无法确认视频状态，尚未放弃；请同步状态后重试') from None
 
 
 @platform_router.api_route('/assets/{asset_id}/dev-tus', methods=['POST', 'PATCH', 'HEAD'])
@@ -180,6 +193,8 @@ async def fake_tus(asset_id: int, request: Request, db: Session = Depends(get_db
     if bunny.live() or os.environ.get('APP_ENV') == 'production':
         raise HTTPException(404)
     asset = asset_for(db, asset_id, lock=True)
+    if asset.status in {'failed', 'retired'}:
+        service.refuse('library_upload_abandoned', '此上传已结束，不能继续写入；请创建新的上传任务')
     headers = {'Tus-Resumable': '1.0.0', 'Upload-Offset': str(asset.upload_offset), 'Upload-Length': str(asset.size_bytes),
                'Location': str(request.url.path)}
     if request.method == 'HEAD':

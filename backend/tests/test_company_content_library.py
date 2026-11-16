@@ -563,3 +563,235 @@ def test_grant_language_filters_import_preview_and_later_local_subtitles(library
     assert playback['allowed'] is True
     assert playback['subtitles'] == [dict(language='en', label='en', url='https://captions.example.test/en.vtt', is_default=True)]
     assert playback['subtitle']['url'] == 'https://captions.example.test/en.vtt'
+
+
+@pytest.mark.parametrize('partial', [False, True])
+def test_abandoned_upload_is_retryable_and_late_writes_cannot_revive_it(library_env, monkeypatch, partial):
+    from app.modules.common.models import AuditLog
+    env = library_env
+    title, episode, upload = library_title(env, ready=False)
+    client, headers = env['client'], env['pheaders']
+    if partial:
+        assert client.patch(upload['upload_url'], content=b'ab', headers=dict(headers, **{'Upload-Offset': '0'})).status_code == 204
+    abandoned = ok(client.post(f"{PLATFORM}/assets/{upload['asset_id']}/abandon", json={}, headers=headers))
+    assert abandoned['status'] == 'failed' and abandoned['abandoned'] is True
+    again = ok(client.post(f"{PLATFORM}/assets/{upload['asset_id']}/abandon", json={}, headers=headers))
+    assert again['already_abandoned'] is True
+    replacement = ok(client.post(f"{PLATFORM}/{title['id']}/episodes/{episode['id']}/upload-session",
+        json=dict(filename='retry.mp4', mime='video/mp4', size_bytes=4, width=720, height=1280), headers=headers))
+    assert replacement['asset_id'] != upload['asset_id'] and replacement['video_id'] != upload['video_id']
+    assert client.patch(upload['upload_url'], content=b'cd' if partial else b'abcd',
+        headers=dict(headers, **{'Upload-Offset': '2' if partial else '0'})).status_code == 409
+    assert client.post(upload['upload_url'], headers=headers).status_code == 409
+    # Old provider status reports must not resurrect a locally abandoned row.
+    monkeypatch.setenv('BUNNY_MODE', 'real')
+    def forbidden_provider_call(*args, **kwargs):
+        raise AssertionError('terminal uploads must not be reconciled or deleted')
+    monkeypatch.setattr(bunny, 'stream_video', forbidden_provider_call)
+    monkeypatch.setattr(bunny, 'delete_stream_video', forbidden_provider_call)
+    old = ok(client.post(f"{PLATFORM}/assets/{upload['asset_id']}/sync-status", headers=headers))
+    assert old['status'] == 'failed'
+    monkeypatch.setenv('BUNNY_MODE', 'fake')
+    assert client.patch(replacement['upload_url'], content=b'wxyz', headers=dict(headers, **{'Upload-Offset': '0'})).status_code == 204
+    result = ok(client.get(f"{PLATFORM}/{title['id']}", headers=headers))
+    assert result['episodes'][0]['media_asset_id'] == replacement['asset_id']
+    assert result['episodes'][0]['asset']['status'] == 'ready'
+    approved_result = ok(client.post(f"{PLATFORM}/{title['id']}/approve", json={'version': result['version']}, headers=headers))
+    assert approved_result['status'] == 'approved'
+    env['db'].expire_all()
+    assert env['db'].get(MediaAsset, upload['asset_id']).status == 'failed'
+    assert env['db'].scalar(select(func.count()).select_from(AuditLog).where(AuditLog.action == 'library_upload_abandoned')) == 1
+
+
+def test_ready_asset_cannot_be_abandoned_even_before_approval(library_env):
+    env = library_env
+    _, _, upload = library_title(env)
+    response = env['client'].post(f"{PLATFORM}/assets/{upload['asset_id']}/abandon", json={}, headers=env['pheaders'])
+    assert response.status_code == 409 and response.json()['detail']['code'] == 'library_upload_not_cancellable'
+    env['db'].expire_all()
+    assert env['db'].get(MediaAsset, upload['asset_id']).status == 'ready'
+
+
+def test_abandon_checks_real_provider_completion_and_fails_closed_on_outage(library_env, monkeypatch):
+    env = library_env
+    _, _, upload = library_title(env, ready=False)
+    monkeypatch.setenv('BUNNY_MODE', 'real')
+    def unavailable(*args, **kwargs):
+        raise bunny.BunnyError('temporary provider outage')
+    monkeypatch.setattr(bunny, 'stream_video', unavailable)
+    response = env['client'].post(f"{PLATFORM}/assets/{upload['asset_id']}/abandon", json={}, headers=env['pheaders'])
+    assert response.status_code == 502
+    env['db'].expire_all()
+    assert env['db'].get(MediaAsset, upload['asset_id']).status == 'created'
+    monkeypatch.setattr(bunny, 'stream_video', lambda video_id: dict(guid=video_id, status=4, length=61, width=720, height=1280))
+    response = env['client'].post(f"{PLATFORM}/assets/{upload['asset_id']}/abandon", json={}, headers=env['pheaders'])
+    assert response.status_code == 409 and response.json()['detail']['code'] == 'library_upload_not_cancellable'
+    env['db'].expire_all()
+    assert env['db'].get(MediaAsset, upload['asset_id']).status == 'ready'
+
+
+def test_live_incomplete_upload_can_be_abandoned_without_deleting_provider_media(library_env, monkeypatch):
+    env = library_env
+    _, _, upload = library_title(env, ready=False)
+    monkeypatch.setenv('BUNNY_MODE', 'real')
+    monkeypatch.setattr(bunny, 'stream_video', lambda video_id: dict(guid=video_id, status=3))
+    def forbidden_delete(*args, **kwargs):
+        raise AssertionError('abandon must not delete provider resources')
+    monkeypatch.setattr(bunny, 'delete_stream_video', forbidden_delete)
+    result = ok(env['client'].post(f"{PLATFORM}/assets/{upload['asset_id']}/abandon", json={}, headers=env['pheaders']))
+    assert result['status'] == 'failed'
+
+
+def test_approved_snapshot_asset_cannot_be_abandoned_after_state_regression(library_env):
+    env = library_env
+    _, _, upload = approved(env)
+    asset = env['db'].get(MediaAsset, upload['asset_id'])
+    asset.status = 'transcoding'
+    env['db'].commit()
+    response = env['client'].post(f"{PLATFORM}/assets/{upload['asset_id']}/abandon", json={}, headers=env['pheaders'])
+    assert response.status_code == 409 and response.json()['detail']['code'] == 'library_media_approved'
+    env['db'].expire_all()
+    assert env['db'].get(MediaAsset, upload['asset_id']).status == 'transcoding'
+
+
+def test_other_site_media_reference_blocks_abandon_without_a_snapshot(library_env):
+    env = library_env
+    _, episode, upload = library_title(env, ready=False)
+    site = env['sites'][1]
+    local = Drama(tenant_id=site.id, title='Other site reference', status='draft')
+    env['db'].add(local)
+    env['db'].flush()
+    env['db'].add(Episode(tenant_id=site.id, drama_id=local.id, episode_number=1,
+        library_episode_id=episode['id'], media_asset_id=upload['asset_id'], bunny_video_id=upload['video_id'], status='in_review'))
+    env['db'].commit()
+    response = env['client'].post(f"{PLATFORM}/assets/{upload['asset_id']}/abandon", json={}, headers=env['pheaders'])
+    assert response.status_code == 409 and response.json()['detail']['code'] == 'library_media_in_use'
+    env['db'].expire_all()
+    assert env['db'].get(MediaAsset, upload['asset_id']).status == 'created'
+
+
+def test_upload_recovery_requires_platform_admin_and_rejects_client_status(library_env):
+    env = library_env
+    _, _, upload = library_title(env, ready=False)
+    endpoint = f"{PLATFORM}/assets/{upload['asset_id']}/abandon"
+    assert env['client'].post(endpoint, json={}).status_code == 401
+    for headers in env['headers']:
+        assert env['client'].post(endpoint, json={}, headers=headers).status_code == 403
+    response = env['client'].post(endpoint, json={'status': 'ready'}, headers=env['pheaders'])
+    assert response.status_code == 422
+    env['db'].expire_all()
+    assert env['db'].get(MediaAsset, upload['asset_id']).status == 'created'
+
+
+def test_concurrent_retry_after_abandon_creates_only_one_new_upload(library_env):
+    from concurrent.futures import ThreadPoolExecutor
+    env = library_env
+    title, episode, upload = library_title(env, ready=False)
+    ok(env['client'].post(f"{PLATFORM}/assets/{upload['asset_id']}/abandon", json={}, headers=env['pheaders']))
+    endpoint = f"{PLATFORM}/{title['id']}/episodes/{episode['id']}/upload-session"
+    def retry():
+        return env['client'].post(endpoint, json=dict(filename='retry.mp4', mime='video/mp4', size_bytes=4, width=720, height=1280), headers=env['pheaders'])
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(lambda _: retry(), range(2)))
+    assert sorted(response.status_code for response in responses) == [200, 409]
+    env['db'].expire_all()
+    assert env['db'].scalar(select(func.count()).select_from(MediaAsset)) == 2
+
+
+
+def test_sync_refreshes_a_stale_created_object_after_abandon(library_env, monkeypatch):
+    from app.modules.library import service
+    env = library_env
+    _, _, upload = library_title(env, ready=False)
+    stale = env['db'].get(MediaAsset, upload['asset_id'])
+    assert stale.status == 'created'
+    ok(env['client'].post(f"{PLATFORM}/assets/{upload['asset_id']}/abandon", json={}, headers=env['pheaders']))
+    assert stale.status == 'created'  # A genuinely stale SQLAlchemy identity map.
+    monkeypatch.setenv('BUNNY_MODE', 'real')
+    def forbidden_remote(*args, **kwargs):
+        raise AssertionError('refresh must observe terminal state before provider lookup')
+    monkeypatch.setattr(bunny, 'stream_video', forbidden_remote)
+    result = service.sync_asset(env['db'], stale)
+    assert result['status'] == 'failed' and stale.status == 'failed'
+    env['db'].rollback()
+
+
+def test_sync_provider_lookup_and_abandon_are_serialized(library_env, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    env = library_env
+    _, _, upload = library_title(env, ready=False)
+    lookup_started, finish_lookup = Event(), Event()
+    monkeypatch.setenv('BUNNY_MODE', 'real')
+    def remote(video_id):
+        lookup_started.set()
+        assert finish_lookup.wait(10), 'provider fixture was not released'
+        return dict(guid=video_id, status=4, length=60, width=720, height=1280)
+    monkeypatch.setattr(bunny, 'stream_video', remote)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        sync = pool.submit(env['client'].post, f"{PLATFORM}/assets/{upload['asset_id']}/sync-status", headers=env['pheaders'])
+        assert lookup_started.wait(10)
+        abandon = pool.submit(env['client'].post, f"{PLATFORM}/assets/{upload['asset_id']}/abandon", json={}, headers=env['pheaders'])
+        finish_lookup.set()
+        assert sync.result(timeout=15).status_code == 200
+        cancelled = abandon.result(timeout=15)
+    assert cancelled.status_code == 409 and cancelled.json()['detail']['code'] == 'library_upload_not_cancellable'
+    env['db'].expire_all()
+    assert env['db'].get(MediaAsset, upload['asset_id']).status == 'ready'
+
+
+
+def test_large_country_grants_import_to_two_sites_and_keep_region_intersection(library_env):
+    env = library_env
+    countries = 'US CA MX BR AR CL CO PE UY PY BO EC CR PA GT HN SV NI DO CU JM HT TT BS BB BZ GB IE FR DE ES PT IT NL BE LU CH AT DK SE NO FI IS PL CZ SK HU RO BG HR SI RS BA ME AL MK GR TR CY MT EE LV LT UA MD GE AM AZ KZ UZ IN PK BD LK NP BT CN JP KR MN SG MY TH VN ID PH AU NZ'.split()
+    assert len(set(countries)) >= 68 and len(','.join(countries)) > 200
+    title, _, upload = approved(env)
+    locals = [imported(env, title, grant(env, title, index, countries=countries), index) for index in range(2)]
+    assert locals[0]['drama_id'] != locals[1]['drama_id']
+    db = env['db']
+    db.expire_all()
+    for index, result in enumerate(locals):
+        db.info['content_tenant_id'] = env['sites'][index].id
+        drama = db.get(Drama, result['drama_id'])
+        assert drama.country_allowlist == ''
+        assert db.scalar(select(Episode.media_asset_id).where(Episode.drama_id == drama.id)) == upload['asset_id']
+        db.info['content_tenant_id'] = env['sites'][index].id
+        for purpose in ('play', 'sale'):
+            db.info['viewer_country'] = 'US'
+            assert_distribution_allowed(db, drama, purpose=purpose)
+            for denied in ('ZA', None):
+                db.info['viewer_country'] = denied
+                with pytest.raises(HTTPException) as blocked:
+                    assert_distribution_allowed(db, drama, purpose=purpose)
+                assert blocked.value.detail['code'] == 'distribution_region_blocked'
+        # Site-local geography remains an additional AND restriction, never a
+        # replacement capable of expanding the central grant's countries.
+        drama.country_allowlist = 'US,ZA'
+        db.commit()
+        db.info['viewer_country'] = 'US'
+        assert_distribution_allowed(db, drama)
+        db.info['viewer_country'] = 'CA'
+        with pytest.raises(HTTPException) as local_block:
+            assert_distribution_allowed(db, drama)
+        assert local_block.value.detail['code'] == 'region_blocked'
+        db.info['viewer_country'] = 'ZA'
+        with pytest.raises(HTTPException) as central_block:
+            assert_distribution_allowed(db, drama)
+        assert central_block.value.detail['code'] == 'distribution_region_blocked'
+
+
+
+def test_abandon_new_transfer_keeps_an_approved_imported_asset_unchanged(library_env):
+    env = library_env
+    title, episode, original = approved(env)
+    local = imported(env, title, grant(env, title))
+    replacement = ok(env['client'].post(f"{PLATFORM}/{title['id']}/episodes/{episode['id']}/upload-session",
+        json=dict(filename='new-draft.mp4', mime='video/mp4', size_bytes=4, width=720, height=1280), headers=env['pheaders']))
+    ok(env['client'].post(f"{PLATFORM}/assets/{replacement['asset_id']}/abandon", json={}, headers=env['pheaders']))
+    env['db'].expire_all()
+    assert env['db'].get(MediaAsset, original['asset_id']).status == 'ready'
+    assert env['db'].get(MediaAsset, replacement['asset_id']).status == 'failed'
+    site_episode = env['db'].scalar(select(Episode).where(Episode.drama_id == local['drama_id']))
+    assert site_episode.media_asset_id == original['asset_id']
+    snapshot = env['db'].scalar(select(LibraryRevision).where(LibraryRevision.library_title_id == title['id'], LibraryRevision.version == title['version']))
+    assert snapshot.snapshot['episodes'][0]['media_asset_id'] == original['asset_id']
