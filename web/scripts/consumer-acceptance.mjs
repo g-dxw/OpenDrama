@@ -230,8 +230,28 @@ page.on("request", async (req) => {
   if (await respondSiteBootstrap(req)) return;
   const url = new URL(req.url());
   if (url.pathname === "/fixtures/clip.webm") {
-    mediaRequests.push({ scenario: feedEntitlement });
-    await req.respond({ status: 200, contentType: "video/webm", body: media });
+    const range = req.headers().range;
+    mediaRequests.push({ scenario: feedEntitlement, range: range || null });
+    const headers = { "Accept-Ranges": "bytes", "Content-Length": String(media.length) };
+    if (range) {
+      const match = /^bytes=(\d*)-(\d*)$/.exec(range);
+      const suffix = match?.[1] === "" ? Number(match[2]) : null;
+      const start = match?.[1] ? Number(match[1]) : Math.max(0, media.length - suffix);
+      const end = match?.[1] && match[2] ? Math.min(Number(match[2]), media.length - 1) : media.length - 1;
+      if (!match || (!match[1] && !match[2]) || suffix === 0 || !Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || start > end || start >= media.length) {
+        await req.respond({ status: 416, headers: { "Accept-Ranges": "bytes", "Content-Range": "bytes */" + media.length, "Content-Length": "0" }, body: "" });
+        return;
+      }
+      const body = media.subarray(start, end + 1);
+      await req.respond({
+        status: 206,
+        contentType: "video/webm",
+        headers: { ...headers, "Content-Range": "bytes " + start + "-" + end + "/" + media.length, "Content-Length": String(body.length) },
+        body,
+      });
+      return;
+    }
+    await req.respond({ status: 200, contentType: "video/webm", headers, body: media });
     return;
   }
   if (url.pathname === "/fixtures/caption.srt") {
