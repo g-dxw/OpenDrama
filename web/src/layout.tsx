@@ -98,7 +98,7 @@ export function SiteFooter() {
               href={ADMIN_URL}
               target="_blank"
               rel="noopener noreferrer"
-              title="JJTV admin console"
+              title={siteName() + " admin console"}
             >
               Admin
               <span aria-hidden="true">↗</span>

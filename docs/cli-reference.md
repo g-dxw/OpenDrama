@@ -1,4 +1,4 @@
-# minitv 0.3.1 — JJTV 剧集管理 CLI
+# minitv 0.3.1 — OpenDrama 剧集管理 CLI
 
 单文件、零依赖（Python >= 3.8）。TTY 输出表格，非 TTY 输出 JSON。
 

@@ -260,7 +260,7 @@ function AppShell() {
             );
           })}
         </nav>
-        <div className="mobile-powered-by"><span aria-hidden="true" />Made with MiniTV</div>
+        <div className="mobile-powered-by"><span aria-hidden="true" />Made with OpenDrama</div>
         </div>
       )}
       <LoginSheet locale={locale} />

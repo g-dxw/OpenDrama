@@ -8,7 +8,7 @@ export default function EntryChooser() {
   const directory = useTenantLoginOptions();
   return <AuthLayout chooser>
     <div data-testid="auth-entry-chooser">
-      <span className="auth-eyebrow">MINITV WORKSPACE</span>
+      <span className="auth-eyebrow">OPENDRAMA WORKSPACE</span>
       <h1 className="auth-title">开启你的运营空间</h1>
       <p className="auth-description">选择对应的管理入口，与团队一起创造更多可能。</p>
       <Button className="auth-company-entry" aria-label="平台管理登录" onClick={() => window.location.assign('/admin/platform/login')}>
