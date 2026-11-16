@@ -35,12 +35,19 @@ def _cipher():
     except (ValueError, TypeError):
         raise HTTPException(503, detail='SETTINGS_ENCRYPTION_KEY is invalid') from None
 
+def scoped_namespace(db, namespace):
+    from app.modules.tenancy.consumer_scope import current_site
+    site=current_site(db)
+    return namespace if namespace.startswith('stripe:') or site=='jjtv' else 'site:'+site+':'+namespace
+
 def get_config(db, namespace, defaults=None):
+    namespace = scoped_namespace(db, namespace)
     result = copy.deepcopy(defaults or {})
     row = db.get(ManagedSetting, namespace)
     if row is None:
         return result
-    if row.tenant_id != 'jjtv':
+    expected_owner = 'jjtv' if namespace.startswith('stripe:') else (db.info.get('content_tenant_id') or 'jjtv')
+    if row.tenant_id != expected_owner:
         raise HTTPException(403, detail='Configuration owner mismatch')
     result.update(row.values or {})
     for key, encrypted in (row.secrets or {}).items():
@@ -54,11 +61,14 @@ def get_config(db, namespace, defaults=None):
     return result
 
 def save_config(db, namespace, data, secret_fields=()):
+    original_namespace = namespace
+    namespace = scoped_namespace(db, namespace)
     row = db.get(ManagedSetting, namespace)
     if row is None:
-        row = ManagedSetting(namespace=namespace, tenant_id='jjtv', values={}, secrets={})
+        row = ManagedSetting(namespace=namespace, tenant_id='jjtv' if namespace.startswith('stripe:') else (db.info.get('content_tenant_id') or 'jjtv'), values={}, secrets={})
         db.add(row)
-    if row.tenant_id != 'jjtv':
+    expected_owner = 'jjtv' if namespace.startswith('stripe:') else (db.info.get('content_tenant_id') or 'jjtv')
+    if row.tenant_id != expected_owner:
         raise HTTPException(403, detail='Configuration owner mismatch')
     values, secrets = dict(row.values or {}), dict(row.secrets or {})
     secret_keys = set(secret_fields) | set(secrets)
@@ -76,11 +86,11 @@ def save_config(db, namespace, data, secret_fields=()):
     row.values, row.secrets = values, secrets
     row.updated_at = datetime.now(timezone.utc)
     db.flush()
-    return get_config(db, namespace)
+    return get_config(db, original_namespace)
 
 def public_config(db, namespace, defaults=None, secret_fields=()):
     result = get_config(db, namespace, defaults)
-    row = db.get(ManagedSetting, namespace)
+    row = db.get(ManagedSetting, scoped_namespace(db, namespace))
     for key in set(secret_fields) | set(row.secrets or {} if row else {}):
         value = result.pop(key, '')
         result[key + '_configured'] = bool(value)
@@ -89,12 +99,14 @@ def public_config(db, namespace, defaults=None, secret_fields=()):
     result['updated_at'] = row.updated_at.isoformat() if row and row.updated_at else None
     return result
 
-def login_defaults():
+def login_defaults(db=None):
+    if db is not None and (db.info.get('content_tenant_id') or 'jjtv') != 'jjtv':
+        return dict(email_enabled=True,email_api_key='',email_from='',google_enabled=False,google_client_ids=[],facebook_enabled=False,facebook_app_id='',facebook_app_secret='')
     clients = list(dict.fromkeys(x.strip() for name in ('GOOGLE_CLIENT_ID','GOOGLE_CLIENT_IDS') for x in os.environ.get(name,'').split(',') if x.strip()))
     return dict(email_enabled=True,email_api_key=os.environ.get('RESEND_API_KEY',''),email_from=os.environ.get('RESEND_FROM',''),google_enabled=bool(clients),google_client_ids=clients,facebook_enabled=bool(os.environ.get('FACEBOOK_APP_ID','')),facebook_app_id=os.environ.get('FACEBOOK_APP_ID',''),facebook_app_secret=os.environ.get('FACEBOOK_APP_SECRET',''))
 
 def login_config(db):
-    return get_config(db, 'login', login_defaults())
+    return get_config(db, 'login', login_defaults(db))
 
 @contextmanager
 def login_runtime(db, provider=None):

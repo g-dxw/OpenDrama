@@ -1,3 +1,6 @@
+import { setOperatorSite } from './site-format';
+import { SiteSettingsPage, BrandPage, MerchantBindingPage } from './pages/SiteSettings';
+import LibraryPage from './pages/Library';
 import { useCallback, useEffect, useState } from 'react';
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { Alert, Button, Card, Space, Spin, Typography } from 'antd';
@@ -41,7 +44,7 @@ import {CoinPacksPage,CoinLedgerPage,StripeAccountsPage,CommercePlansPage,Commer
 import {SupportWorkbenchPage,SupportQueuePage,SupportReportsPage,SupportSettingsPage} from './pages/SupportPages';
 import AttributionPage from './pages/AttributionPage';
 
-const PLATFORM_NAV: NavigationNode[] = [{ key: '/tenants', label: '业务租户' }, { key: '/audit', label: '平台审计' }];
+const PLATFORM_NAV: NavigationNode[] = [{ key: '/tenants', label: '站点管理' }, { key: '/library', label: '公司内容库' }, { key: '/stripe-accounts', label: '公司收款账号' }, { key: '/audit', label: '平台审计' }];
 function identityMe(value: Identity): Me {
   return { ...value.user, account_scope: value.account_scope, session_kind: value.session_kind, is_platform_admin: value.is_platform_admin, is_tenant_admin: value.is_tenant_admin,
     permissions: value.permissions, menu_keys: value.menu_keys, enabled_modules: value.enabled_modules, tenant_role_name: value.role_name };
@@ -56,10 +59,10 @@ function validIdentity(value: Identity): boolean {
 export default function App() {
   const token = getToken(); const [identity, setIdentity] = useState<Identity | null>(null); const [state, setState] = useState<'loading' | 'ready' | 'failed'>(token ? 'loading' : 'ready');
   const [error, setError] = useState(''); const [logoutLoading, setLogoutLoading] = useState(false); const [passwordOpen, setPasswordOpen] = useState(false);
-  const acceptIdentity = useCallback((value: Identity) => { if (!validIdentity(value)) throw new Error('登录身份与当前入口不匹配，请从正确入口重新登录。'); setCurrentTenantId(value.tenant?.id || ''); setIdentity(value); setState('ready'); setError(''); }, []);
+  const acceptIdentity = useCallback((value: Identity) => { if (!validIdentity(value)) throw new Error('登录身份与当前入口不匹配，请从正确入口重新登录。'); setCurrentTenantId(value.tenant?.id || ''); setOperatorSite(value.tenant ?? {}); setIdentity(value); setState('ready'); setError(''); }, []);
   const refresh = useCallback(async () => { const value = await api<Identity>(contextApi() + '/context'); acceptIdentity(value); }, [acceptIdentity]);
   useEffect(() => {
-    if (!token) { setIdentity(null); setState('ready'); if (CURRENT_ENTRY.kind === 'support') forceReauth('support_expired'); return; }
+    if (!token) { setOperatorSite({}); setIdentity(null); setState('ready'); if (CURRENT_ENTRY.kind === 'support') forceReauth('support_expired'); return; }
     let live = true; setState('loading');
     void api<Identity>(contextApi() + '/context').then(value => { if (live) acceptIdentity(value); }).catch(e => { if (live) { setError(errorText(e)); setState('failed'); } });
     return () => { live = false; };
@@ -67,7 +70,7 @@ export default function App() {
   const logout = useCallback(async () => {
     setLogoutLoading(true);
     try { await api(contextApi() + '/auth/logout', { method: 'POST', body: '{}' }); } catch { /* Local logout always completes. */ }
-    completeLogout();
+    setOperatorSite({}); completeLogout();
   }, []);
   if (CURRENT_ENTRY.kind === 'choose') return <EntryChooser />;
   if (!token) return CURRENT_ENTRY.kind === 'support' ? <div className="entry-page"><Spin /></div> : <Login onLogin={acceptIdentity} />;
@@ -83,9 +86,9 @@ export default function App() {
 }
 function PlatformApplication({ identity, onLogout, loggingOut, onPassword }: { identity: Identity; onLogout: () => void; loggingOut: boolean; onPassword: () => void }) {
   const location = useLocation(); const navigate = useNavigate(); const notice = new URLSearchParams(location.search).get('notice');
-  return <BackOfficeShell brand="JJTV 平台管理" items={PLATFORM_NAV} route={location.pathname} scope="platform" onNavigate={key => navigate(key)} accountName={identity.user.display_name || identity.user.username} accountLabel="平台管理员" onLogout={onLogout} loadingLogout={loggingOut} onPassword={onPassword}>
+  return <BackOfficeShell brand="MiniTV 公司总控" items={PLATFORM_NAV} route={location.pathname} scope="platform" onNavigate={key => navigate(key)} accountName={identity.user.display_name || identity.user.username} accountLabel="平台管理员" onLogout={onLogout} loadingLogout={loggingOut} onPassword={onPassword}>
     {notice === 'support-ended' && <Alert showIcon type="info" message="临时租户访问已结束，已返回平台管理。" style={{ marginBottom: 16 }} />}
-    <Routes><Route path="/tenants" element={<Tenants />} /><Route path="/audit" element={<PlatformAudit />} /><Route path="*" element={<Navigate to="/tenants" replace />} /></Routes>
+    <Routes><Route path="/tenants" element={<Tenants />} /><Route path="/library" element={<LibraryPage platform />} /><Route path="/stripe-accounts" element={<StripeAccountsPage platform />} /><Route path="/audit" element={<PlatformAudit />} /><Route path="*" element={<Navigate to="/tenants" replace />} /></Routes>
   </BackOfficeShell>;
 }
 function TenantApplication({ identity, refresh, onLogout, loggingOut, onPassword }: { identity: Identity; refresh: () => Promise<void>; onLogout: () => void; loggingOut: boolean; onPassword?: () => void }) {
@@ -115,7 +118,7 @@ function TenantApplication({ identity, refresh, onLogout, loggingOut, onPassword
 function BusinessRoutes({ first, systemAdmin }: { first: string; systemAdmin: boolean }) {
   return <Routes>
     <Route path="/" element={<Navigate to={first} replace />} />
-    <Route path="/login-settings" element={<LoginSettings/>}/><Route path="/stripe-accounts" element={<StripeAccountsPage/>}/><Route path="/coin-packs" element={<CoinPacksPage/>}/><Route path="/coin-ledger" element={<CoinLedgerPage/>}/><Route path="/attribution" element={<AttributionPage/>}/><Route path="/support/workbench" element={<SupportWorkbenchPage/>}/><Route path="/support/queue" element={<SupportQueuePage/>}/><Route path="/support/reports" element={<SupportReportsPage/>}/><Route path="/support/settings" element={<SupportSettingsPage/>}/><Route path="/dashboard" element={<DashboardPage />} /><Route path="/dramas" element={<Dramas />} /><Route path="/dramas/:id" element={<DramaEdit />} /><Route path="/reviews" element={<Reviews />} />
+    <Route path="/site-settings" element={systemAdmin ? <SiteSettingsPage /> : <Navigate to={first} replace />} /><Route path="/brand" element={systemAdmin ? <BrandPage /> : <Navigate to={first} replace />} /><Route path="/merchant-binding" element={systemAdmin ? <MerchantBindingPage /> : <Navigate to={first} replace />} /><Route path="/library" element={<LibraryPage />} /><Route path="/login-settings" element={<LoginSettings/>}/><Route path="/stripe-accounts" element={<StripeAccountsPage/>}/><Route path="/coin-packs" element={<CoinPacksPage/>}/><Route path="/coin-ledger" element={<CoinLedgerPage/>}/><Route path="/attribution" element={<AttributionPage/>}/><Route path="/support/workbench" element={<SupportWorkbenchPage/>}/><Route path="/support/queue" element={<SupportQueuePage/>}/><Route path="/support/reports" element={<SupportReportsPage/>}/><Route path="/support/settings" element={<SupportSettingsPage/>}/><Route path="/dashboard" element={<DashboardPage />} /><Route path="/dramas" element={<Dramas />} /><Route path="/dramas/:id" element={<DramaEdit />} /><Route path="/reviews" element={<Reviews />} />
     <Route path="/groups" element={<GroupsPage />} /><Route path="/groups/:id" element={<GroupDetailPage />} /><Route path="/home-ops" element={<HomeOpsPage />} /><Route path="/tags" element={<Tags />} />
     <Route path="/users" element={<UsersPage />} /><Route path="/rewards" element={<Rewards />} /><Route path="/comments" element={<CommentsPage />} /><Route path="/moderation" element={<Moderation />} />
     <Route path="/plans" element={<CommercePlansPage />} /><Route path="/finance" element={<CommerceFinancePage />} /><Route path="/suppliers" element={<Suppliers />} /><Route path="/settlements" element={<Settlements />} />

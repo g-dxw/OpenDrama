@@ -1,3 +1,5 @@
+import { RightsNotice } from "./RightsNotice";
+import type {ContentRights} from "../../../shared/consumer/types";
 import { useEffect, useState } from "react";
 import { ApiError, unlockEpisode, type UnlockResult } from "../api";
 import { t, type Locale } from "../copy";
@@ -15,6 +17,7 @@ type Failure = { kind: "insufficient"; short: number } | { kind: "failed" };
  * makes a timeout safe to repeat.
  */
 export function UnlockSheet({
+  rights,
   locale,
   episode,
   price,
@@ -25,6 +28,7 @@ export function UnlockSheet({
   onNeedCoins,
   onInsufficient,
 }: {
+  rights?:ContentRights;
   locale: Locale;
   episode: PlayEpisode;
   price: number;
@@ -83,7 +87,7 @@ export function UnlockSheet({
       onClose={onClose}
       className="unlock-sheet"
       testId="unlock-sheet"
-    >
+    ><RightsNotice rights={rights} locale={locale}/>
       <div className="unlock-rows">
         <div className="unlock-row">
           <span>{t(locale, "unlock_row_price")}</span>

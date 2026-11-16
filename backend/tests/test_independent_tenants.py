@@ -233,16 +233,38 @@ def test_module_entitlements_mask_role_grants_immediately_without_erasing_the_ro
 
 
 def test_unadapted_legacy_modules_cannot_be_enabled_for_another_tenant(env):
+    from app.modules.billing.models import Plan,PlanVersion
     value=provision(env);tenant=value['tenant'];owner=owner_for(env,value)
     state=module_data(env,tenant['id'])
-    unsupported=[x for x in state['items'] if not x['supported']]
-    assert {'users','finance','plans'}<={x['key'] for x in unsupported}
+    unsupported={x['key'] for x in state['items'] if not x['supported']}
+    assert {'support','attribution','suppliers','settlements','moderation'}<=unsupported
+    supported={x['key'] for x in state['items'] if x['supported']}
+    assert {'users','finance','plans','coin_packs','coins','login_settings'}<=supported
     enabled=[x['key'] for x in state['items'] if x['enabled']]
-    r=env['client'].put(PLATFORM+'/tenants/'+tenant['id']+'/modules',json={'version':state['version'],'module_keys':enabled+['users']},headers=env['pheaders'])
+    r=env['client'].put(PLATFORM+'/tenants/'+tenant['id']+'/modules',json={'version':state['version'],'module_keys':enabled+['support']},headers=env['pheaders'])
     assert r.status_code==422,r.text
     assert env['client'].put(PLATFORM+'/tenants/'+tenant['id']+'/modules',json={'version':state['version'],'module_keys':enabled},headers=owner).status_code==403
+    # Supported capabilities still require an explicit platform opening.
     assert env['client'].get('/admin/v1/users',headers=owner).status_code==403
-    assert env['client'].post(TENANT+'/roles',json={'name':'Unsupported finance','permissions':['finance.view']},headers=owner).status_code==422
+    assert env['client'].post(TENANT+'/roles',json={'name':'Closed finance','permissions':['finance.view']},headers=owner).status_code==422
+    opened=enabled+['users','finance','plans','coin_packs','coins']
+    r=env['client'].put(PLATFORM+'/tenants/'+tenant['id']+'/modules',json={'version':state['version'],'module_keys':opened},headers=env['pheaders'])
+    assert r.status_code==200,r.text
+    legacy_user=env['make'].user('jjtv-private@example.test')
+    legacy_plan=Plan(tenant_id='jjtv',code='legacy_private',name_en='JJTV private plan',status='active')
+    env['db'].add(legacy_plan);env['db'].flush()
+    env['db'].add(PlanVersion(plan_id=legacy_plan.id,version=1,price_cents=599));env['db'].commit()
+    users=env['client'].get('/admin/v1/users',headers=owner)
+    assert users.status_code==200,users.text
+    assert users.json()['items']==[]
+    orders=env['client'].get('/admin/v1/commerce/orders',headers=owner)
+    assert orders.status_code==200,orders.text
+    assert orders.json()['items']==[]
+    plans=env['client'].get('/admin/v1/commerce/plans',headers=owner)
+    assert plans.status_code==200,plans.text
+    assert 'legacy_private' not in {x['code'] for x in plans.json()['items']}
+    assert env['client'].post(TENANT+'/roles',json={'name':'Supported finance','permissions':['finance.view']},headers=owner).status_code==201
+    assert env['client'].post(TENANT+'/roles',json={'name':'Unsupported support','permissions':['support.view']},headers=owner).status_code==422
 
 
 def test_new_owner_cannot_satisfy_rotation_by_reusing_temporary_password(env):

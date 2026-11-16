@@ -154,10 +154,30 @@ def test_public_catalog_and_playback_do_not_accept_admin_tenant_header(context):
     if playback.status_code==200:assert playback.json().get('allowed') is False and not playback.json().get('url')
 
 @pytest.mark.parametrize('path',['/admin/v1/finance/orders','/admin/v1/finance/ledger'])
-def test_nonowner_native_tenant_cannot_use_unadapted_legacy_module(context,path):
-    other=native(context)
+def test_nonowner_native_tenant_finance_contains_only_its_own_records(context,path):
+    from app.modules.account.models import User
+    from app.modules.billing.models import Plan,PlanVersion,Order
+    from app.modules.wallet.models import WalletAccount,CoinLedgerEntry
+    db=context['db'];other=native(context)
+    legacy=context['make'].user('legacy-finance@example.test',coins=7)
+    local=User(tenant_id=other,email='local-finance@example.test',display_name='Local viewer');db.add(local);db.flush()
+    db.add(WalletAccount(user_id=local.id,balance=3))
+    for site,user,label,amount in [('jjtv',legacy,'JJTV-PRIVATE-ORDER',7),(other,local,'LOCAL-SITE-ORDER',3)]:
+        plan=Plan(tenant_id=site,code='finance_scope_fixture',name_en='Scoped plan',status='active');db.add(plan);db.flush()
+        version=PlanVersion(plan_id=plan.id,version=1,price_cents=500,currency='USD');db.add(version);db.flush()
+        db.add(Order(order_no=label,user_id=user.id,plan_version_id=version.id,amount_cents=500,currency='USD',status='paid'))
+        db.add(CoinLedgerEntry(user_id=user.id,amount=amount,balance_after=amount,biz_type='adjustment',biz_key='finance-scope:'+label))
+    db.commit()
     response=context['client'].get(path,headers=entered(context,other))
-    assert response.status_code==403,response.text
+    assert response.status_code==200,response.text
+    rows=response.json()['items']
+    assert len(rows)==1 and rows[0]['user_id']==local.id
+    assert str(legacy.email) not in response.text
+    if path.endswith('/orders'):
+        assert rows[0]['order_no']=='LOCAL-SITE-ORDER'
+        assert response.json()['total']==1
+    else:
+        assert rows[0]['amount']==3
 
 
 @pytest.fixture()

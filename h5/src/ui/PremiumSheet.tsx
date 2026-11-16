@@ -1,3 +1,6 @@
+import { RightsNotice } from "./RightsNotice";
+import type {ContentRights} from "../../../shared/consumer/types";
+import { getSite, siteMoney, siteFeature } from "../../../shared/site";
 import { useEffect, useRef, useState } from "react";
 import {
   ApiError,
@@ -32,7 +35,7 @@ type TerminalCheckout = {
 
 function formatDay(iso: string | null, locale: Locale): string {
   if (!iso) return "—";
-  return new Date(iso).toLocaleDateString(locale === "zh" ? "zh-CN" : "en-US", {
+  return new Date(iso).toLocaleDateString(locale === "zh" ? "zh-CN" : "en-US", { timeZone:getSite().tenant.timezone,
     month: "short",
     day: "numeric",
     year: "numeric",
@@ -46,11 +49,13 @@ function formatDay(iso: string | null, locale: Locale): string {
  * (global switch); this sheet only mirrors that. Prices come from /v1/plans.
  */
 export function PremiumSheet({
+  rights,
   locale,
   membership,
   onChanged,
   onClose,
 }: {
+  rights?:ContentRights;
   locale: Locale;
   membership?: Membership;
   onChanged: () => void;
@@ -131,12 +136,14 @@ export function PremiumSheet({
     if (mounted.current) setBusy(null);
   };
 
+  const purchasesEnabled = siteFeature("membership");
   const active = Boolean(membership?.active);
   const isPass = membership?.billing_mode === "one_time";
-  const showActive = active && !showPlans;
+  const showActive = active && (!purchasesEnabled || !showPlans);
 
   useEffect(() => {
     let alive = true;
+    if (!purchasesEnabled) { setPlans([]); setState("ready"); return; }
     getPlans()
       .then((payload) => {
         if (!alive) return;
@@ -150,10 +157,10 @@ export function PremiumSheet({
     return () => {
       alive = false;
     };
-  }, []);
+  }, [purchasesEnabled]);
 
   const subscribe = (code: string) => {
-    if (!mounted.current || ownedExpired) return;
+    if (!purchasesEnabled || !mounted.current || ownedExpired) return;
     awaitingAuth.current = status !== "user";
     setMobileCheckoutActive(pinOwner.current, true);
     requireAuth(() => {
@@ -371,7 +378,7 @@ export function PremiumSheet({
       }
       onClose={onClose}
       testId="premium-sheet"
-    >
+    ><RightsNotice rights={rights} locale={locale}/>
       {showActive && membership ? (
         <>
           <div
@@ -407,7 +414,7 @@ export function PremiumSheet({
             <li>{t(locale, "premium_benefit_noads")}</li>
             <li>{t(locale, "premium_benefit_hd")}</li>
           </ul>
-          {mode === "one_time" && !isPass && (
+          {purchasesEnabled && mode === "one_time" && !isPass && (
             <button
               type="button"
               className="premium-secondary"
@@ -418,7 +425,7 @@ export function PremiumSheet({
             </button>
           )}
           {isPass ? (
-            <>
+            purchasesEnabled && <>
               <button
                 type="button"
                 className="premium-cta"
@@ -481,7 +488,7 @@ export function PremiumSheet({
                       : plan.name_en}
                   </b>
                   <span className="premium-price">
-                    ${(plan.price_cents / 100).toFixed(2)}
+                    {siteMoney(plan.price_cents,locale,(plan as {currency?:string}).currency||getSite().tenant.currency)}
                     <i>/{unitOf(plan)}</i>
                   </span>
                 </div>

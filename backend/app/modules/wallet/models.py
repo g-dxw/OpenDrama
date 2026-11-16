@@ -23,6 +23,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
+from sqlalchemy import String, ForeignKey
 from app.db import Base
 
 ENTITLEMENT_TYPE_COIN = "coin"
@@ -30,6 +31,7 @@ ENTITLEMENT_TYPE_COIN = "coin"
 
 class WalletAccount(Base):
     __tablename__ = "wallet_accounts"
+    tenant_id: Mapped[str] = mapped_column(ForeignKey('tenants.id', ondelete='RESTRICT'), nullable=False, default='jjtv', server_default='jjtv', index=True)
 
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
     balance: Mapped[int] = mapped_column(
@@ -47,6 +49,7 @@ class CoinLedgerEntry(Base):
     """One row per coin change. Income is positive, spend is negative."""
 
     __tablename__ = "coin_ledger"
+    tenant_id: Mapped[str] = mapped_column(ForeignKey('tenants.id', ondelete='RESTRICT'), nullable=False, default='jjtv', server_default='jjtv', index=True)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
@@ -71,6 +74,7 @@ class CoinLedgerEntry(Base):
 
 class Entitlement(Base):
     __tablename__ = "entitlements"
+    tenant_id: Mapped[str] = mapped_column(ForeignKey('tenants.id', ondelete='RESTRICT'), nullable=False, default='jjtv', server_default='jjtv', index=True)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)

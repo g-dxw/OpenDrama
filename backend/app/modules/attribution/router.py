@@ -71,7 +71,13 @@ def scope(request,permission):
 
 @public_router.post("/visit")
 def visit(body:VisitIn,request:Request,db:Session=Depends(get_db)):
-    if db.info.get("content_tenant_id","jjtv")!="jjtv": raise HTTPException(403,"Attribution is available for JJTV only")
+    tenant_id = db.info.get("content_tenant_id")
+    if tenant_id != "jjtv": raise HTTPException(403,"Attribution is available for JJTV only")
+    from app.modules.tenancy.models import Tenant
+    from app.modules.sites.service import features_for
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None or not features_for(db, tenant).get("attribution", False):
+        raise HTTPException(403, detail={"code": "feature_disabled", "feature": "attribution", "message": "Attribution collection is disabled on this site"})
     context=dict(user_agent=request.headers.get("user-agent","")[:500],ttclid=body.ttclid,fbclid=body.fbclid)
     # Current PC/H5 requests always carry the shared client device header.
     # Keep body-only older clients compatible, but never let it override that identity.

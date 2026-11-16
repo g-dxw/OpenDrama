@@ -58,14 +58,21 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
-          cache-dependency-path: backend/requirements.txt
+          cache-dependency-path: backend/requirements.lock
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install proxy acceptance runtime
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends nginx-core
       - name: Install backend dependencies
-        run: python -m pip install -r backend/requirements.txt
+        run: python -m pip install -r backend/requirements.lock
       - name: Run backend, tenant isolation, and migration tests
         working-directory: backend
         run: python -m pytest -q
-      - name: Check shared release version allocation
-        run: python tests/test_release_counter.py -q
+      - name: Check shared release allocation and self-host defaults
+        run: python -m pytest tests -q
 
   frontends:
     name: Build ${{ matrix.frontend }}
@@ -92,6 +99,10 @@ jobs:
         run: npm ci
       - name: Type check and build committed source
         run: python scripts/build_frontends.py --frontend ${{ matrix.frontend }}
+      - name: Check H5 routes, gestures, and playback recovery
+        if: matrix.frontend == 'h5'
+        working-directory: h5
+        run: npm run test:unit
       - name: Check desktop flows, languages, and independent mobile surface
         if: matrix.frontend == 'web'
         working-directory: web

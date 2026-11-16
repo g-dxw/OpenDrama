@@ -1,3 +1,4 @@
+import { respondSiteBootstrap } from "../../tests/frontend-site-fixture.mjs";
 /** Isolated visual geometry fixtures. No provider or production requests. */
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -53,7 +54,7 @@ await page.evaluateOnNewDocument(()=>{
     return originalPlay.apply(this,args);
   };
 });
-await page.setRequestInterception(true);page.on('request',async request=>{const url=new URL(request.url());if(url.pathname==='/fixture.webm')return request.respond({status:200,contentType:'video/webm',body:media});if(!url.pathname.startsWith('/v1/')){if(url.origin===origin||url.protocol==='data:'||url.protocol==='blob:')return request.continue();return request.abort();}const p=url.pathname;let body={};try{body=JSON.parse(request.postData()||'{}');}catch{}requests.push({path:p,method:request.method(),body});let data,status=200;
+await page.setRequestInterception(true);page.on('request',async request=>{if(await respondSiteBootstrap(request))return;const url=new URL(request.url());if(url.pathname==='/fixture.webm')return request.respond({status:200,contentType:'video/webm',body:media});if(!url.pathname.startsWith('/v1/')){if(url.origin===origin||url.protocol==='data:'||url.protocol==='blob:')return request.continue();return request.abort();}const p=url.pathname;let body={};try{body=JSON.parse(request.postData()||'{}');}catch{}requests.push({path:p,method:request.method(),body});let data,status=200;
 if(p==='/v1/home/groups')data={groups,banners:dramas.slice(0,3).map((drama,i)=>({id:i+1,drama_id:drama.id,title:drama.title,headline:drama.title,kicker:'Featured this week',cover_url:drama.cover_url,slot:'hero'}))};
 else if(p==='/v1/config')data={tabs:[{code:'discover',title_en:'Discover',position:0,locked:true,group_id:null},{code:'english',title_en:'English',position:1,locked:false,group_id:2},{code:'ranking',title_en:'Ranking',position:2,locked:false,group_id:3}],copies:{}};
 else if(p==='/v1/catalog'){const q=url.searchParams.get('q')||'';const list=dramas.filter(d=>d.title.toLowerCase().includes(q.toLowerCase()));data={items:list,total:list.length,limit:24,offset:0};}

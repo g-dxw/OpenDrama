@@ -27,7 +27,7 @@ class SettingsIn(BaseModel):
 class TestIn(BaseModel):
     email: str | None=Field(default=None,max_length=320)
 
-def output(db): return public_config(db,'login',login_defaults(),secret_fields=SECRETS)
+def output(db): return public_config(db,'login',login_defaults(db),secret_fields=SECRETS)
 
 def audit(db,user,action,fields):
     db.add(AuditLog(actor_type='admin',actor_id=user.id,action=action,target_type='login_settings',target_id=None,payload={'fields':sorted(fields)}))
@@ -51,9 +51,10 @@ def update(body:SettingsIn,db:Session=Depends(get_db),user:AdminUser=Depends(req
 
 @router.post('/import-env')
 def import_env(db:Session=Depends(get_db),user:AdminUser=Depends(require_admin)):
+    if (db.info.get('content_tenant_id') or 'jjtv')!='jjtv': raise HTTPException(403,'Environment credential import is available only to the legacy owner')
     row=db.get(ManagedSetting,'login')
     saved=set(row.values or {})|set(row.secrets or {}) if row else set()
-    data={k:v for k,v in login_defaults().items() if k not in saved and v not in ('',None,[])}
+    data={k:v for k,v in login_defaults(db).items() if k not in saved and v not in ('',None,[])}
     save_config(db,'login',data,secret_fields=SECRETS)
     audit(db,user,'login.settings.import',data.keys());db.commit()
     return output(db)

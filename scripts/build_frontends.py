@@ -14,7 +14,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
 FRONTENDS = ("web", "h5", "admin")
-API_BASE = "https://jjtv-api.8jj.net"
+API_BASE = ""
 
 
 def git(root: Path, *args: str) -> str:
@@ -87,12 +87,13 @@ def main() -> None:
         raise SystemExit(f"Node executable not found: {args.node}")
     sha = require_clean_source(ROOT, frontends)
     environment = os.environ.copy()
-    environment["VITE_API_BASE"] = API_BASE
+    api_base = os.environ.get("VITE_API_BASE", API_BASE).rstrip("/")
+    environment["VITE_API_BASE"] = api_base
     for frontend in frontends:
         directory = ROOT / frontend
         manifest = manifest_path(ROOT, sha, frontend)
         manifest.unlink(missing_ok=True)
-        print(f"Building {frontend}: source={sha}; VITE_API_BASE={API_BASE}", flush=True)
+        print(f"Building {frontend}: source={sha}; VITE_API_BASE={api_base}", flush=True)
         # Relative arguments also work when WSL launches the Windows Node binary.
         for command in (
             [node, "node_modules/typescript/bin/tsc", "--noEmit"],
@@ -106,7 +107,7 @@ def main() -> None:
             "schema_version": 1,
             "source_sha": sha,
             "frontend": frontend,
-            "api_base": API_BASE,
+            "api_base": api_base,
             "assets": hashes,
         })
         print(f"Verified {frontend}: {len(hashes)} files; private manifest={manifest}", flush=True)

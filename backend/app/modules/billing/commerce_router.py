@@ -8,7 +8,7 @@ from pydantic import BaseModel,Field
 from sqlalchemy import select,func
 from sqlalchemy.orm import Session
 from app.db import get_db
-from app.modules.ops.router import require_admin
+from app.modules.ops.router import require_admin,require_platform_admin,require_tenant_admin
 from app.modules.tenancy.permissions import require_permission
 from app.modules.common.auth import require_user
 from app.modules.billing import commerce as service
@@ -17,6 +17,7 @@ from app.modules.billing.commerce_models import CoinPack,CommerceSettlement,Stri
 from app.modules.billing.service import BillingError, PLAN_DAYS, INTERVAL_OF, billing_mode, apply_stripe_event
 from app.modules.wallet.models import CoinLedgerEntry,WalletAccount
 from app.modules.ops.managed_settings import get_config,save_config
+from app.modules.tenancy.consumer_scope import site_timezone
 
 admin_router=APIRouter(prefix='/admin/v1',tags=['commerce-admin'])
 public_router=APIRouter(prefix='/v1',tags=['commerce'])
@@ -31,13 +32,14 @@ class PackIn(BaseModel):
     name_en:str=Field(min_length=1,max_length=64)
     name_zh:str=Field(default='',max_length=64)
     price_cents:int=Field(ge=50)
-    currency:str='USD'
+    currency:str|None=Field(default=None,pattern='^[A-Z]{3}$')
     base_coins:int=Field(ge=1)
     bonus_coins:int=Field(default=0,ge=0)
     sort_order:int=Field(default=0,ge=0)
     badge:str=Field(default='',max_length=64)
     note:str=Field(default='',max_length=500)
 class PackPatch(BaseModel):
+    currency:str|None=Field(default=None,pattern='^[A-Z]{3}$')
     name_en:str|None=Field(default=None,min_length=1,max_length=64)
     name_zh:str|None=Field(default=None,max_length=64)
     price_cents:int|None=Field(default=None,ge=50)
@@ -63,6 +65,7 @@ class AccountPatch(BaseModel):
     clear_secret_key:bool=False
     clear_webhook_secret:bool=False
 class PlanPriceIn(BaseModel):
+    currency:str|None=Field(default=None,pattern='^[A-Z]{3}$')
     price_cents:int=Field(ge=50)
     benefits:dict=Field(default_factory=dict)
     base_coins:int=Field(default=0,ge=0)
@@ -95,10 +98,12 @@ class MembershipRefundResolutionOut(BaseModel):
     replayed:bool
 
 @public_router.get('/coin-packs')
-def coin_packs(db:Session=Depends(get_db)):return {'items':service.list_packs(db)}
+def coin_packs(db:Session=Depends(get_db)):
+    return {'items':service.list_packs(db) if service.sale_allowed(db,'coin_pack') else []}
 @public_router.get('/billing/channels')
 def channels(db:Session=Depends(get_db)):
-    return {'items':[dict(code=x['code'],name=x['name'],provider='stripe',enabled=True) for x in service.account_list(db) if x['status']=='active' and x.get('secret_key_configured')]}
+    from app.modules.billing.site_merchants import channels as site_channels
+    return {'items':site_channels(db)}
 @public_router.post('/commerce/checkout')
 def checkout(body:CheckoutIn,user=Depends(require_user),db:Session=Depends(get_db)):
     return call(db,service.checkout,db,user_id=user.id,email=user.email,**body.model_dump())
@@ -126,15 +131,11 @@ def consumer_order_detail(order_no:str,response:Response,user=Depends(require_us
 @public_router.post('/billing/stripe/accounts/{code}/webhook')
 async def webhook(code:str,request:Request,stripe_signature:str=Header(default='',alias='Stripe-Signature'),db:Session=Depends(get_db)):
     body=await request.body()
-    call(db,service.signature,db,code,body,stripe_signature)
     try:payload=__import__('json').loads(body)
     except (ValueError,TypeError):raise HTTPException(400,'invalid JSON')
-    # Both URLs for the original merchant must retain pre-commerce dispatch.
-    # Other merchants never enter the legacy account's compatibility handler.
-    if code=='env':
-        return call(db,apply_stripe_event,db,body=body,signature=stripe_signature,payload=payload)
-    result=call(db,service.process_event,db,code,payload)
-    return {'received':True,**(result or {'ignored':payload.get('type')})}
+    if code=='env':return call(db,apply_stripe_event,db,body=body,signature=stripe_signature,payload=payload)
+    from app.modules.billing.site_merchants import receive
+    return call(db,receive,db,code,body,stripe_signature,payload)
 
 @admin_router.get('/coin-packs')
 def admin_packs(user=Depends(require_admin),db:Session=Depends(get_db)):return {'items':service.list_packs(db,True)}
@@ -142,7 +143,7 @@ def admin_packs(user=Depends(require_admin),db:Session=Depends(get_db)):return {
 def create_pack(body:PackIn,request:Request,user=Depends(require_admin),db:Session=Depends(get_db)):
     require_permission(request,'coin_packs.manage')
     if db.scalar(select(CoinPack).where(CoinPack.code==body.code)):raise HTTPException(409,'pack code already exists')
-    return call(db,service.save_pack,db,body.code,body.model_dump(exclude={'code'}),user.id)
+    return call(db,service.save_pack,db,body.code,body.model_dump(exclude={'code'},exclude_none=True),user.id)
 @admin_router.patch('/coin-packs/{code}')
 def patch_pack(code:str,body:PackPatch,request:Request,user=Depends(require_admin),db:Session=Depends(get_db)):
     require_permission(request,'coin_packs.manage')
@@ -172,27 +173,37 @@ def plan_price(code:str,body:PlanPriceIn,request:Request,user=Depends(require_ad
     require_permission(request,'plans.manage');row=db.scalar(select(Plan).where(Plan.code==code).with_for_update())
     if not row:raise HTTPException(404,'plan not found')
     latest=db.scalar(select(PlanVersion).where(PlanVersion.plan_id==row.id).order_by(PlanVersion.version.desc()).limit(1))
-    version=PlanVersion(plan_id=row.id,version=latest.version+1 if latest else 1,**body.model_dump());db.add(version)
+    from app.modules.billing.site_merchants import site_currency,assert_site_currency
+    values=body.model_dump(exclude_none=True)
+    values['currency']=values.get('currency') or (latest.currency if latest else site_currency(db))
+    call(db,assert_site_currency,db,values['currency'])
+    version=PlanVersion(plan_id=row.id,version=latest.version+1 if latest else 1,**values);db.add(version)
     service.audit(db,user.id,'plan.version',row.id,dict(code=code));db.commit();return {'version':version.version,'price_cents':version.price_cents}
 
 @admin_router.get('/stripe/accounts')
-def stripe_accounts(user=Depends(require_admin),db:Session=Depends(get_db)):return {'items':service.account_list(db)}
+def stripe_accounts(user=Depends(require_admin),db:Session=Depends(get_db)):
+    require_legacy_merchant_owner(db)
+    return {'items':service.account_list(db)}
 @admin_router.post('/stripe/accounts')
 def create_account(body:AccountIn,request:Request,user=Depends(require_admin),db:Session=Depends(get_db)):
+    require_legacy_merchant_owner(db)
     require_permission(request,'stripe.manage')
     return call(db,service.save_account,db,body.code,body.model_dump(exclude={'code'}),user.id)
 @admin_router.patch('/stripe/accounts/{code}')
 def patch_account(code:str,body:AccountPatch,request:Request,user=Depends(require_admin),db:Session=Depends(get_db)):
+    require_legacy_merchant_owner(db)
     require_permission(request,'stripe.manage')
     return call(db,service.save_account,db,code,body.model_dump(exclude_unset=True),user.id)
 @admin_router.post('/stripe/accounts/{code}/test')
 def account_test(code:str,request:Request,user=Depends(require_admin),db:Session=Depends(get_db)):
+    require_legacy_merchant_owner(db)
     require_permission(request,'stripe.manage');return call(db,service.test_account,db,code)
 @admin_router.get('/stripe/prices')
 def prices(user=Depends(require_admin),db:Session=Depends(get_db)):
     return {'items':[dict(account_code=x.account_code,product_type=x.product_type,version_id=x.version_id,billing_mode=x.billing_mode,price_id=x.price_id) for x in db.scalars(select(StripePriceBinding))]}
 @admin_router.post('/stripe/prices/provision')
 def provision(request:Request,user=Depends(require_admin),db:Session=Depends(get_db)):
+    require_legacy_merchant_owner(db)
     require_permission(request,'stripe.manage');out=[]
     from app.modules.billing.service import list_current_plans
     for account in service.account_list(db):
@@ -230,7 +241,7 @@ def summary(user=Depends(require_admin),db:Session=Depends(get_db)):
     return {'balance':db.scalar(select(func.coalesce(func.sum(WalletAccount.balance),0))) or 0,'items':[dict(biz_type=r[0],amount=int(r[1]),count=r[2]) for r in rows]}
 @admin_router.get('/coins/stats')
 def stats(user=Depends(require_admin),db:Session=Depends(get_db)):
-    day=func.date_trunc('day',func.timezone('America/Los_Angeles',CoinLedgerEntry.created_at))
+    day=func.date_trunc('day',func.timezone(site_timezone(db).key,CoinLedgerEntry.created_at))
     rows=list(db.execute(select(day,func.sum(CoinLedgerEntry.amount),func.count()).group_by(day).order_by(day.desc()).limit(30)))
     return {'items':[dict(day=r[0].date().isoformat(),amount=int(r[1]),count=r[2]) for r in rows]}
 @admin_router.get('/coins/export')
@@ -252,3 +263,41 @@ def refund(order_no:str,body:RefundIn,request:Request,user=Depends(require_admin
 def membership_refund_resolution(order_no:str,body:MembershipRefundResolutionIn,request:Request,user=Depends(require_admin),db:Session=Depends(get_db)):
     require_permission(request,'finance.refund')
     return call(db,service.resolve_membership_refund,db,order_no,user.id,body.reason,body.idempotency_key,body.expected_revision)
+
+
+platform_router=APIRouter(prefix='/platform/v1',tags=['instance-merchants'])
+tenant_router=APIRouter(prefix='/tenant/v1',tags=['site-merchant-binding'])
+
+class MerchantBindingIn(BaseModel):
+    account_code:str=Field(pattern='^[a-z0-9_]{2,32}$')
+    allow_reuse:bool=False
+
+def require_legacy_merchant_owner(db):
+    from app.modules.tenancy.consumer_scope import current_site
+    if current_site(db)!='jjtv':raise HTTPException(403,'Merchant credentials are managed by the instance administrator')
+
+@tenant_router.get('/merchant-binding')
+def read_site_merchant(db:Session=Depends(get_db),user=Depends(require_tenant_admin)):
+    from app.modules.billing.site_merchants import binding_info
+    return call(db,binding_info,db)
+
+@tenant_router.put('/merchant-binding')
+def set_site_merchant(body:MerchantBindingIn,db:Session=Depends(get_db),user=Depends(require_tenant_admin)):
+    from app.modules.billing.site_merchants import bind_merchant
+    return call(db,bind_merchant,db,body.account_code,body.allow_reuse,user.id)
+
+@platform_router.get('/stripe/accounts')
+def instance_accounts(db:Session=Depends(get_db),user=Depends(require_platform_admin)):
+    return {'items':service.account_list(db)}
+
+@platform_router.post('/stripe/accounts')
+def instance_create_account(body:AccountIn,db:Session=Depends(get_db),user=Depends(require_platform_admin)):
+    return call(db,service.save_account,db,body.code,body.model_dump(exclude_unset=True),user.id)
+
+@platform_router.patch('/stripe/accounts/{code}')
+def instance_update_account(code:str,body:AccountPatch,db:Session=Depends(get_db),user=Depends(require_platform_admin)):
+    return call(db,service.save_account,db,code,body.model_dump(exclude_unset=True),user.id)
+
+@platform_router.post('/stripe/accounts/{code}/test')
+def instance_test_account(code:str,db:Session=Depends(get_db),user=Depends(require_platform_admin)):
+    return call(db,service.test_account,db,code)

@@ -2,6 +2,8 @@
 import pytest
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
+from fastapi import HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy import select, func
 
 from app.main import app
@@ -127,9 +129,12 @@ def test_matching_is_tenant_and_plan_scoped_with_legacy_body_fallback(
                      kind="native", status="active")
     session.add_all([other, foreign])
     session.flush()
-    # Even malformed foreign data sharing a plan FK must not supply JJTV context.
-    session.add(AttributionVisit(id="foreign-poison", tenant_id=foreign.id, plan_id=plan.id,
-                                client_id="browser-a", context={"fbclid": "foreign-click"}))
+    # Multi-site constraints reject malformed cross-site references at write time.
+    with pytest.raises((HTTPException,IntegrityError)):
+        with session.begin_nested():
+            session.add(AttributionVisit(id="foreign-poison", tenant_id=foreign.id, plan_id=plan.id,
+                                        client_id="browser-a", context={"fbclid": "foreign-click"}))
+            session.flush()
     session.commit()
     client = TestClient(app)
     land(client, other, "browser-a", "other")

@@ -4,6 +4,7 @@ from datetime import datetime
 from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, CheckConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import String, ForeignKey
 from app.db import Base
 
 class SupportConfig(Base):
@@ -60,6 +61,7 @@ class SupportMessage(Base):
 
 class SupportEvent(Base):
     __tablename__ = "support_events"
+    tenant_id: Mapped[str] = mapped_column(ForeignKey('tenants.id', ondelete='RESTRICT'), nullable=False, default='jjtv', server_default='jjtv', index=True)
     __table_args__ = (Index("ix_support_events_ticket", "ticket_id", "created_at"),)
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     ticket_id: Mapped[int] = mapped_column(ForeignKey("support_tickets.id"), nullable=False)

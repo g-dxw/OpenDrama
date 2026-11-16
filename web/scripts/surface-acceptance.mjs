@@ -1,3 +1,4 @@
+import { respondSiteBootstrap } from "../../tests/frontend-site-fixture.mjs";
 /** Independent surfaces at the measured 1024px boundary; all APIs and assets are fixtures. */
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
@@ -123,6 +124,7 @@ await page.evaluateOnNewDocument(() => {
   };
 });
 let activeMember = false,
+  membershipEnabled = true,
   playableFirst = false,
   media = Buffer.alloc(0),
   checkoutHold = null,
@@ -151,6 +153,7 @@ await page.evaluateOnNewDocument(() => {
     );
     if (
       ![
+        "/v1/plans",
         "/v1/commerce/checkout",
         "/v1/billing/cancel",
         "/v1/dramas/1/play",
@@ -363,6 +366,7 @@ const profile = (token) => ({
 });
 await page.setRequestInterception(true);
 page.on("request", async (req) => {
+  if (await respondSiteBootstrap(req, { features: { membership: membershipEnabled } })) return;
   inFlight.add(req);
   const url = new URL(req.url());
   if (url.pathname === "/fixtures/clip.webm") {
@@ -697,8 +701,8 @@ try {
     390,
   );
   assert.equal(await page.$$(".consumer-header").then((x) => x.length), 0);
-  assert.equal(await page.$$(".tabs [data-tab]").then((x) => x.length), 4);
-  pass("390px loads the independent H5 stage and four bottom tabs");
+  assert.deepEqual(await page.$$eval(".tabs [data-tab]", tabs => tabs.map(tab => tab.dataset.tab)), ["home", "foryou", "rewards", "mylist", "me"]);
+  pass("390px loads the independent H5 stage and five distinct bottom tabs");
   for (const width of [1000, 1023]) {
     await resize(width);
     await surface("mobile");
@@ -793,7 +797,8 @@ try {
   );
   await goto("?pid=landing#watch/1?episode=10&return=price");
   await surface("mobile");
-  await page.waitForSelector(".ep-bar");
+  await page.keyboard.press("Tab");
+  await page.waitForSelector('[data-player-action="episodes"]', { visible: true });
   await page.$eval(
     ".play",
     (element) => (element.dataset.surfaceSentinel = "kept"),
@@ -801,11 +806,9 @@ try {
   const beforePlayReads = calls.filter(
     (call) => call.path === "/v1/dramas/1/play",
   ).length;
-  await page.click(".ep-bar");
+  await page.click('[data-player-action="episodes"]');
   await page.waitForSelector(".ep-grid button");
-  await page.$$eval(".ep-grid button", (buttons) =>
-    buttons.find((button) => button.textContent.trim() === "2").click(),
-  );
+  await page.click('.ep-grid [data-episode-id="11"]');
   await page.waitForFunction(
     () =>
       new URLSearchParams(location.hash.split("?")[1]).get("episode") ===
@@ -1064,12 +1067,25 @@ try {
     () => document.querySelector(".me-tab.on")?.textContent.trim() === "Saved",
   );
   pass("account section deep links open the matching H5 library tab");
+  await goto("#mylist");
+  await surface("mobile");
+  await page.waitForSelector(".mylist-page");
+  assert.equal(new URL(page.url()).hash, "#mylist");
+  assert.deepEqual(await page.$$eval('.tabs [role="tab"][aria-selected="true"]', tabs => tabs.map(tab => tab.dataset.tab)), ["mylist"]);
+  assert.equal(await page.$eval('.tabs [data-tab="mylist"] .tab-label', element => element.textContent.trim()), "My List");
+  assert.equal(await page.$eval('.tabs [data-tab="me"]', element => element.getAttribute("aria-selected")), "false");
+  assert.equal(await page.$(".consumer-header"), null);
+  pass("My List deep link keeps the independent mobile surface and selects only My List");
   await goto("#account");
   await surface("mobile");
   await page.waitForFunction(
     () =>
       document.querySelector(".me-hero h2")?.textContent === "Mobile viewer",
   );
+  assert.deepEqual(await page.$$eval('.tabs [role="tab"][aria-selected="true"]', tabs => tabs.map(tab => tab.dataset.tab)), ["me"]);
+  assert.equal(await page.$eval('.tabs [data-tab="me"] .tab-label', element => element.textContent.trim()), "Profile");
+  assert.equal(await page.$eval('.tabs [data-tab="mylist"]', element => element.getAttribute("aria-selected")), "false");
+  pass("Profile remains independent from My List and is the sole selected mobile tab");
   await page.$eval(
     ".me-page",
     (element) => (element.dataset.surfaceSentinel = "kept"),
@@ -1207,6 +1223,7 @@ try {
     "a late H5 checkout response for another token releases its pin without redirecting or overwriting the new order",
   );
   activeMember = true;
+  membershipEnabled = false;
   await page.evaluate(() =>
     localStorage.setItem("minitv_h5_token", "mobile-token"),
   );
@@ -1215,6 +1232,12 @@ try {
   await page.reload({ waitUntil: "networkidle0" });
   await surface("mobile");
   await page.waitForSelector('[data-testid="premium-cancel"]');
+  // Requests from the departing enabled document can start during navigation.
+  // Assert against this freshly bootstrapped disabled document, including reads
+  // issued before the membership controls become visible.
+  const disabledMobileDocument = await page.evaluate(() => window.__surfaceFetch.documentId);
+  assert.equal(calls.filter(call => call.path === "/v1/plans" && call.headers["x-surface-document"] === disabledMobileDocument).length, 0);
+  assert.equal(await page.$('[data-testid="premium-extend"], [data-testid="premium-buy-pass"], [data-testid^="premium-buy-"]'), null);
   const cancellation = hold("cancel");
   await page.locator('[data-testid="premium-cancel"]').click();
   await cancellation.started;
@@ -1236,10 +1259,24 @@ try {
     ).length,
     profileReads,
   );
+  pass("disabled new membership sales preserve H5 renewal cancellation without loading plans; cancellation still ignores effects after unmount");
+  await goto("#premium");
+  await page.reload({ waitUntil: "networkidle0" });
+  await surface("desktop");
+  await page.waitForSelector('[data-testid="membership-cancel"]');
+  assert.equal(await page.$("#membership-plans"), null);
+  const disabledDesktopDocument = await page.evaluate(() => window.__surfaceFetch.documentId);
+  assert.equal(calls.filter(call => call.path === "/v1/plans" && call.headers["x-surface-document"] === disabledDesktopDocument).length, 0);
+  await page.locator('[data-testid="membership-cancel"]').click();
+  const desktopCancellation = hold("cancel");
+  await page.locator('[data-testid="membership-confirm-cancel"]').click();
+  await desktopCancellation.started;
+  await settleHeld(desktopCancellation);
+  await page.waitForSelector('[data-testid="membership-confirm-cancel"]', { hidden: true });
+  assert(calls.some(call => call.path === "/v1/billing/cancel" && call.headers.authorization === "Bearer desktop-token"));
+  pass("existing desktop subscribers can confirm cancellation while membership purchases are disabled");
   activeMember = false;
-  pass(
-    "membership cancellation uses the same mobile pin and ignores effects after the sheet unmounts",
-  );
+  membershipEnabled = true;
   await resize(390);
 
   const checkoutCalls = () =>

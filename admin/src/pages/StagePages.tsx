@@ -1,3 +1,4 @@
+import { operatorDate, operatorCurrency, operatorTimezone } from '../site-format';
 import { useEffect, useState, type ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
@@ -78,13 +79,7 @@ function useLoad<T>(path: string, fallback: T, options: { enabled?: boolean } = 
 }
 
 /** ISO-8601 from the API -> local "YYYY-MM-DD HH:mm" for table cells. */
-function formatTime(value?: string | null) {
-  if (!value) return "-";
-  const moment = new Date(value);
-  if (Number.isNaN(moment.getTime())) return value;
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${moment.getFullYear()}-${pad(moment.getMonth() + 1)}-${pad(moment.getDate())} ${pad(moment.getHours())}:${pad(moment.getMinutes())}`;
-}
+const formatTime = operatorDate;
 
 type DashboardMetric = {
   day: string;
@@ -109,7 +104,7 @@ type Dashboard = Partial<DashboardMetric> & {
   recent_orders?: { order_no: string; user_id: number; amount_cents: number; currency: string; status: string; created_at: string }[];
 };
 
-const money = (cents?: number) => `$${((cents ?? 0) / 100).toFixed(2)}`;
+const money = (cents?:number,currency=operatorCurrency()) => new Intl.NumberFormat("zh-CN",{style:"currency",currency}).format((cents??0)/10**(new Intl.NumberFormat("zh-CN",{style:"currency",currency}).resolvedOptions().maximumFractionDigits??2));
 /** completion_rate is stored in basis points of the day's plays. */
 const rate = (basisPoints?: number) => `${((basisPoints ?? 0) / 100).toFixed(1)}%`;
 const int = (value?: number) => String(value ?? 0);
@@ -413,7 +408,7 @@ export function DashboardPage() {
             数据看板
           </Typography.Title>
           <Tag bordered={false} style={{ background: "#eff8ff", color: "#175cd3", borderRadius: 12, padding: "2px 10px", margin: 0 }}>
-            {data.timezone ?? "America/Los_Angeles"} (美西时区)
+            {data.timezone || operatorTimezone()}
           </Tag>
           <Tag bordered={false} style={{ background: "#f2f4f7", color: "#475467", borderRadius: 12, margin: 0 }}>
             指标日：{data.day ?? "-"}
@@ -451,7 +446,7 @@ export function DashboardPage() {
         showIcon
         message={
           <span style={{ fontSize: 13, color: "#475467" }}>
-            业务日统一按洛杉矶时区切分；指标全部来自线上真实事件打点（播放 / 支付订单 / 金币流水），环比自动对比前一天。
+            业务日按本站时区切分；指标全部来自线上真实事件打点（播放 / 支付订单 / 金币流水），环比自动对比前一天。
           </span>
         }
         style={{
@@ -1921,12 +1916,7 @@ const FINANCE_PERIOD_LABEL: Record<string, string> = {
 
 const CURRENCY_SYMBOL: Record<string, string> = { USD: "$", CNY: "¥", EUR: "€", GBP: "£" };
 
-function formatAmount(cents?: number | null, currency = "USD") {
-  if (cents === null || cents === undefined) return "-";
-  const symbol = CURRENCY_SYMBOL[currency];
-  const value = (cents / 100).toFixed(2);
-  return symbol ? `${symbol}${value}` : `${value} ${currency}`;
-}
+function formatAmount(cents?:number|null,currency=operatorCurrency()){if(cents===null||cents===undefined)return "—";return money(cents,currency);}
 
 function OrderStatusTag({ status }: { status: string }) {
   const meta = ORDER_STATUS_META[status] ?? {

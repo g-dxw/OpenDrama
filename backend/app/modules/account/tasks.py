@@ -20,6 +20,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.modules.account.models import User
+from app.modules.tenancy.consumer_scope import site_timezone
 from app.modules.account.service import (
     DEFAULT_CHECKIN,
     LA,
@@ -29,6 +30,7 @@ from app.modules.account.service import (
     _active_amount,
     _credit,
     la_today,
+    require_rewards,
 )
 from app.modules.ops.config_models import Checkin, RewardConfig, TaskClaim
 from app.modules.playback.models import PlaybackEvent
@@ -40,14 +42,14 @@ from app.modules.wallet.models import WalletAccount
 DAILY_TASKS: tuple[dict, ...] = tuple(task for task in REWARD_TASKS if task.get("period") == "daily")
 
 
-def _day_bounds(day: date) -> tuple[datetime, datetime]:
-    start = datetime.combine(day, time.min, tzinfo=LA)
+def _day_bounds(day: date, session=None) -> tuple[datetime, datetime]:
+    start = datetime.combine(day, time.min, tzinfo=site_timezone(session))
     return start.astimezone(timezone.utc), (start + timedelta(days=1)).astimezone(timezone.utc)
 
 
 def task_progress(session: Session, user_id: int, task: dict, day: date) -> int:
     """How many distinct objects the user touched inside the task's local day."""
-    start, end = _day_bounds(day)
+    start, end = _day_bounds(day,session)
     if task["metric"] == "complete":
         # A complete event with no position is a client bug (or a cheap forgery);
         # both clients report the real duration, so zero never counts.
@@ -130,7 +132,7 @@ def tasks_overview(
     A signed-out visitor gets the same cards and amounts with zero progress, so
     the page never hides behind a login wall; signing in only personalises it.
     """
-    day = day or la_today()
+    day = day or la_today(db=session)
     user_id = None if user is None else user.id
     items = []
     for task in DAILY_TASKS:
@@ -161,7 +163,8 @@ def tasks_overview(
 def claim_task(
     session: Session, user: User, code: str, *, day: date | None = None
 ) -> dict:
-    day = day or la_today()
+    require_rewards(session)
+    day = day or la_today(db=session)
     task = REWARD_TASK_BY_CODE.get(code)
     if task is None or task.get("period") != "daily":
         raise AccountError(404, f"unknown daily task '{code}'")

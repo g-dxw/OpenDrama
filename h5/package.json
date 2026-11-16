@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
+    "test:unit": "node --test tests/*.test.mjs src/player/*.test.mjs",
     "verify:home": "node scripts/verify-home.mjs",
     "verify:auth": "node scripts/verify-auth.mjs",
     "verify:me": "node scripts/verify-me.mjs",

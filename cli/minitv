@@ -27,9 +27,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 VERSION = "0.4.0"
-DEFAULT_BASE = "https://jjtv-api.8jj.net"
+DEFAULT_BASE = ""
 # Cloudflare blocks urllib's default UA, so every request carries this one.
-UA = f"minitv/{VERSION} (+https://jjtv.8jj.net)"
+UA = f"minitv/{VERSION} (self-hosted)"
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -91,7 +91,7 @@ def credentials_path() -> Path:
 DEFAULT_CONFIG = {
     "default_profile": "prod",
     "profiles": {
-        "prod": {"base_url": "https://jjtv-api.8jj.net", "sandbox_drama_id": 0},
+        "prod": {"base_url": "", "sandbox_drama_id": 0},
         "local": {"base_url": "http://127.0.0.1:18110", "sandbox_drama_id": 0},
     },
 }
@@ -167,7 +167,12 @@ def resolve_settings(args, *, require_key=True) -> Settings:
     cfg = load_config()
     profile = getattr(args, "profile", None) or cfg.get("default_profile") or "prod"
     prof = cfg["profiles"].get(profile, {})
-    base = (getattr(args, "base_url", None) or prof.get("base_url") or DEFAULT_BASE).rstrip("/")
+    base = (getattr(args, "base_url", None) or os.environ.get("MINITV_API_BASE") or prof.get("base_url") or DEFAULT_BASE).rstrip("/")
+    if not base:
+        raise CliError("请配置本实例 API 地址", code="instance_required", exit_code=EXIT_USAGE, hint="使用 --base-url URL 或 MINITV_API_BASE，不会自动连接其他实例")
+    parsed_base = urllib.parse.urlsplit(base)
+    if parsed_base.scheme not in {"http", "https"} or not parsed_base.hostname or parsed_base.username or parsed_base.password:
+        raise usage_error("API 地址必须是无内嵌凭据的 http(s) URL")
     key = os.environ.get("MINITV_API_KEY", "").strip() or load_credentials().get(profile, "")
     timeout = getattr(args, "timeout", None) or 20
     if require_key and not key:
@@ -2259,7 +2264,7 @@ def render_guide():
         "```",
         "",
         "```bash",
-        "curl -fsSL https://jjtv.8jj.net/cli/install.sh | sh",
+        "curl -fsSL https://YOUR_INSTANCE/cli/install.sh | MINITV_CLI_BASE=https://YOUR_INSTANCE/cli MINITV_API_BASE=https://YOUR_INSTANCE sh",
         "minitv config set-key",
         "minitv doctor",
         "```",

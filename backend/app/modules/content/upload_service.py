@@ -53,6 +53,8 @@ def create_upload_session(
     height: int,
     duration_seconds: int = 0,
 ) -> dict:
+    from app.modules.library.service import assert_site_media_editable
+    assert_site_media_editable(episode)
     if mime not in ALLOWED_MIME:
         raise UploadRejected("only MP4 or MOV is accepted")
     if size_bytes > MAX_BYTES:
@@ -179,9 +181,14 @@ def apply_callback(session: Session, *, body: bytes, signature: str, video_id: s
     # Only a valid provider signature may resolve an upload across native tenants.
     if not hmac.compare_digest(sign_callback(body), signature or ""):
         return _apply_verified_callback(session, body=body, signature=signature, video_id=video_id, outcome=outcome)
-    previous = session.info.get("content_tenant_bypass", False)
-    session.info["content_tenant_bypass"] = True
-    try:
+    upload = session.scalar(select(MediaUpload).where(MediaUpload.video_id == video_id).execution_options(include_all_tenants=True))
+    if upload is None:
+        raise UploadRejected("unknown video")
+    owner = session.scalar(select(Episode.tenant_id).where(Episode.id == upload.episode_id).execution_options(include_all_tenants=True))
+    if owner is None:
+        raise UploadRejected("episode missing")
+    # Resolve globally only after verification, then apply both read and write
+    # guards in the immutable owner scope instead of disabling one guard.
+    from app.modules.tenancy.consumer_scope import site_context
+    with site_context(session, owner):
         return _apply_verified_callback(session, body=body, signature=signature, video_id=video_id, outcome=outcome)
-    finally:
-        session.info["content_tenant_bypass"] = previous

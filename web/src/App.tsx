@@ -1,3 +1,5 @@
+import { resolveStoreRoute } from "./store-route";
+import { getSite, siteName, siteLink, siteFeature, siteStorageKey } from "../../shared/site";
 import { LocaleProvider, useLocale } from "./locale";
 import { LanguageMenu } from "./language-menu";
 import { useEffect, useState, lazy, Suspense } from "react";
@@ -41,11 +43,11 @@ function Shell() {
     const params = new URLSearchParams(window.location.search);
     const hashQuery = new URLSearchParams(hash.split("?")[1] || "");
     const pid = params.get("pid") || hashQuery.get("pid");
-    if (pid && /^[A-Za-z0-9_-]{1,128}$/.test(pid)) {
-      localStorage.setItem("jjtv_attribution_pid", pid);
+    if (siteFeature("attribution") && pid && /^[A-Za-z0-9_-]{1,128}$/.test(pid)) {
+      localStorage.setItem(siteStorageKey("jjtv_attribution_pid"), pid);
       void post("/v1/attr/visit", {
         pid,
-        client_id: localStorage.getItem("jjtv_pc_device") || undefined,
+        client_id: localStorage.getItem(siteStorageKey("jjtv_pc_device")) || undefined,
         fbclid: params.get("fbclid") || undefined,
         ttclid: params.get("ttclid") || undefined,
       }).catch(() => undefined);
@@ -65,6 +67,7 @@ function Shell() {
   const [path, query = ""] = hash.replace(/^\/+/, "").split("?");
   const params = new URLSearchParams(query);
   const route = path.split("/");
+  const storeRoute = resolveStoreRoute(path, params.get("tab"), { coins: siteFeature("coins"), membership: siteFeature("membership") }, Boolean(user?.membership?.active));
   const activeNavigation =
     ["account", "me"].includes(route[0]) || path === "rewards"
       ? "account"
@@ -97,11 +100,7 @@ function Shell() {
   else if (path === "premium" || path === "coins" || path === "price")
     content = (
       <Store
-        kind={
-          path === "coins" || params.get("tab") === "coins"
-            ? "coin_pack"
-            : "membership"
-        }
+        kind={storeRoute.kind}
         sourceDramaId={Number(params.get("drama")) || undefined}
         sourceEpisodeId={Number(params.get("episode")) || undefined}
       />
@@ -123,8 +122,10 @@ function Shell() {
   else if (route[0] === "legal") content = <Legal slug={route[1] || "terms"} />;
   else if (path === "about" || path === "download") content = <About />;
   else content = <Home />;
+  if ((["coins","price","premium"].includes(path) && !storeRoute.available) || (path === "rewards" && !siteFeature("rewards")) || (path === "support" && !siteFeature("support"))) content = <Failure message={t("This feature is unavailable on this site.")} />;
   return (
     <div className="consumer-app">
+      {new URLSearchParams(window.location.search).has("preview_token") && <div className="site-preview-banner" role="status">{t("Brand preview — this draft is not published.")}</div>}
       <a
         className="skip-link"
         href="#main-content"
@@ -136,10 +137,8 @@ function Shell() {
         {t("Skip to content")}</a>
       <header className="consumer-header">
         <a className="consumer-brand" href="#home" aria-label={t("JJTV home")}>
-          <span className="brand-symbol">
-            <Icon name="play" size={20} />
-          </span>
-          JJ<span>TV</span>
+          {getSite().brand.logo_url ? <img src={getSite().brand.logo_url} alt=""/> : <span className="brand-symbol"><Icon name="play" size={20}/></span>}
+          {siteName()}
         </a>
         <button
           className="icon-button mobile-menu"
@@ -155,7 +154,7 @@ function Shell() {
             ["foryou", "For You"],
             ["price", "Price"],
             ["account", "Me"],
-          ].map(([id, label]) => (
+          ].filter(([id])=>id!=="price"||siteFeature("membership")||siteFeature("coins")).map(([id, label]) => (
             <a
               key={id}
               href={"#" + id}
@@ -207,8 +206,8 @@ function Shell() {
         <Suspense fallback={<Loading />}>{content}</Suspense>
       </main>
       <footer className="consumer-footer">
-        <div className="footer-identity"><a className="consumer-brand" href="#home">JJ<span>TV</span></a><span>© {new Date().getFullYear()} JJTV</span></div>
-        <nav aria-label={t("Footer")}><a href="#about">{t("About")}</a><a href="#support">{t("Help & support")}</a><a href="#legal/terms">{t("Terms")}</a><a href="/privacy.html">{t("Privacy")}</a></nav>
+        <div className="footer-identity"><a className="consumer-brand" href="#home">{siteName()}</a><span>© {new Date().getFullYear()} {getSite().company.name || siteName()}</span></div>
+        <nav aria-label={t("Footer")}><a href="#about">{t("About")}</a>{siteFeature("support")&&<a href="#support">{t("Help & support")}</a>}<a href="#legal/terms">{t("Terms")}</a><a href="/privacy.html">{t("Privacy")}</a></nav>
       </footer>
       {loginOpen && <Login />}
     </div>
@@ -227,7 +226,7 @@ function About() {
           {t("Watch online")}</a>
         <a
           className="button secondary"
-          href="https://jjtv-h5.8jj.net"
+          href={siteLink("h5")}
           target="_blank"
           rel="noopener noreferrer"
         >
@@ -240,7 +239,7 @@ function About() {
           <h2>{t("Take the story with you.")}</h2>
           <p>
             {t("The mobile web app is ready to watch in your browser. Native app downloads will appear when verified JJTV builds are available.")}</p>
-          <a href="https://jjtv-h5.8jj.net" className="button primary">
+          <a href={siteLink("h5")} className="button primary">
             {t("Watch on mobile")}</a>
         </div>
       </div>

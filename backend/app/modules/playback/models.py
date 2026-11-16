@@ -7,11 +7,13 @@ import datetime
 from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
+from sqlalchemy import String, ForeignKey
 from app.db import Base
 
 
 class PlaybackEvent(Base):
     __tablename__ = "playback_events"
+    tenant_id: Mapped[str] = mapped_column(ForeignKey('tenants.id', ondelete='RESTRICT'), nullable=False, default='jjtv', server_default='jjtv', index=True)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
@@ -25,6 +27,7 @@ class PlaybackEvent(Base):
 
 class PlaybackProgress(Base):
     __tablename__ = "playback_progress"
+    tenant_id: Mapped[str] = mapped_column(ForeignKey('tenants.id', ondelete='RESTRICT'), nullable=False, default='jjtv', server_default='jjtv', index=True)
 
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
     episode_id: Mapped[int] = mapped_column(ForeignKey("episodes.id"), primary_key=True)

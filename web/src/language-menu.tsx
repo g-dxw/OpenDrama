@@ -1,3 +1,4 @@
+import { getSite } from "../../shared/site";
 import { useEffect, useRef, useState } from "react";
 import { LANGUAGES, useLocale } from "./locale";
 import { Icon } from "./components";
@@ -24,7 +25,7 @@ export function LanguageMenu() {
       const next = event.key === "Home" ? 0 : event.key === "End" ? options.length - 1 : (current + (event.key === "ArrowDown" ? 1 : -1) + options.length) % options.length;
       options[next]?.focus();
     }}>
-      {LANGUAGES.map((item) => <button key={item.code} role="menuitemradio" aria-checked={item.code === locale} lang={item.tag} onClick={() => {setLocale(item.code);setOpen(false);trigger.current?.focus();}}><span className="language-code">{item.code.toUpperCase()}</span><span>{item.label}</span>{item.code === locale && <Icon name="check" size={15}/>}</button>)}
+      {LANGUAGES.filter(item=>getSite().tenant.locales.includes(item.code)).map((item) => <button key={item.code} role="menuitemradio" aria-checked={item.code === locale} lang={item.tag} onClick={() => {setLocale(item.code);setOpen(false);trigger.current?.focus();}}><span className="language-code">{item.code.toUpperCase()}</span><span>{item.label}</span>{item.code === locale && <Icon name="check" size={15}/>}</button>)}
     </div>}
   </div>;
 }

@@ -5,6 +5,7 @@
 import {chromium} from "playwright-core";
 import os from "node:os";
 import path from "node:path";
+import { respondSiteBootstrap } from "../../tests/frontend-site-fixture.mjs";
 
 const APP_URL = process.env.BASE_URL || "https://jjtv-h5.8jj.net/";
 const OUT = process.env.OUT_DIR || path.join(os.tmpdir(), "h5me");
@@ -101,6 +102,7 @@ let releaseProfileRefresh;
 const profileRefreshGate = new Promise(resolve => { releaseProfileRefresh = resolve; });
 
 async function buildRoutes(route) {
+  if (await respondSiteBootstrap(route)) return;
   const request = route.request();
   const url = new URL(request.url());
   const path = url.pathname;

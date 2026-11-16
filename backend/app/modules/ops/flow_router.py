@@ -415,8 +415,18 @@ def episode_preview_url(
         raise HTTPException(status_code=404, detail="episode not found")
     if not episode.bunny_video_id:
         raise HTTPException(status_code=409, detail="episode has no Bunny video")
+    ttl = 3600
+    if episode.media_asset_id is not None:
+        from app.modules.library.service import assert_distribution_allowed, playback_ttl
+        drama = db.get(Drama, episode.drama_id)
+        if drama is None:
+            raise HTTPException(status_code=404, detail='drama not found')
+        grant = assert_distribution_allowed(db, drama, purpose='preview', episode=episode)
+        ttl = playback_ttl(grant)
+        if ttl <= 0:
+            raise HTTPException(status_code=403, detail='内容播放授权已到期')
     try:
-        signed = bunny.stream_embed_url(episode.bunny_video_id, ttl=3600)
+        signed = bunny.stream_embed_url(episode.bunny_video_id, ttl=ttl)
     except bunny.BunnyError as exc:
         raise HTTPException(status_code=503, detail=f"preview signing unavailable: {exc}") from exc
     return {
@@ -2341,7 +2351,7 @@ def dashboard(
     """Aggregates for one business day (dashboard timezone) plus the trend window."""
     from app.modules.account.service import la_today
 
-    target = day or la_today()
+    target = day or la_today(db=db)
     data = build_dashboard(db, target, days=days)
     data["recent_orders"] = finance_orders(page=1, page_size=5, db=db, user=user)["items"]
     return data
@@ -2363,7 +2373,7 @@ def list_pushes(db: Session = Depends(get_db), user: AdminUser = Depends(require
 
 @router.post("/legal/{slug}")
 def save_legal(slug: str, title: str, body: str = "", db: Session = Depends(get_db), user: AdminUser = Depends(require_content_writer)):
-    row = db.get(LegalPage, slug)
+    row = db.scalar(select(LegalPage).where(LegalPage.slug == slug))
     if row is None:
         row = LegalPage(slug=slug, title=title, body=body)
         db.add(row)

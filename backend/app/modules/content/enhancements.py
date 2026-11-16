@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.modules.content.models import Drama, DramaTag, DramaHomeGroup, Episode, EpisodeSubtitle, Tag
 from app.modules.content import service as content
+from app.modules.content.public_terms import public_watch_terms
 from app.modules.common import bunny
 from app.modules.ops.router import require_admin, require_content_writer
 from app.modules.ops.models import AdminUser
@@ -33,7 +34,7 @@ def catalog(q: str = Query('',max_length=200),language: str = Query('',max_lengt
     ids=[d.id for d in rows]
     counts=dict(db.execute(select(Episode.drama_id,func.count()).where(Episode.drama_id.in_(ids),Episode.status=='published').group_by(Episode.drama_id)).all()) if ids else {}
     tags=content.tags_by_drama(db,ids)
-    return dict(items=[dict(id=d.id,title=d.title,synopsis=d.synopsis,cover_url=d.cover_url,language=d.language,tags=[t.name_en for t in tags.get(d.id,[])],episode_count=counts.get(d.id,0),free_episode_count=d.non_member_free_episodes if d.non_member_free_episodes is not None else d.free_episode_count,play_count=d.play_count,access_mode=d.access_mode,member_pays_coins=d.member_pays_coins,coin_price_per_episode=d.coin_price_per_episode) for d in rows],total=total,limit=limit,offset=offset)
+    return dict(items=[dict(id=d.id,title=d.title,synopsis=d.synopsis,cover_url=d.cover_url,language=d.language,tags=[t.name_en for t in tags.get(d.id,[])],episode_count=counts.get(d.id,0),free_episode_count=d.non_member_free_episodes if d.non_member_free_episodes is not None else d.free_episode_count,play_count=d.play_count,access_mode=d.access_mode,member_pays_coins=d.member_pays_coins,coin_price_per_episode=d.coin_price_per_episode,**public_watch_terms(d)) for d in rows],total=total,limit=limit,offset=offset)
 
 def episode_for_update(db, episode_id):
     row=db.scalar(select(Episode).where(Episode.id==episode_id).with_for_update())

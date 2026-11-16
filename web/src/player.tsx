@@ -1,3 +1,5 @@
+import { RightsNotice } from "./rights-notice";
+import { siteFeature, siteName } from "../../shared/site";
 import { useLocale } from "./locale";
 import { useEffect, useRef, useState } from "react";
 import Hls from "hls.js";
@@ -178,7 +180,7 @@ export function Watch({
     }
   }
   const commentsModal =
-    commentsOpen && commentsEpisodeId != null ? (
+    siteFeature("comments") && commentsOpen && commentsEpisodeId != null ? (
       <Modal
         title={t("pages.comments_8413c6")}
         className="watch-comments-modal"
@@ -203,10 +205,13 @@ export function Watch({
   return (
     <div className="watch-page page-content">
       <div className="watch-layout">
-        <section className="watch-main" aria-label={t("pages.drama_player_6e7607")}>
+        <section
+          className="watch-main"
+          aria-label={t("pages.drama_player_6e7607")}
+        >
           <div className="video-frame">
             <span className="player-brand" aria-hidden="true">
-              JJ
+              {siteName().slice(0, 2).toUpperCase()}
             </span>
             {episode ? (
               episode.locked ? (
@@ -216,34 +221,57 @@ export function Watch({
                       <Icon name="lock" size={24} />
                     </span>
                     <h2>
-                      {membershipOnly ? t("pages.members_only_1fbc6a") : t("pages.the_story_continues_bcf2d1")}
+                      {membershipOnly
+                        ? t("pages.members_only_1fbc6a")
+                        : t("pages.the_story_continues_bcf2d1")}
                     </h2>
                     <p>
                       {membershipOnly
                         ? t("pages.this_episode_requires_a_membership_3c877c")
-                        : t("pages.unlock_continue", { number: number(episode.episode_number) })}
+                        : t("pages.unlock_continue", {
+                            number: number(episode.episode_number),
+                          })}
                     </p>
                     {coinPrice > 0 && (
                       <p className="player-lock-price">
-                        <strong>{t("pages.coins_count", { count: number(coinPrice) })}</strong>  {t("pages.episode_684f60")}
+                        <strong>
+                          {t("pages.coins_count", { count: number(coinPrice) })}
+                        </strong>{" "}
+                        {t("pages.episode_684f60")}
                       </p>
                     )}
                     {membershipOnly ? (
-                      <a className="button primary" href={membershipLink}>
-                        {t("pages.see_memberships_09fbde")}
-                      </a>
+                      <>
+                        {siteFeature("membership") && (
+                          <a className="button primary" href={membershipLink}>
+                            {t("pages.see_memberships_09fbde")}
+                          </a>
+                        )}
+                      </>
                     ) : (
-                      <button
-                        className="button primary"
-                        onClick={() => requireAuth(() => setUnlockOpen(true))}
-                      >
-                        {user ? t("pages.unlock_episode_5a7695") : t("pages.sign_in_to_continue_568f08")}
-                      </button>
+                      <>
+                        {siteFeature("coins") && (
+                          <button
+                            className="button primary"
+                            onClick={() =>
+                              requireAuth(() => setUnlockOpen(true))
+                            }
+                          >
+                            {user
+                              ? t("pages.unlock_episode_5a7695")
+                              : t("pages.sign_in_to_continue_568f08")}
+                          </button>
+                        )}
+                      </>
                     )}
                     <p className="player-lock-note">
                       {membershipOnly
-                        ? t("pages.membership_access_and_any_displayed_episode_price_apply_review_the_plan_before_buying_40d16a")
-                        : t("pages.unlock_this_episode_once_and_keep_watching_from_your_account_26c4d0")}
+                        ? t(
+                            "pages.membership_access_and_any_displayed_episode_price_apply_review_the_plan_before_buying_40d16a",
+                          )
+                        : t(
+                            "pages.unlock_this_episode_once_and_keep_watching_from_your_account_26c4d0",
+                          )}
                     </p>
                   </div>
                 </div>
@@ -262,7 +290,9 @@ export function Watch({
                 />
               )
             ) : (
-              <Empty message={t("pages.no_episodes_are_available_yet_181295")} />
+              <Empty
+                message={t("pages.no_episodes_are_available_yet_181295")}
+              />
             )}
           </div>
         </section>
@@ -270,19 +300,34 @@ export function Watch({
           className="watch-sidebar"
           aria-label={t("pages.drama_details_and_episodes_8dad35")}
         >
-          <nav className="watch-breadcrumb" aria-label={t("pages.breadcrumb_1cdb52")}>
+          <nav
+            className="watch-breadcrumb"
+            aria-label={t("pages.breadcrumb_1cdb52")}
+          >
             <a href="#home">{t("pages.home_8cf04a")}</a>
             <span>/</span>
             <a href="#browse">{t("pages.dramas_1c08e1")}</a>
             <span>/</span>
-            <span>{episode ? t("pages.episode_short", { number: number(episode.episode_number) }) : t("pages.details_3ec365")}</span>
+            <span>
+              {episode
+                ? t("pages.episode_short", {
+                    number: number(episode.episode_number),
+                  })
+                : t("pages.details_3ec365")}
+            </span>
           </nav>
           <h1>{data.drama.title}</h1>
+          <RightsNotice rights={data.drama} />
           <p className="watch-episode-name">
             {episode
-              ? t("pages.episode_short", { number: number(episode.episode_number) }) +
+              ? t("pages.episode_short", {
+                  number: number(episode.episode_number),
+                }) +
                 " · " +
-                (episode.title || t("pages.episode_number", { number: number(episode.episode_number) }))
+                (episode.title ||
+                  t("pages.episode_number", {
+                    number: number(episode.episode_number),
+                  }))
               : t("pages.episode_count", { count: number(data.items.length) })}
           </p>
           <p className="watch-side-label">{t("pages.synopsis_24da3c")}</p>
@@ -323,7 +368,14 @@ export function Watch({
             >
               <Icon name="heart" />
               <span>
-                {number(Math.max(0, data.drama.like_count + Number(liked) - Number(data.drama.liked)))}
+                {number(
+                  Math.max(
+                    0,
+                    data.drama.like_count +
+                      Number(liked) -
+                      Number(data.drama.liked),
+                  ),
+                )}
               </span>
             </button>
             <button
@@ -338,19 +390,25 @@ export function Watch({
               }
             >
               <Icon name="star" />
-              <span>{favorited ? t("pages.saved_248336") : t("pages.favorite_01165d")}</span>
+              <span>
+                {favorited
+                  ? t("pages.saved_248336")
+                  : t("pages.favorite_01165d")}
+              </span>
             </button>
-            <button
-              className="watch-action"
-              disabled={!episode}
-              onClick={() => {
-                setCommentsEpisodeId(episode?.id);
-                setCommentsOpen(true);
-              }}
-            >
-              <Icon name="message" />
-              <span>{t("pages.comment_0be840")}</span>
-            </button>
+            {siteFeature("comments") && (
+              <button
+                className="watch-action"
+                disabled={!episode}
+                onClick={() => {
+                  setCommentsEpisodeId(episode?.id);
+                  setCommentsOpen(true);
+                }}
+              >
+                <Icon name="message" />
+                <span>{t("pages.comment_0be840")}</span>
+              </button>
+            )}
             <button
               className="watch-action"
               onClick={() => {
@@ -376,17 +434,22 @@ export function Watch({
           </div>
           <div className="watch-episodes-heading">
             <h2>{t("pages.episodes_1036de")}</h2>
-            <span>{t("pages.all_episodes", { count: number(data.items.length) })}</span>
+            <span>
+              {t("pages.all_episodes", { count: number(data.items.length) })}
+            </span>
           </div>
           <div className="episode-legend">
             <span>
               <Icon name="lock" size={11} />
-              {data.items.filter((item) => item.locked).length} {t("pages.locked_4cef2f")}
+              {data.items.filter((item) => item.locked).length}{" "}
+              {t("pages.locked_4cef2f")}
             </span>
             <span>
               {data.entitlement.member
                 ? t("pages.membership_active_4812f9")
-                : t("pages.unlocked_count", { count: number(data.entitlement.unlocked_episode_ids.length) })}
+                : t("pages.unlocked_count", {
+                    count: number(data.entitlement.unlocked_episode_ids.length),
+                  })}
             </span>
           </div>
           <div className="episode-grid">
@@ -399,8 +462,9 @@ export function Watch({
                   (item.locked ? "locked" : "")
                 }
                 aria-label={
-                  t("pages.episode_number", { number: number(item.episode_number) }) +
-                  (item.locked ? t("pages.locked_01e942") : "")
+                  t("pages.episode_number", {
+                    number: number(item.episode_number),
+                  }) + (item.locked ? t("pages.locked_01e942") : "")
                 }
                 aria-current={item.id === selected ? "true" : undefined}
                 onClick={() => select(item)}
@@ -419,34 +483,60 @@ export function Watch({
             <div className="sidebar-upsell">
               <div>
                 <strong>
-                  {membershipOnly ? t("pages.members_only_1fbc6a") : t("pages.unlock_this_episode_0a8755")}
+                  {membershipOnly
+                    ? t("pages.members_only_1fbc6a")
+                    : t("pages.unlock_this_episode_0a8755")}
                 </strong>
                 <p>
                   {membershipOnly
-                    ? t("pages.choose_a_membership_to_access_this_episode_0bb618")
-                    : t("pages.price_balance", { price: number(coinPrice), balance: number(user?.coins ?? 0) })}
+                    ? t(
+                        "pages.choose_a_membership_to_access_this_episode_0bb618",
+                      )
+                    : t("pages.price_balance", {
+                        price: number(coinPrice),
+                        balance: number(user?.coins ?? 0),
+                      })}
                 </p>
               </div>
               {membershipOnly ? (
-                <a className="button primary" href={membershipLink}>
-                  {t("pages.see_memberships_09fbde")}
-                </a>
+                <>
+                  {siteFeature("membership") && (
+                    <a className="button primary" href={membershipLink}>
+                      {t("pages.see_memberships_09fbde")}
+                    </a>
+                  )}
+                </>
               ) : (
-                <button
-                  className="button primary"
-                  onClick={() => requireAuth(() => setUnlockOpen(true))}
-                >
-                  {t("pages.unlock_episode_5a7695")}
-                </button>
+                <>
+                  {siteFeature("coins") && (
+                    <button
+                      className="button primary"
+                      onClick={() => requireAuth(() => setUnlockOpen(true))}
+                    >
+                      {t("pages.unlock_episode_5a7695")}
+                    </button>
+                  )}
+                </>
               )}
             </div>
           ) : (
             <div className="watch-access">
               <span>
-                {t("pages.views_free", { views: number(data.drama.play_count), count: number(data.items.filter((item) => item.free).length) })}
+                {t("pages.views_free", {
+                  views: number(data.drama.play_count),
+                  count: number(data.items.filter((item) => item.free).length),
+                })}
               </span>
-              <a href={membershipLink}>{t("pages.membership_77a3f5")}</a>
-              <a href={coinsLink}>{t("pages.get_coins_d4db29")}</a>
+              <>
+                {siteFeature("membership") && (
+                  <a href={membershipLink}>{t("pages.membership_77a3f5")}</a>
+                )}
+              </>
+              <>
+                {siteFeature("coins") && (
+                  <a href={coinsLink}>{t("pages.get_coins_d4db29")}</a>
+                )}
+              </>
             </div>
           )}
           {error && <Failure message={t(error)} />}
@@ -478,7 +568,9 @@ export function Watch({
               }
             }}
           >
-            {copied ? t("pages.link_copied_acf84e") : t("pages.copy_link_b75833")}
+            {copied
+              ? t("pages.link_copied_acf84e")
+              : t("pages.copy_link_b75833")}
           </button>
           <p className="muted small" role="status">
             {copied
@@ -487,15 +579,18 @@ export function Watch({
           </p>
         </Modal>
       )}
-      {unlockOpen && episode && !membershipOnly && (
+      {siteFeature("coins") && unlockOpen && episode && !membershipOnly && (
         <Modal
-          title={t("pages.unlock_number", { number: number(episode.episode_number) })}
+          title={t("pages.unlock_number", {
+            number: number(episode.episode_number),
+          })}
           onClose={() => setUnlockOpen(false)}
         >
-          <p>
-            {t("pages.spend_unlock", { price: number(coinPrice) })}
+          <RightsNotice rights={data.drama} />
+          <p>{t("pages.spend_unlock", { price: number(coinPrice) })}</p>
+          <p className="muted">
+            {t("pages.balance_count", { count: number(user?.coins ?? 0) })}
           </p>
-          <p className="muted">{t("pages.balance_count", { count: number(user?.coins ?? 0) })}</p>
           {error && (
             <p className="error-text" role="alert">
               {t(error)}
@@ -507,24 +602,34 @@ export function Watch({
               disabled={busy}
               onClick={() => void unlock()}
             >
-              {busy ? t("pages.unlocking_c1b41d") : t("pages.confirm_unlock_bddc8b")}
+              {busy
+                ? t("pages.unlocking_c1b41d")
+                : t("pages.confirm_unlock_bddc8b")}
             </button>
           ) : (
-            <a
-              className="button primary full-width"
-              href={coinsLink}
-              onClick={() => setUnlockOpen(false)}
-            >
-              {t("pages.get_more_coins_324b1d")}
-            </a>
+            <>
+              {siteFeature("coins") && (
+                <a
+                  className="button primary full-width"
+                  href={coinsLink}
+                  onClick={() => setUnlockOpen(false)}
+                >
+                  {t("pages.get_more_coins_324b1d")}
+                </a>
+              )}
+            </>
           )}
-          <a
-            className="text-button"
-            href={membershipLink}
-            onClick={() => setUnlockOpen(false)}
-          >
-            {t("pages.see_membership_options_7d4a02")}
-          </a>
+          <>
+            {siteFeature("membership") && (
+              <a
+                className="text-button"
+                href={membershipLink}
+                onClick={() => setUnlockOpen(false)}
+              >
+                {t("pages.see_membership_options_7d4a02")}
+              </a>
+            )}
+          </>
         </Modal>
       )}
     </div>
@@ -642,7 +747,8 @@ export function Video({
       if (!renewed.current) {
         renewed.current = true;
         setRetry((x) => x + 1);
-      } else setError("pages.the_stream_could_not_load_please_try_again_cc8034");
+      } else
+        setError("pages.the_stream_could_not_load_please_try_again_cc8034");
     };
     el.addEventListener("loadedmetadata", metadata);
     el.addEventListener("playing", playing);
@@ -669,7 +775,10 @@ export function Video({
         if (data.fatal) {
           if (data.response?.code === 401 || data.response?.code === 403)
             renew();
-          else setError("pages.playback_could_not_continue_please_try_again_657031");
+          else
+            setError(
+              "pages.playback_could_not_continue_please_try_again_657031",
+            );
         }
       });
     } else {
@@ -711,7 +820,9 @@ export function Video({
       })
       .catch(() => {
         if (!controller.signal.aborted)
-          setSubtitleError("pages.subtitles_could_not_load_playback_is_still_available_110510");
+          setSubtitleError(
+            "pages.subtitles_could_not_load_playback_is_still_available_110510",
+          );
       });
     return () => {
       controller.abort();
@@ -746,7 +857,9 @@ export function Video({
         playsInline
         preload="metadata"
         crossOrigin="anonymous"
-        aria-label={t("pages.episode_number", { number: number(episode.episode_number) })}
+        aria-label={t("pages.episode_number", {
+          number: number(episode.episode_number),
+        })}
       >
         {tracks.map((track) => (
           <track
@@ -916,7 +1029,11 @@ export function Comments({ episodeId }: { episodeId: number }) {
       );
       if (!current()) return;
       setDraft({ identity: owner, body: "" });
-      setNotice(result.status === "pending" ? "pages.your_comment_was_submitted_for_review_e15d26" : "pages.your_comment_was_posted_917dc3");
+      setNotice(
+        result.status === "pending"
+          ? "pages.your_comment_was_submitted_for_review_e15d26"
+          : "pages.your_comment_was_posted_917dc3",
+      );
       load();
     } catch (e) {
       if (current()) setError(errorMessage(e));
@@ -932,7 +1049,10 @@ export function Comments({ episodeId }: { episodeId: number }) {
   }, [user?.id, submitIntent]);
   return (
     <section className="comments">
-      <h2>{t("pages.comments_8413c6")} {data ? "(" + number(data.total) + ")" : ""}</h2>
+      <h2>
+        {t("pages.comments_8413c6")}{" "}
+        {data ? "(" + number(data.total) + ")" : ""}
+      </h2>
       <form
         className="form"
         onSubmit={(e) => {
@@ -949,7 +1069,9 @@ export function Comments({ episodeId }: { episodeId: number }) {
           required
           maxLength={1000}
           placeholder={
-            user ? t("pages.share_your_thoughts_845ce8") : t("pages.sign_in_to_join_the_conversation_5adc6a")
+            user
+              ? t("pages.share_your_thoughts_845ce8")
+              : t("pages.sign_in_to_join_the_conversation_5adc6a")
           }
           rows={3}
           value={body}

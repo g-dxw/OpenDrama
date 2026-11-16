@@ -26,3 +26,8 @@ from app.modules.ops import managed_settings as _managed_settings  # noqa: F401
 from app.modules.billing import commerce_models as _commerce_models  # noqa: F401
 from app.modules.support import models as _support_models  # noqa: F401
 from app.modules.attribution import models as _attribution_models  # noqa: F401
+from app.modules.sites import models as _site_models  # noqa: F401
+
+from app.modules.library import models as _library_models  # noqa: F401
+
+from app.modules.tenancy import consumer_scope as _consumer_scope  # noqa: F401

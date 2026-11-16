@@ -1,8 +1,43 @@
+import { siteName, siteStorageKey, siteLocale } from "../../shared/site";
 const en: Record<string, string> = {
+  "player.video": "Video player",
+  "player.play": "Play",
+  "player.pause": "Pause",
+  "player.buffering": "Buffering…",
+  "player.loading": "Loading video…",
+  "player.error": "Could not play this episode. Try again.",
+  "player.retry": "Retry playback",
+  "player.seek": "Playback position",
+  "player.subtitles": "Subtitles",
+  "player.subtitleDefault": "Default",
+  "player.subtitleOff": "Off",
+  "player.original": "Original",
+  "player.originalOnly": "This source plays in its original quality.",
+  "player.autoQualityOnly": "Picture quality adjusts automatically.",
+  "player.qualityLoading": "Available quality appears when the video loads.",
+  "player.back": "Back",
+  "player.like": "Like",
+  "player.clear": "Clear screen",
+  "player.clearHint": "Hide controls and text. Tap the video to show them again.",
+  "player.exitClear": "Show controls",
+  "player.details": "Series details",
+  "player.detailsHint": "Synopsis, episode list and viewing terms",
+  "player.series": "Series information",
+  "player.episodeCounter": "EP {number}/{total}",
+  "player.current": "Current episode",
+  "player.episodeRanges": "Episode groups",
+  "player.locked": "Locked",
+  "player.watched": "Watched",
+  "player.watching": "In progress",
+  "player.free": "Free",
+  "player.available": "Available",
+  "player.purchaseUnavailable": "Purchases are unavailable on this site.",
   "nav.home": "Home",
-  "nav.foryou": "For You",
+  "nav.foryou": "Discover",
   "nav.rewards": "Rewards",
-  "nav.me": "Me",
+  "nav.mylist": "My List",
+  "nav.me": "Profile",
+  "nav.label": "Main navigation",
   search: "Search dramas",
   retry: "Could not load. Retry.",
   empty: "No more content",
@@ -18,7 +53,6 @@ const en: Record<string, string> = {
   ep_watching: "{count} in progress",
   expand: "more",
   collapse: "less",
-  ai_disclaimer: "AI generated content",
   more: "More",
   exclusive: "JJTV Original",
   hot: "HOT",
@@ -60,7 +94,7 @@ const en: Record<string, string> = {
   premium_popular: "Most popular",
   premium_cta: "Subscribe",
   premium_redirecting: "Opening…",
-  premium_note: "Secure checkout by Stripe. Prices in USD, billed automatically.",
+  premium_note: "Secure checkout by Stripe. Prices are shown in the checkout currency, billed automatically.",
   premium_need_sign_in: "Sign in first to subscribe.",
   premium_failed: "Could not start checkout. Please try again.",
   premium_min_price: "This plan is below Stripe's $0.50 minimum, so it cannot be charged yet.",
@@ -108,7 +142,7 @@ const en: Record<string, string> = {
   premium_lede_onetime: "Buy a pass — no auto-renewal. Buying again adds days on top.",
   premium_note_onetime: "Secure checkout by Stripe. One-time payment, nothing recurring.",
   unlock_title: "Unlock EP {number}",
-  unlock_sub: "Unlocked episodes stay yours, even after a pass ends.",
+  unlock_sub: "Unlocked episodes remain available during the title’s authorized viewing period.",
   unlock_price: "{price} coins",
   unlock_per_episode: "/ episode",
   unlock_balance: "Balance {balance} coins",
@@ -120,7 +154,7 @@ const en: Record<string, string> = {
   unlock_row_price: "Episode price",
   unlock_row_balance: "Current balance",
   unlock_row_after: "Balance after",
-  unlock_note: "Unlocked episodes remain in your account. Membership access follows each drama’s settings.",
+  unlock_note: "Unlocked episodes follow the title’s viewing period. Membership access follows each drama’s settings.",
   unlock_confirm: "Confirm · {price} coins",
   unlock_confirming: "Unlocking…",
   unlock_success: "Unlocked · {balance} coins left",
@@ -250,10 +284,44 @@ const en: Record<string, string> = {
 };
 
 const zh: Record<string, string> = {
+  "player.video": "视频播放器",
+  "player.play": "播放",
+  "player.pause": "暂停",
+  "player.buffering": "缓冲中…",
+  "player.loading": "正在加载视频…",
+  "player.error": "这一集暂时无法播放，请重试。",
+  "player.retry": "重试播放",
+  "player.seek": "播放进度",
+  "player.subtitles": "字幕",
+  "player.subtitleDefault": "默认",
+  "player.subtitleOff": "关闭",
+  "player.original": "原画",
+  "player.originalOnly": "当前片源使用原画播放。",
+  "player.autoQualityOnly": "画质由播放器自动调整。",
+  "player.qualityLoading": "视频加载后显示可用画质。",
+  "player.back": "返回",
+  "player.like": "点赞",
+  "player.clear": "清屏模式",
+  "player.clearHint": "隐藏控件和文字，点击画面即可恢复。",
+  "player.exitClear": "显示控件",
+  "player.details": "剧集详情",
+  "player.detailsHint": "查看简介、选集和观看期限",
+  "player.series": "剧集信息",
+  "player.episodeCounter": "{number}/{total} 集",
+  "player.current": "当前集",
+  "player.episodeRanges": "集数分组",
+  "player.locked": "待解锁",
+  "player.watched": "已看",
+  "player.watching": "观看中",
+  "player.free": "免费",
+  "player.available": "可播放",
+  "player.purchaseUnavailable": "本站暂未开放购买。",
   "nav.home": "首页",
-  "nav.foryou": "推荐",
+  "nav.foryou": "发现",
   "nav.rewards": "奖励",
-  "nav.me": "我",
+  "nav.mylist": "追剧",
+  "nav.me": "我的",
+  "nav.label": "主导航",
   search: "搜索短剧",
   retry: "加载失败，请重试",
   empty: "没有更多了",
@@ -269,7 +337,6 @@ const zh: Record<string, string> = {
   ep_watching: "进行中 {count}",
   expand: "展开",
   collapse: "收起",
-  ai_disclaimer: "作者声明：内容由 AI 生成",
   more: "更多",
   exclusive: "JJTV 独播",
   hot: "热播",
@@ -359,7 +426,7 @@ const zh: Record<string, string> = {
   premium_lede_onetime: "按时长购买，不会自动续费；再次购买会在剩余时长上叠加。",
   premium_note_onetime: "由 Stripe 安全收款，一次性付款，不会产生自动扣费。",
   unlock_title: "解锁第 {number} 集",
-  unlock_sub: "解锁后可永久观看，会员到期也不受影响",
+  unlock_sub: "解锁后可在本剧授权播放期限内观看",
   unlock_price: "{price} 金币",
   unlock_per_episode: "/ 集",
   unlock_balance: "当前余额 {balance} 金币",
@@ -522,15 +589,15 @@ export function t(locale: Locale, key: string, vars: Record<string, string | num
   for (const [name, value] of Object.entries(vars)) {
     text = text.replaceAll(`{${name}}`, String(value));
   }
-  return text;
+  return text.replaceAll("JJTV",siteName());
 }
 
 const KEY = "minitv_h5_locale";
 
 export function loadLocale(): Locale {
-  return localStorage.getItem(KEY) === "zh" ? "zh" : "en";
+  const saved=localStorage.getItem(siteStorageKey(KEY));return (saved=== "zh" || (!saved && siteLocale()==="zh")) ? "zh" : "en";
 }
 
 export function saveLocale(locale: Locale) {
-  localStorage.setItem(KEY, locale);
+  localStorage.setItem(siteStorageKey(KEY), locale);
 }

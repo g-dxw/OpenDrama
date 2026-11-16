@@ -16,7 +16,8 @@ HOSTS=(jjtv.8jj.net jjtv-h5.8jj.net jjtv-admin.8jj.net jjtv-api.8jj.net)
 
 # Nginx reload and container starts are asynchronous; wait for actual responses.
 wait_for_routes() {
-  local scheme=$1 port=$2 mode=${3:-content} attempt host ready code
+  local scheme=$1 port=$2 mode=${3:-content} attempt host ready code index expected actual
+  local frontends=(web h5 admin)
   for attempt in {1..20}; do
     ready=yes
     if [[ $mode == redirect ]]; then
@@ -25,8 +26,16 @@ wait_for_routes() {
         if [[ $code != 308 ]]; then ready=no; break; fi
       done
     else
-      for host in "${HOSTS[@]:0:3}"; do
-        if ! curl -fsS --max-time 5 --resolve "$host:$port:127.0.0.1" "$scheme://$host:$port/" | grep -q JJTV; then ready=no; break; fi
+      for index in "${!frontends[@]}"; do
+        host=${HOSTS[$index]}
+        expected=$(sha256sum "$RELEASE_DIR/${frontends[$index]}/dist/index.html" | cut -d ' ' -f 1)
+        actual=$(curl -fsS --max-time 5 --resolve "$host:$port:127.0.0.1" "$scheme://$host:$port/" | sha256sum | cut -d ' ' -f 1) || true
+        if [[ $actual != "$expected" ]]; then ready=no; break; fi
+        if (( index < 2 )) && ! curl -fsS --max-time 5 --resolve "$host:$port:127.0.0.1" "$scheme://$host:$port/v1/site/bootstrap" |
+          python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("tenant",{}).get("code")=="jjtv" else 1)'; then
+          ready=no
+          break
+        fi
       done
       if [[ $ready == yes ]]; then
         curl -fsS --max-time 5 --resolve "jjtv-api.8jj.net:$port:127.0.0.1" "$scheme://jjtv-api.8jj.net:$port/health" >/dev/null || ready=no
@@ -122,6 +131,24 @@ for line in original.splitlines():
         name, value = line.split("=", 1)
         values[name.strip()] = value.strip().strip("\"'")
 additions = {}
+# This deployment owns exactly these public JJTV hosts. Make the legacy
+# compatibility boundary explicit before the first domain-aware migration.
+site_defaults = {
+    "SITE_LEGACY_HOSTS": "jjtv.8jj.net,jjtv-h5.8jj.net,jjtv-api.8jj.net",
+    "SITE_LEGACY_TENANT": "jjtv",
+    "SITE_API_HOSTS": "jjtv-api.8jj.net",
+}
+for name, expected in site_defaults.items():
+    if name not in values:
+        additions[name] = expected
+        continue
+    current = values[name]
+    valid = current == expected if name == "SITE_LEGACY_TENANT" else (
+        {host.strip().lower() for host in current.split(",") if host.strip()}
+        == set(expected.split(","))
+    )
+    if not valid:
+        raise SystemExit(f"Existing {name} conflicts with the dedicated JJTV deployment; refusing to overwrite it.")
 if not values.get("BUNNY_CALLBACK_SECRET"):
     additions["BUNNY_CALLBACK_SECRET"] = secrets.token_urlsafe(48)
 key = values.get("TENANT_CONNECTION_KEY", "")
@@ -310,7 +337,7 @@ NGINX
     client_max_body_size 32m;
     resolver 127.0.0.11 valid=10s ipv6=off;
     location ~ "^/admin/v1/tenants/india-short-drama/india/admin/(uploads|covers|rights/evidence)/[A-Za-z0-9_-]{1,160}/content$" {
-        if ($host != jjtv-api.8jj.net) { return 404; }
+        if ($host !~ "^(jjtv-api[.]8jj[.]net|jjtv-admin[.]8jj[.]net)$") { return 404; }
         # PUT carries bytes; OPTIONS reaches the application's CORS middleware.
         limit_except PUT OPTIONS { deny all; }
         client_max_body_size 100m;

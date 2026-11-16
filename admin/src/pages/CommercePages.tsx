@@ -1,3 +1,4 @@
+import { operatorDate } from '../site-format';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, Button, Card, Checkbox, Col, DatePicker, Descriptions, Drawer, Empty, Form, Input, InputNumber, Modal, Popconfirm, Row, Select, Space, Spin, Switch, Table, Tabs, Tag, Typography, message } from 'antd';
 import { PlusOutlined, ReloadOutlined, SaveOutlined, CheckCircleFilled, EditOutlined } from '@ant-design/icons';
@@ -11,13 +12,13 @@ import { ManagementPageHeader, ManagementMetrics, ManagementFormSection } from '
 type Pack={code:string;name_en:string;name_zh:string;status:string;price_cents:number;currency:string;base_coins:number;bonus_coins:number;version:number;sort_order:number;badge:string};
 type Plan=Omit<Pack,'sort_order'|'badge'> & {duration_days?:number;days?:number;recurring_interval?:string;billing_mode?:string;benefits?:{items?:string[];best?:boolean;[key:string]:unknown}};
 type Account={code:string;name:string;status:string;is_default:boolean;secret_key_configured:boolean;webhook_secret_configured:boolean;remote_id?:string;livemode?:boolean;source?:string;updated_at?:string};
-const money=(cents:number,currency='USD')=>new Intl.NumberFormat('zh-CN',{style:'currency',currency}).format((cents||0)/100);
+const money=(cents:number,currency='USD')=>new Intl.NumberFormat('zh-CN',{style:'currency',currency}).format((cents||0)/10**(new Intl.NumberFormat('zh-CN',{style:'currency',currency}).resolvedOptions().maximumFractionDigits??2));
 const count=(value:number|undefined)=>Number(value||0).toLocaleString('zh-CN');
 const unit=(item:{price_cents:number;base_coins:number;bonus_coins:number})=>item.base_coins+item.bonus_coins>0?(item.price_cents/(item.base_coins+item.bonus_coins)).toFixed(2)+' ¢ / 币':'—';
 const bonusPct=(item:{base_coins:number;bonus_coins:number})=>item.base_coins>0&&item.bonus_coins>0?'+'+(100*item.bonus_coins/item.base_coins).toFixed(1).replace(/\.0$/,'')+'%':'—';
 const names:Record<string,string>={active:'已上架',retired:'已下架',draft:'草稿',disabled:'已停用',created:'待支付',paid:'已支付',failed:'支付失败',refund_pending:'退款处理中',refunded:'已退款',refund_review:'待人工核对'};
 const status=(value:string)=><Tag color={value==='active'||value==='paid'?'green':['refund_pending','refund_review'].includes(value)?'gold':value==='failed'?'red':'default'}>{names[value]||value}</Tag>;
-const time=(value?:string|null)=>value?new Date(value).toLocaleString('zh-CN',{timeZone:'America/Los_Angeles',hour12:false}):'—';
+const time=operatorDate;
 const empty=<Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无符合条件的数据"/>;
 function ErrorBanner({error,retry}:{error:string|null;retry:()=>void}){return error&&error!=='unauthorized'?<Alert type="error" showIcon message={error} action={<Button onClick={retry}>重试</Button>}/>:null;}
 function CoinTotal({item}:{item:{base_coins:number;bonus_coins:number}}){return <><Typography.Text strong>{count(item.base_coins+item.bonus_coins)} 币</Typography.Text><span className="management-row-secondary">基础 {count(item.base_coins)}{item.bonus_coins?' + 赠 '+count(item.bonus_coins):''}</span></>;}
@@ -61,14 +62,15 @@ export function CoinPacksPage(){
  </Space>;
 }
 
-export function StripeAccountsPage(){
- const state=useLoad<{items:Account[]}>('/admin/v1/stripe/accounts',{items:[]}),prices=useLoad<{items:any[]}>('/admin/v1/stripe/prices',{items:[]});const canManage=usePermission('stripe.manage');
+export function StripeAccountsPage({platform=false}:{platform?:boolean}){
+ const stripeBase=platform?'/platform/v1/stripe':'/admin/v1/stripe';
+ const state=useLoad<{items:Account[]}>(stripeBase+'/accounts',{items:[]}),prices=useLoad<{items:any[]}>(stripeBase+'/prices',{items:[]},{enabled:!platform});const permission=usePermission('stripe.manage');const canManage=platform||permission;
  const [tab,setTab]=useState('accounts'),[editing,setEditing]=useState<Account|null|undefined>(),[busy,setBusy]=useState(false),[testing,setTesting]=useState(''),[provisioning,setProvisioning]=useState(false),[formError,setFormError]=useState(''),[result,setResult]=useState<any[]|null>(null),[testResults,setTestResults]=useState<Record<string,any>>({}),[priceAccount,setPriceAccount]=useState<string|undefined>();const [form]=Form.useForm();
- const reload=()=>{void Promise.all([state.reload(),prices.reload()]);};
+ const reload=()=>{void state.reload();if(!platform)void prices.reload();};
  const open=(item:Account|null)=>{setEditing(item);setFormError('');form.resetFields();form.setFieldsValue(item?{...item,secret_key:'',webhook_secret:'',clear_secret_key:false,clear_webhook_secret:false}:{status:'draft',is_default:false});};
- const save=async()=>{try{const values=await form.validateFields();setBusy(true);setFormError('');await api('/admin/v1/stripe/accounts'+(editing?'/'+editing.code:''),{method:editing?'PATCH':'POST',body:JSON.stringify(values)});setEditing(undefined);await state.reload();message.success('支付账号已保存');}catch(e){if(!(e as any)?.errorFields)setFormError(errorText(e));}finally{setBusy(false);}};
- const test=async(item:Account)=>{setTesting(item.code);try{const value=await api<any>('/admin/v1/stripe/accounts/'+item.code+'/test',{method:'POST'});setTestResults(old=>({...old,[item.code]:{ok:true,...value}}));await state.reload();}catch(e){setTestResults(old=>({...old,[item.code]:{ok:false,error:errorText(e)}}));}finally{setTesting('');}};
- const provision=()=>Modal.confirm({title:'补齐当前产品的 Stripe 价格？',content:'将为所有启用账号补建缺失的会员和金币包价格。已有价格和历史订单保持原值。',okText:'补齐缺失价格',cancelText:'取消',onOk:async()=>{setProvisioning(true);try{const response=await api<{items:any[]}>('/admin/v1/stripe/prices/provision',{method:'POST'});setResult(response.items);await prices.reload();}catch(e){message.error(errorText(e));}finally{setProvisioning(false);}}});
+ const save=async()=>{try{const values=await form.validateFields();setBusy(true);setFormError('');await api(stripeBase+'/accounts'+(editing?'/'+editing.code:''),{method:editing?'PATCH':'POST',body:JSON.stringify(values)});setEditing(undefined);await state.reload();message.success('支付账号已保存');}catch(e){if(!(e as any)?.errorFields)setFormError(errorText(e));}finally{setBusy(false);}};
+ const test=async(item:Account)=>{setTesting(item.code);try{const value=await api<any>(stripeBase+'/accounts/'+item.code+'/test',{method:'POST'});setTestResults(old=>({...old,[item.code]:{ok:true,...value}}));await state.reload();}catch(e){setTestResults(old=>({...old,[item.code]:{ok:false,error:errorText(e)}}));}finally{setTesting('');}};
+ const provision=()=>Modal.confirm({title:'补齐当前产品的 Stripe 价格？',content:'将为所有启用账号补建缺失的会员和金币包价格。已有价格和历史订单保持原值。',okText:'补齐缺失价格',cancelText:'取消',onOk:async()=>{setProvisioning(true);try{const response=await api<{items:any[]}>(stripeBase+'/prices/provision',{method:'POST'});setResult(response.items);await prices.reload();}catch(e){message.error(errorText(e));}finally{setProvisioning(false);}}});
  const active=state.data.items.filter(a=>a.status==='active'),defaultAccount=state.data.items.find(a=>a.is_default);
  return <Space direction="vertical" size={20} className="management-page">
   <ManagementPageHeader title="支付通道" description="管理 Stripe 账号与产品价格映射。订单、订阅与退款固定原支付账号。" extra={<Button icon={<ReloadOutlined/>} onClick={reload} loading={state.loading||prices.loading}>刷新</Button>}/>
@@ -84,7 +86,7 @@ export function StripeAccountsPage(){
     {title:'连接检查',width:230,render:(_,a)=>testResults[a.code]?(testResults[a.code].ok?<Typography.Text type="success">连接通过 · {testResults[a.code].country||'—'}</Typography.Text>:<Typography.Text type="danger">{testResults[a.code].error}</Typography.Text>):<Typography.Text type="secondary">{a.remote_id?'已连接 '+a.remote_id:'尚无测试结果'}</Typography.Text>},
     {title:'操作',fixed:'right',width:190,render:(_,a)=>canManage&&<Space><Button type="link" onClick={()=>open(a)}>编辑</Button><Button type="link" disabled={!a.secret_key_configured||!!testing||provisioning} loading={testing===a.code} onClick={()=>void test(a)}>测试连接</Button></Space>}
    ]}/>
-  </Card>},{key:'prices',label:'价格矩阵',children:<Card title="账号价格矩阵" size="small" extra={canManage&&<Button type="primary" icon={<PlusOutlined/>} loading={provisioning} disabled={!active.length||!!testing} onClick={provision}>补齐当前产品价格</Button>}>
+  </Card>},{key:'prices',label:'价格矩阵',disabled:platform,children:<Card title="账号价格矩阵" size="small" extra={canManage&&<Button type="primary" icon={<PlusOutlined/>} loading={provisioning} disabled={platform||!active.length||!!testing} onClick={provision}>补齐当前产品价格</Button>}>
    <div className="management-filter-bar"><Select allowClear aria-label="筛选价格账号" value={priceAccount} placeholder="全部 Stripe 账号" options={state.data.items.map(a=>({value:a.code,label:a.name}))} style={{width:240}} onChange={setPriceAccount}/><Typography.Text type="secondary">同一商品在不同账号和计费模式下使用独立价格。</Typography.Text></div>
    <Table className="management-table" size="middle" rowKey={r=>[r.account_code,r.product_type,r.version_id,r.billing_mode].join(':')} dataSource={prices.data.items.filter(p=>!priceAccount||p.account_code===priceAccount)} loading={prices.loading} scroll={{x:850}} locale={{emptyText:empty}} columns={[{title:'账号',dataIndex:'account_code',render:v=>state.data.items.find(a=>a.code===v)?.name||v},{title:'商品类型',dataIndex:'product_type',render:v=>v==='coin_pack'?'金币包':'会员套餐'},{title:'版本 ID',dataIndex:'version_id'},{title:'计费模式',dataIndex:'billing_mode',render:v=><Tag>{v==='subscription'?'自动续订':'单次付费'}</Tag>},{title:'Stripe Price',dataIndex:'price_id',render:v=><Typography.Text copyable>{v}</Typography.Text>}]}/>
    {result&&<Alert style={{marginTop:16}} type={result.some(x=>!x.ok)?'warning':'success'} showIcon message={'价格同步完成：'+result.filter(x=>x.ok).length+' 成功 / '+result.filter(x=>!x.ok).length+' 失败'} description={<div style={{maxHeight:220,overflow:'auto'}}>{result.map((x,i)=><div key={i}>{x.account} · {x.code} · {x.mode==='subscription'?'订阅':'单次'}：{x.ok?'已就绪':x.error}</div>)}</div>}/>}</Card>}]}/>

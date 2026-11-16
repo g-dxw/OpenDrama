@@ -71,7 +71,14 @@ def user_tickets(page:int=Query(1,ge=1),page_size:int=Query(25,ge=1,le=100),user
 
 @public_router.post("/tickets",status_code=201)
 def user_create(body:TicketIn,user:User=Depends(require_user),db:Session=Depends(get_db)):
-    public_scope(db); ticket=service.create_ticket(db,user.id,body.model_dump());db.commit()
+    public_scope(db)
+    from app.modules.tenancy.models import Tenant
+    from app.modules.sites.service import features_for
+    tenant_id = db.info.get("content_tenant_id")
+    tenant = db.get(Tenant, tenant_id) if tenant_id else None
+    if tenant is None or not features_for(db, tenant).get("support", False):
+        raise HTTPException(403, detail={"code": "feature_disabled", "feature": "support", "message": "This site is not accepting new support tickets"})
+    ticket=service.create_ticket(db,user.id,body.model_dump());db.commit()
     return service.detail(db,ticket)
 
 @public_router.get("/tickets/{number}")

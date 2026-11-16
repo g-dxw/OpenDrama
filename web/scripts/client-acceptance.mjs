@@ -187,6 +187,23 @@ const pass = (name) => {
     "structured checkout conflicts retain their message and recovery payload",
   );
 }
+{
+  const routeSource = await fs.readFile(new URL("../src/store-route.ts", import.meta.url), "utf8");
+  const routeCompiled = ts.transpileModule(routeSource, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText;
+  const { resolveStoreRoute } = await import("data:text/javascript;base64," + Buffer.from(routeCompiled).toString("base64"));
+  const coinsOnly = { coins: true, membership: false }, membersOnly = { coins: false, membership: true };
+  assert.deepEqual(resolveStoreRoute("price", null, coinsOnly), { kind: "coin_pack", available: true });
+  assert.deepEqual(resolveStoreRoute("premium", null, coinsOnly), { kind: "membership", available: false });
+  assert.deepEqual(resolveStoreRoute("price", null, membersOnly), { kind: "membership", available: true });
+  assert.deepEqual(resolveStoreRoute("coins", null, membersOnly), { kind: "coin_pack", available: false });
+  assert.deepEqual(resolveStoreRoute("price", "coins", membersOnly), { kind: "coin_pack", available: false });
+  assert.equal(resolveStoreRoute("price", null, { coins: false, membership: false }).available, false);
+  assert.deepEqual(resolveStoreRoute("price", null, { coins: true, membership: true }), { kind: "membership", available: true });
+  assert.deepEqual(resolveStoreRoute("premium", null, { coins: false, membership: false }, true), { kind: "membership", available: true });
+  assert.deepEqual(resolveStoreRoute("price", null, { coins: false, membership: false }, true), { kind: "membership", available: true });
+  assert.deepEqual(resolveStoreRoute("coins", null, { coins: false, membership: false }, true), { kind: "coin_pack", available: false });
+  pass("price entry resolves the same product for rendering and feature authorization across site configurations");
+}
 console.log(
   "PASS " +
     checks.length +

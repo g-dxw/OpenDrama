@@ -62,7 +62,11 @@ def test_home_channels_and_banners_are_independent_per_native_tenant(home_contex
         assert [row['id'] for row in c.get('/admin/v1/banners',headers=headers).json()['items']]==[banner['id']]
     context=c.get('/tenant/v1/context',headers=ctx['ah']).json()
     assert 'home_ops' in context['enabled_modules'] and '/home-ops' in context['menu_keys']
-    assert 'finance' not in context['enabled_modules'] and '/finance' not in context['menu_keys']
+    # Finance is now explicitly adapted to native sites; unrelated legacy
+    # supplier, settlement and support operations remain unavailable.
+    assert 'finance' in context['enabled_modules'] and '/finance' in context['menu_keys']
+    for module in ('suppliers','settlements','support'):
+        assert module not in context['enabled_modules'] and '/'+module not in context['menu_keys']
 
 
 def test_foreign_home_resource_ids_and_associations_are_not_accepted(home_context):
@@ -155,6 +159,7 @@ def test_home_migration_preserves_existing_ids_configuration_and_owner(engine,mo
     from uuid import uuid4
     from alembic import command
     from alembic.config import Config
+    from alembic.script import ScriptDirectory
     import sqlalchemy as sa
 
     source=engine.url.database
@@ -193,8 +198,11 @@ def test_home_migration_preserves_existing_ids_configuration_and_owner(engine,mo
                 own_group=db.execute(sa.text("INSERT INTO home_groups(tenant_id,name,position,status,style,badge) VALUES ('migration-home-other','Other group',0,'active','rank','rank') RETURNING id")).scalar_one()
                 db.execute(sa.text("INSERT INTO channel_tabs(tenant_id,code,title_en,title_zh,position,enabled,locked,group_id) VALUES ('migration-home-other','operator-channel','Independent same code','',0,true,false,:group_id)"),dict(group_id=own_group))
                 assert db.execute(sa.text("SELECT count(*) FROM channel_tabs WHERE code='operator-channel'")).scalar_one()==2
-            with pytest.raises(RuntimeError,match='cannot be recombined'):
+            with pytest.raises(RuntimeError,match='cannot be merged safely'):
                 command.downgrade(cfg,'c4d8e0a1b295')
+            home_migration=ScriptDirectory.from_config(cfg).get_revision('e6a1c3d9b742').module
+            with pytest.raises(RuntimeError,match='cannot be recombined'):
+                home_migration.downgrade()
     finally:
         if target is not None:target.dispose()
         if created:

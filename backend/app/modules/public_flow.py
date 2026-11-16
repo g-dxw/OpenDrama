@@ -25,6 +25,7 @@ from app.modules.common.models import AuditLog
 from app.modules.content import service as content
 from app.modules.content.models import Drama, Episode, Tag
 from app.modules.content.pricing import episode_access
+from app.modules.content.public_terms import public_watch_terms
 from app.modules.content.upload_service import UploadRejected, apply_callback
 from app.modules.ops.config_models import (
     Banner,
@@ -58,6 +59,14 @@ router = APIRouter(prefix="/v1", tags=["public-flow"])
 def _registration_attribution(db,request,user_id,created=True):
     pid=request.headers.get('X-JJTV-Attribution','')[:100]
     if created and pid:
+        # Attribution is optional. Turning collection off must not turn a valid
+        # login/signup into an error, nor revive a disabled legacy capability.
+        from app.modules.tenancy.models import Tenant
+        from app.modules.sites.service import features_for
+        tenant_id = db.info.get('content_tenant_id')
+        tenant = db.get(Tenant, tenant_id) if tenant_id == 'jjtv' else None
+        if tenant is None or not features_for(db, tenant).get('attribution', False):
+            return
         from app.modules.attribution.service import record_registration
         record_registration(db,user_id=user_id,pid=pid,context={'user_agent':request.headers.get('user-agent','')[:500]},client_id=request.headers.get('X-Device-Id',''))
         db.commit()
@@ -83,6 +92,7 @@ def _episode_counts(db: Session, drama_ids: list[int]) -> dict[int, int]:
 
 def _drama_card(drama: Drama, totals: dict[int, int]) -> dict:
     return {
+        **public_watch_terms(drama),
         "id": drama.id,
         "title": drama.title,
         "cover_url": drama.cover_url,
@@ -93,6 +103,7 @@ def _drama_card(drama: Drama, totals: dict[int, int]) -> dict:
 class PlaybackIn(BaseModel):
     drama_id: int
     episode_id: int
+    # Retained for older clients; a client-entered region never grants access.
     country: str | None = None
 
 
@@ -158,7 +169,7 @@ class ReactionIn(BaseModel):
 @router.post("/playback")
 def playback_auth(body: PlaybackIn, user: User | None = Depends(_optional_user), db: Session = Depends(get_db)):
     result = playback.authorize(
-        db, drama_id=body.drama_id, episode_id=body.episode_id, user_id=None if user is None else user.id, country=body.country
+        db, drama_id=body.drama_id, episode_id=body.episode_id, user_id=None if user is None else user.id
     )
     if result.get("reason") == "not_available":
         raise HTTPException(status_code=404, detail="not available")
@@ -336,7 +347,10 @@ def ledger(user: User = Depends(_require_user), db: Session = Depends(get_db)):
 
 @router.post("/me/checkin")
 def checkin(user: User = Depends(_require_user), db: Session = Depends(get_db)):
-    return accounts.check_in(db, user)
+    try:
+        return accounts.check_in(db, user)
+    except AccountError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
 @router.post("/me/ad-reward")
@@ -502,7 +516,7 @@ def marketing(db: Session = Depends(get_db)):
 
 @router.get("/legal/{slug}")
 def legal(slug: str, db: Session = Depends(get_db)):
-    page = db.get(LegalPage, slug)
+    page = db.scalar(select(LegalPage).where(LegalPage.slug == slug))
     if page is None:
         raise HTTPException(status_code=404, detail="not found")
     return {"slug": page.slug, "title": page.title, "body": page.body}
@@ -683,6 +697,12 @@ def create_episode_comment(
     Visibility starts as pending: the author sees it right away, everyone else
     sees it only after the background worker approves it.
     """
+    from app.modules.sites.service import features_for
+    from app.modules.tenancy.consumer_scope import current_site
+    from app.modules.tenancy.models import Tenant
+    tenant = db.get(Tenant, current_site(db))
+    if tenant is None or not features_for(db, tenant).get("comments", False):
+        raise HTTPException(status_code=403, detail="New comments are disabled for this site")
     episode = _published_episode_or_404(db, episode_id)
     text = body.body.strip()
     if not text:
@@ -772,6 +792,9 @@ def delete_comment(comment_id: int, user: User = Depends(_require_user), db: Ses
 def react(body: ReactionIn, user: User = Depends(_require_user), db: Session = Depends(get_db)):
     if body.target_type not in {"drama", "episode", "comment"}:
         raise HTTPException(status_code=422, detail="bad target_type")
+    from app.modules.tenancy.consumer_scope import require_owned
+    target_model = {"drama":Drama,"episode":Episode,"comment":Comment}[body.target_type]
+    require_owned(db,target_model,body.target_id)
     if body.target_type == "comment":
         target = db.get(Comment, body.target_id)
         if target is None or target.status != "approved":
@@ -877,6 +900,8 @@ def drama_play(drama_id: int, user: User | None = Depends(_optional_user), db: S
     if drama is None:
         raise HTTPException(status_code=404, detail="drama not found")
 
+    from app.modules.library.service import assert_distribution_allowed
+    assert_distribution_allowed(db,drama,purpose='play',country=db.info.get('viewer_country'))
     uid = None if user is None else user.id
     member = playback.subscription_active(db, uid)
     progress_rows = (
@@ -1003,6 +1028,7 @@ def drama_play(drama_id: int, user: User | None = Depends(_optional_user), db: S
         )
     return {
         "drama": {
+            **public_watch_terms(drama),
             "id": drama.id,
             "title": drama.title,
             "synopsis": drama.synopsis,

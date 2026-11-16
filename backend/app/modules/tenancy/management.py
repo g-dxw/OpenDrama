@@ -35,12 +35,14 @@ class TenantLogin(Login): tenant_code:str|None=Field(default=None,max_length=64)
 class Password(Strict):
     old_password:str
     new_password:str=Field(min_length=8,max_length=128)
-class CreateTenant(Strict):
+from app.modules.sites.router import SitePatch
+
+class CreateTenant(SitePatch):
     code:str=Field(pattern=r'^[a-z0-9][a-z0-9-]{1,63}$')
     name:str=Field(min_length=1,max_length=100)
     admin_username:str=Field(default='tenant-admin',min_length=3,max_length=64)
     modules:list[str]|None=Field(default=None,max_length=32)
-class PatchTenant(Strict):
+class PatchTenant(SitePatch):
     version:int=Field(ge=1)
     name:str|None=Field(default=None,min_length=1,max_length=100)
     status:str|None=None
@@ -196,7 +198,28 @@ def tenant_password(body:Password,request:Request,db:Session=Depends(get_db),use
 @platform_router.get('/tenants')
 @legacy_router.get('')
 def tenants(request:Request,db:Session=Depends(get_db),user:AdminUser=Depends(require_platform_admin)):
-    return [tenant_info(t) for t in db.scalars(select(Tenant).order_by(Tenant.created_at,Tenant.id))]
+    rows=list(db.scalars(select(Tenant).order_by(Tenant.created_at,Tenant.id)))
+    # Historical migrations retain compatibility realms. A fresh self-hosted
+    # company sees only sites it has actually provisioned, without deleting or
+    # hiding an existing business that already has accounts or content.
+    import os
+    if os.environ.get('MINITV_DISTRIBUTION')=='selfhost':
+        from app.modules.account.models import User
+        from app.modules.content.models import Drama
+        from app.modules.tenancy.models import TenantMember
+        from sqlalchemy import or_
+        visible=[]
+        for row in rows:
+            compatibility=row.id in {'jjtv','india-short-drama'}
+            configured_connector=row.kind=='india_legacy' and any(os.environ.get(key,'').lower() in {'1','true','yes'} for key in ('INDIA_JJTV_CLIENT_ENABLED','INDIA_JJTV_DELEGATED_ENABLED'))
+            used=not compatibility or configured_connector or any(db.scalar(query.limit(1)) is not None for query in (
+                select(TenantMember.user_id).join(AdminUser,AdminUser.id==TenantMember.user_id).where(TenantMember.tenant_id==row.id,or_(AdminUser.must_change_password.is_(False),AdminUser.last_login_at.is_not(None))),
+                select(User.id).where(User.tenant_id==row.id),
+                select(Drama.id).where(Drama.tenant_id==row.id),
+                select(TenantDomain.id).where(TenantDomain.tenant_id==row.id)))
+            if used: visible.append(row)
+        rows=visible
+    return [tenant_info(t) for t in rows]
 
 @platform_router.post('/tenants',status_code=201)
 def create_tenant(body:CreateTenant,request:Request,db:Session=Depends(get_db),user:AdminUser=Depends(require_platform_admin)):
@@ -210,9 +233,14 @@ def create_tenant(body:CreateTenant,request:Request,db:Session=Depends(get_db),u
     owner,password=create_tenant_account(db,tenant,body.admin_username,'租户管理员',preset_role_id(tenant.id,'tenant_admin'))
     from app.modules.tenancy.content_defaults import seed_content_defaults
     defaults=seed_content_defaults(db,tenant)
+    from app.modules.sites.service import provision_site,site_out
+    settings=provision_site(db,tenant)
+    apply_site_fields(db,tenant,settings,body)
+    from app.modules.billing.service import provision_site_billing
+    provision_site_billing(db,tenant.id)
     audit(db,request,user,tenant.id,'platform.tenant.create',payload={'content_defaults':defaults})
     commit(db,'租户编码或管理员账号已存在')
-    return dict(tenant=tenant_info(tenant),administrator=dict(id=owner.id,username=owner.username,temporary_password=password),content_defaults=defaults)
+    return dict(tenant=tenant_info(tenant),site=site_out(db,tenant),administrator=dict(id=owner.id,username=owner.username,temporary_password=password),content_defaults=defaults)
 
 @legacy_router.post('',status_code=201)
 def legacy_create_tenant(body:dict,request:Request,db:Session=Depends(get_db),user:AdminUser=Depends(require_platform_admin)):
@@ -232,6 +260,8 @@ def update_tenant(tenant_id:str,body:PatchTenant,request:Request,db:Session=Depe
         if body.status not in {'active','paused'}: raise HTTPException(422,detail='后台接入状态无效')
         tenant.status=body.status
         if body.status=='paused': db.execute(delete(IndiaConnection).where(IndiaConnection.tenant_id==tenant.id))
+    from app.modules.sites.service import get_site
+    apply_site_fields(db,tenant,get_site(db,tenant.id),body)
     tenant.version+=1; audit(db,request,user,tenant.id,'platform.tenant.update'); commit(db)
     return tenant_info(tenant)
 
@@ -269,7 +299,11 @@ def enter_tenant(tenant_id:str,request:Request,db:Session=Depends(get_db),user:A
     return dict(token=token,context=build_context(db,SessionPrincipal(user,'platform',tenant.id,'support',user.auth_version)),entry_url='/admin/s/'+tenant.code,expires_at=(datetime.now(timezone.utc)+timedelta(minutes=30)).isoformat())
 
 
-def domain_out(row): return dict(id=row.id,hostname=row.hostname,kind=row.kind,status=row.status,verified_at=row.verified_at.isoformat() if row.verified_at else None)
+def domain_out(row):
+    from sqlalchemy.orm import object_session
+    from app.modules.sites.models import DomainVerification
+    challenge=object_session(row).get(DomainVerification,row.id) if object_session(row) else None
+    return dict(id=row.id,hostname=row.hostname,kind=row.kind,status=row.status,verified_at=row.verified_at.isoformat() if row.verified_at else None,verification_record='_minitv-verification.'+row.hostname,verification_token=challenge.token if challenge else None,cname_target=__import__('os').environ.get('SITE_INGRESS_HOST') or __import__('os').environ.get('SITE_BASE_DOMAIN') or None)
 
 @platform_router.get('/tenants/{tenant_id}/domains')
 def get_domains(tenant_id:str,request:Request,db:Session=Depends(get_db),user:AdminUser=Depends(require_platform_admin)):
@@ -288,7 +322,13 @@ def add_domain(tenant_id:str,body:Domain,request:Request,db:Session=Depends(get_
         else: raise ValueError()
     except (ValueError,UnicodeError): raise HTTPException(422,detail='请输入完整域名，不包含协议、路径或端口') from None
     row=TenantDomain(tenant_id=tenant_id,hostname=hostname,kind=body.kind,status='pending')
-    db.add(row); audit(db,request,user,tenant_id,'platform.domain.create',payload={'hostname':hostname,'kind':body.kind}); commit(db,'域名已绑定，请先解除原绑定')
+    db.add(row)
+    try: db.flush()
+    except IntegrityError: db.rollback(); raise HTTPException(409,detail="域名已绑定，请先解除原绑定") from None
+    from app.modules.sites.models import DomainVerification
+    import secrets
+    db.add(DomainVerification(domain_id=row.id,token='minitv-'+secrets.token_urlsafe(24)))
+    audit(db,request,user,tenant_id,'platform.domain.create',payload={'hostname':hostname,'kind':body.kind}); commit(db,'域名已绑定，请先解除原绑定')
     return domain_out(row)
 
 @platform_router.delete('/tenants/{tenant_id}/domains/{domain_id}')
@@ -413,3 +453,49 @@ def legacy_members(tenant_id:str,request:Request,db:Session=Depends(get_db),user
 def legacy_replace_members(tenant_id:str,request:Request,user:AdminUser=Depends(require_tenant_admin)):
     assert_legacy_tenant(request,tenant_id)
     raise HTTPException(409,detail=dict(code='tenant_staff_api_required',message='员工账号已经归属租户，请通过员工管理逐个创建、变更角色或停用，不能替换全平台成员清单'))
+
+def apply_site_fields(db,tenant,row,body):
+    from app.modules.sites.router import safe_url
+    from app.modules.sites.service import hostname_site, lock_site_settings, assert_currency_change_allowed
+    from urllib.parse import urlsplit
+    row = lock_site_settings(db, tenant.id)
+    fields=set(SitePatch.model_fields)-{'version'}
+    values=body.model_dump(include=fields,exclude_unset=True)
+    if any(v is None for v in values.values()): raise HTTPException(422,detail='Site settings cannot be null')
+    if values.get('default_locale',row.default_locale) not in values.get('locales',row.locales):
+        raise HTTPException(422,detail='Default language must be enabled')
+    for field in ('web_url','h5_url'):
+        if values.get(field):
+            try: safe_url(values[field])
+            except ValueError as exc: raise HTTPException(422,detail=str(exc)) from None
+            bound=hostname_site(db,urlsplit(values[field]).hostname)
+            if bound is None or bound.id!=tenant.id: raise HTTPException(422,detail='URL must use a verified site domain')
+    if 'currency' in values:
+        assert_currency_change_allowed(db, row, values['currency'])
+    for key,value in values.items(): setattr(row,key,value)
+    if values: row.version+=1
+
+
+def domain_txt_records(hostname):
+    import dns.resolver
+    try:
+        return [b''.join(answer.strings).decode() for answer in dns.resolver.resolve('_minitv-verification.'+hostname,'TXT',lifetime=5)]
+    except (dns.exception.DNSException,UnicodeError): return []
+
+
+@platform_router.post('/tenants/{tenant_id}/domains/{domain_id}/verify')
+def verify_domain(tenant_id:str,domain_id:str,request:Request,db:Session=Depends(get_db),user:AdminUser=Depends(require_platform_admin)):
+    from app.modules.sites.models import DomainVerification
+    row=db.scalar(select(TenantDomain).where(TenantDomain.id==domain_id,TenantDomain.tenant_id==tenant_id).with_for_update())
+    if row is None: raise HTTPException(404,detail='Domain not found')
+    if row.status=='active': return domain_out(row)
+    challenge=db.get(DomainVerification,row.id)
+    if challenge is None:
+        import secrets
+        challenge=DomainVerification(domain_id=row.id,token='minitv-'+secrets.token_urlsafe(24));db.add(challenge);db.commit()
+        return dict(**domain_out(row),verified=False)
+    if challenge.token not in domain_txt_records(row.hostname):
+        raise HTTPException(409,detail={'code':'domain_not_verified','message':'DNS TXT verification record not found'})
+    row.status='active';row.verified_at=datetime.now(timezone.utc)
+    audit(db,request,user,tenant_id,'platform.domain.verify',resource_id=row.id);commit(db)
+    return domain_out(row)

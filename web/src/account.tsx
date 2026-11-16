@@ -1,3 +1,4 @@
+import { siteName, siteFeature } from "../../shared/site";
 import { useLocale } from "./locale";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -195,13 +196,13 @@ export function Account({ section = "history" }: { section?: string }) {
             {t("pages.edit_profile_dfd87b")}
           </a>
         )}
-        <a className="member-premium" href="#price">
+        {(siteFeature("membership") || user?.membership?.active) && <a className="member-premium" href="#price">
           <span className="member-premium-icon">
             <Icon name="crown" size={21} />
           </span>
           <div>
             <strong>
-              {user?.membership?.active ? t("pages.premium_is_active_42c449") : "JJTV Premium"}
+              {user?.membership?.active ? t("pages.premium_is_active_42c449") : siteName()+" Premium"}
             </strong>
             <p>
               {user?.membership?.until
@@ -210,7 +211,7 @@ export function Account({ section = "history" }: { section?: string }) {
             </p>
           </div>
           <span>{user?.membership?.active ? t("pages.manage_34e34c") : t("pages.view_plans_9a6577")}</span>
-        </a>
+        </a>}
         <div className="member-quick-actions">
           <a href="#account/history">
             <span>
