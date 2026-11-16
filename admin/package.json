@@ -8,7 +8,8 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "accept:parity": "node scripts/verify-parity.mjs",
-    "accept:commerce": "node scripts/verify-commerce.mjs"
+    "accept:commerce": "node scripts/verify-commerce.mjs",
+    "accept:login": "node scripts/verify-login.mjs"
   },
   "dependencies": {
     "antd": "^5.21.0",
