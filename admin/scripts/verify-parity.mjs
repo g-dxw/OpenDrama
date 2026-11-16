@@ -77,7 +77,75 @@ async function chooseDialog(id,label){await page.click(dialog+' #'+id);await pag
 async function confirmDialog(){await page.evaluate(q=>{const modal=document.querySelector(q);const button=[...modal.querySelectorAll('.ant-modal-footer button')].find(x=>x.classList.contains('ant-btn-primary'));button.click();},dialog);}
 async function dialogClosed(){await page.waitForFunction(q=>!document.querySelector(q),{},dialog);}
 
+// Separate browser contexts keep these tenant fixtures out of the JJTV request ledger.
+async function storefrontFixture({ code, web_url = '', h5_url = '', platform = false }, inspect) {
+ const context = await browser.createBrowserContext();
+ const fixturePage = await context.newPage(); const seen = []; const fixtureErrors = []; const blocked = [];
+ const token = 'storefront-fixture-token:' + code;
+ const tenant = { id: 'tenant-' + code, code, name: 'Fixture international operating platform ' + code, kind: 'native', status: 'active', web_url, h5_url };
+ const fixtureIdentity = { account_scope: platform ? 'platform' : 'tenant', session_kind: 'normal', is_platform_admin: platform, is_tenant_admin: false,
+  user: { id: 7, username: 'fixture-staff', display_name: 'Fixture employee', role: platform ? 'admin' : 'editor', account_scope: platform ? 'platform' : 'tenant', tenant_id: platform ? null : tenant.id, must_change_password: false },
+  tenant: platform ? null : tenant, role_name: '普通员工', permissions: [], menu_keys: [], enabled_modules: [] };
+ fixturePage.on('pageerror', error => fixtureErrors.push(error.message));
+ await fixturePage.setRequestInterception(true);
+ fixturePage.on('request', async request => {
+  const url = new URL(request.url()); const isApi = /^\/(?:admin|tenant|platform)\/v1\//.test(url.pathname);
+  if (!isApi) { if (url.origin === origin || ['data:', 'about:'].includes(url.protocol)) await request.continue(); else { blocked.push(url.href); await request.abort(); } return; }
+  seen.push({ path: url.pathname, method: request.method(), authorization: request.headers().authorization });
+  const contextPath = platform ? '/platform/v1/context' : '/tenant/v1/context';
+  const known = request.method() === 'GET' && (url.pathname === contextPath || platform && url.pathname === '/platform/v1/tenants');
+  await request.respond({ status: known ? 200 : 500, contentType: 'application/json', body: JSON.stringify(url.pathname === contextPath ? fixtureIdentity : known ? [] : { detail: 'Unexpected storefront fixture API' }) });
+ });
+ await fixturePage.evaluateOnNewDocument(({ key, token }) => localStorage.setItem(key, token), { key: platform ? 'jjtv_platform_token' : 'jjtv_tenant_token:' + code, token });
+ try {
+  await fixturePage.setViewport({ width: 1440, height: 1000 });
+  await fixturePage.goto(origin + (platform ? '/admin/platform/tenants' : '/admin/t/' + code + '/'), { waitUntil: 'networkidle0' });
+  await fixturePage.waitForSelector('.backoffice-header', { visible: true });
+  await inspect(fixturePage, token);
+  assert.deepEqual(fixtureErrors, [], 'No storefront fixture browser errors');
+  assert.deepEqual(blocked, [], 'Rendering a storefront link must not navigate or contact its destination');
+  assert(seen.length > 0 && seen.every(call => call.method === 'GET' && call.authorization === 'Bearer ' + token && (call.path === (platform ? '/platform/v1/context' : '/tenant/v1/context') || platform && call.path === '/platform/v1/tenants')), 'Header uses only its authenticated context, without requesting privileged site settings');
+ } catch (error) {
+  await fixturePage.screenshot({ path: path.join(OUT, 'storefront-failure-' + code + '.png'), fullPage: true }).catch(() => {});
+  await fs.writeFile(path.join(OUT, 'storefront-failure-' + code + '.html'), await fixturePage.content()).catch(() => {});
+  throw error;
+ } finally { await context.close(); }
+}
+async function verifyStorefrontNavigation() {
+ for (const fixture of [
+  { code: 'store-us', web_url: 'https://us.example.com/watch', h5_url: 'https://m-us.example.com/', expected: 'https://us.example.com/watch' },
+  { code: 'store-jp', web_url: 'https://operator:fixture-password@wrong.example.com/', h5_url: 'https://jp.example.com/mobile', expected: 'https://jp.example.com/mobile' },
+ ]) await storefrontFixture(fixture, async (fixturePage, token) => {
+  for (const width of [1440, 375]) {
+   await fixturePage.setViewport({ width, height: width === 375 ? 844 : 1000 });
+   const link = await fixturePage.$eval('.backoffice-header [aria-label="访问前台"]', element => {
+    const rect = element.getBoundingClientRect(), header = element.closest('.backoffice-header').getBoundingClientRect();
+    const location = document.querySelector('.app-header-location').getBoundingClientRect();
+    return { tag: element.tagName, href: element.getAttribute('href'), target: element.getAttribute('target'), rel: element.getAttribute('rel') || '', visible: !!element.getClientRects().length, left: rect.left, right: rect.right, headerRight: header.right, locationRight: location.right, headerOverflow: element.closest('.backoffice-header').scrollWidth > element.closest('.backoffice-header').clientWidth + 1, pageOverflow: document.documentElement.scrollWidth > innerWidth + 1 };
+   });
+   assert.equal(link.tag, 'A'); assert(link.visible); assert.equal(new URL(link.href).href, new URL(fixture.expected).href);
+   assert.equal(link.target, '_blank'); assert(link.rel.split(/\s+/).includes('noopener')); assert(link.rel.split(/\s+/).includes('noreferrer')); assert(!link.href.includes(token));
+   assert(!link.headerOverflow && !link.pageOverflow && link.locationRight <= link.left + 1 && link.right <= link.headerRight + 1, 'Storefront action stays in the header without overflow or overlapping navigation at ' + width);
+   await fixturePage.screenshot({ path: path.join(OUT, 'storefront-' + fixture.code + '-' + width + '.png'), fullPage: true });
+  }
+ });
+ pass('ordinary staff storefront links stay tenant-specific, prefer valid Web and fall back to H5, with safe new tabs at 1440/375');
+ for (const fixture of [
+  { code: 'store-missing' },
+  { code: 'store-unsafe', web_url: 'javascript:alert(1)', h5_url: 'data:text/html,unsafe' },
+  { code: 'store-userinfo', web_url: 'https://operator:fixture-password@wrong.example.com/' },
+  { code: 'store-relative', web_url: '/watch', h5_url: '//other.example.com/' },
+ ]) await storefrontFixture(fixture, async fixturePage => {
+  const action = await fixturePage.$eval('.backoffice-header [aria-label="访问前台"]', element => ({ tag: element.tagName, disabled: element.disabled, href: element.getAttribute('href') }));
+  assert.equal(action.tag, 'BUTTON'); assert.equal(action.disabled, true); assert.equal(action.href, null);
+ });
+ pass('missing, unsafe, credential-bearing and relative storefront URLs cannot create a fallback navigation target');
+ await storefrontFixture({ code: 'company', platform: true }, async fixturePage => { assert.equal(await fixturePage.$('.backoffice-header [aria-label="访问前台"]'), null); });
+ pass('company administration does not invent a tenant storefront link');
+}
+
 try{
+ await verifyStorefrontNavigation();
  const pages=[['/login-settings','登录配置'],['/stripe-accounts','支付通道'],['/coin-packs','金币商城'],['/coin-ledger','金币消耗'],['/attribution','投放归因'],['/support/workbench','工单工作台'],['/support/queue','工单队列'],['/support/reports','服务质量'],['/support/settings','工单设置'],['/plans','会员套餐'],['/finance','财务订单']];
  for(const [route,title] of pages){await go(route);await text(title);for(const width of [1280,1440,1920]){await page.setViewport({width,height:1000});await noOverflow(route+' '+width);await page.screenshot({path:path.join(OUT,route.slice(1).replaceAll('/','-')+'-'+width+'.png'),fullPage:true});}pass(title+' renders at 1280/1440/1920');}
  await page.setViewport({width:1440,height:1000});await go('/support/workbench');await text('Fixture support ticket');assert(await page.$('.support-workbench-layout'));assert(await page.$('.support-ticket-card'));await click('Fixture support ticket');await text('Please help with my membership.');await page.type('textarea[aria-label="回复内容"]','This is a private fixture note.');await page.evaluate(()=>{const label=[...document.querySelectorAll('label')].find(el=>el.textContent.includes('仅员工可见'));label.click();});await click('保存备注');await text('This is a private fixture note.');const reply=requests.find(r=>r.path.endsWith('/TK-FIXTURE/messages'));assert.equal(reply.body.internal,true);assert.equal(reply.headers.authorization,'Bearer fixture-admin-token');assert.equal(reply.headers['x-jjtv-tenant'],'jjtv');pass('staff internal note uses authenticated tenant-scoped action');await page.screenshot({path:path.join(OUT,'support-internal-note-1440.png'),fullPage:true});

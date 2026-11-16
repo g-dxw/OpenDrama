@@ -13,6 +13,7 @@ import { TenantContext, type Tenant } from './tenant';
 import { setCurrentTenantId } from './tenant-scope';
 import { navigationLeaves, visibleNavigation, type NavigationNode } from './navigation';
 import BackOfficeShell from './components/BackOfficeShell';
+import TenantStorefrontLink from './components/TenantStorefrontLink';
 import { ChangePasswordModal } from './components/ChangePasswordModal';
 import EntryChooser from './pages/EntryChooser';
 import Login from './pages/Login';
@@ -111,7 +112,7 @@ function TenantApplication({ identity, refresh, onLogout, loggingOut, onPassword
     action={<Button onClick={onLogout} loading={loggingOut}>退出租户，返回平台</Button>} /> : undefined;
   return <TenantContext.Provider value={{ current, items: [current], refresh, select: () => {} }}><BackOfficeShell brand={tenant.name + ' 后台'} items={items} route={location.pathname} scope={tenant.id} onNavigate={key => navigate(key)} accountName={identity.user.display_name || identity.user.username}
     accountLabel={support ? '平台支持访问' : identity.is_tenant_admin ? '租户管理员' : identity.role_name} onLogout={onLogout} loadingLogout={loggingOut} onPassword={onPassword} contentKey={contentKey} banner={banner}
-    headerExtra={<Button type="text" aria-label="刷新当前租户权限" icon={<ReloadOutlined aria-hidden />} loading={refreshing} onClick={() => void refreshPermissions()} />}>
+    headerExtra={<Space size={4}><TenantStorefrontLink tenant={tenant} /><Button type="text" aria-label="刷新当前租户权限" icon={<ReloadOutlined aria-hidden />} loading={refreshing} onClick={() => void refreshPermissions()} /></Space>}>
     {error ? <Alert type="error" showIcon message={error} action={<Button onClick={() => void refreshPermissions()}>重试</Button>} /> : tenant.status !== 'active' ? <Alert type="warning" showIcon message="此租户已暂停" description="请联系平台管理员重新启用。" /> : !first ? <Alert type="info" showIcon message="当前账号没有已开放的菜单" description="请联系本租户管理员分配权限。" /> : !requested && !reviewDetail && location.pathname !== '/' ? <Navigate to={first} replace /> : <BusinessRoutes first={first} systemAdmin={systemAdmin} />}
   </BackOfficeShell></TenantContext.Provider>;
 }
