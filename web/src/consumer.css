@@ -1780,6 +1780,7 @@ body {
 }
 
 /* Measured desktop navigation and editorial home. */
+.consumer-home > :is(.feature-hero, .home-spotlight, .home-content) { max-width: none; }
 .consumer-header > .consumer-brand { flex: 0 0 110px; }
 .consumer-header nav a.active { font-weight: 600; }
 .consumer-header .header-search-trigger { width:36px;height:36px;border:0;background:transparent;color:#aaa4a7; }
@@ -1811,7 +1812,7 @@ body {
 .home-spotlight { width:calc(100% - 96px);margin:-8px auto 0;height:50px;border-block:1px solid rgba(255,255,255,.08);display:flex;align-items:center;justify-content:space-between;font-size:9px;letter-spacing:1.7px;color:rgba(255,255,255,.38); }
 .home-spotlight span:first-child { display:flex;align-items:center;gap:12px; }
 .home-spotlight i { width:5px;height:5px;background:#f34350;border-radius:50%; }
-.home-content.page-content { width:calc(100% - 96px);max-width:none;padding:0 0 72px; }
+.home-content.page-content { width:calc(100% - 96px);padding:0 0 72px; }
 .home-channels { display:flex;gap:28px;align-items:end;height:64px;margin-bottom:28px;overflow-x:auto;scrollbar-width:none; }
 .home-channels button { position:relative;flex:none;background:none;border:0;border-bottom:2px solid transparent;padding:12px 0;font-size:14px;color:rgba(255,255,255,.4);font-weight:500; }
 .home-channels button.active { color:#fff;border-bottom-color:#ed4058;font-weight:600; }
