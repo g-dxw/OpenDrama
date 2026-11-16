@@ -153,6 +153,7 @@ await page.evaluateOnNewDocument(() => {
     );
     if (
       ![
+        "/v1/plans",
         "/v1/commerce/checkout",
         "/v1/billing/cancel",
         "/v1/dramas/1/play",
@@ -1223,7 +1224,6 @@ try {
   );
   activeMember = true;
   membershipEnabled = false;
-  const disabledPlanReads = calls.filter(call => call.path === "/v1/plans").length;
   await page.evaluate(() =>
     localStorage.setItem("minitv_h5_token", "mobile-token"),
   );
@@ -1232,7 +1232,11 @@ try {
   await page.reload({ waitUntil: "networkidle0" });
   await surface("mobile");
   await page.waitForSelector('[data-testid="premium-cancel"]');
-  assert.equal(calls.filter(call => call.path === "/v1/plans").length, disabledPlanReads);
+  // Requests from the departing enabled document can start during navigation.
+  // Assert against this freshly bootstrapped disabled document, including reads
+  // issued before the membership controls become visible.
+  const disabledMobileDocument = await page.evaluate(() => window.__surfaceFetch.documentId);
+  assert.equal(calls.filter(call => call.path === "/v1/plans" && call.headers["x-surface-document"] === disabledMobileDocument).length, 0);
   assert.equal(await page.$('[data-testid="premium-extend"], [data-testid="premium-buy-pass"], [data-testid^="premium-buy-"]'), null);
   const cancellation = hold("cancel");
   await page.locator('[data-testid="premium-cancel"]').click();
@@ -1261,7 +1265,8 @@ try {
   await surface("desktop");
   await page.waitForSelector('[data-testid="membership-cancel"]');
   assert.equal(await page.$("#membership-plans"), null);
-  assert.equal(calls.filter(call => call.path === "/v1/plans").length, disabledPlanReads);
+  const disabledDesktopDocument = await page.evaluate(() => window.__surfaceFetch.documentId);
+  assert.equal(calls.filter(call => call.path === "/v1/plans" && call.headers["x-surface-document"] === disabledDesktopDocument).length, 0);
   await page.locator('[data-testid="membership-cancel"]').click();
   const desktopCancellation = hold("cancel");
   await page.locator('[data-testid="membership-confirm-cancel"]').click();
