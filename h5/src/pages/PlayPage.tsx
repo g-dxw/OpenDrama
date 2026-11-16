@@ -430,7 +430,7 @@ export function PlayPage({
                   signedIn={Boolean(user)}
                   balance={user?.coins ?? 0}
                   onUnlock={() => openUnlock(episode)}
-                  onMember={openMembership}
+                  onMember={() => openUnlock(episode)}
                   onNeedCoins={onOpenCoins}
                 />
               ) : (

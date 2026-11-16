@@ -35,6 +35,11 @@ def test_existing_e6_deployment_allows_only_capability_appends_and_retries(engin
         config.set_main_option('sqlalchemy.url',target_url.render_as_string(hide_password=False).replace('%','%%'))
         with monkeypatch.context() as local:
             local.setenv('ALEMBIC_DATABASE_URL',target_url.render_as_string(hide_password=False))
+            local.setenv('SITE_URL','https://jjtv.8jj.net')
+            local.setenv('H5_PUBLIC_BASE_URL','https://jjtv-h5.8jj.net')
+            local.setenv('SITE_LEGACY_HOSTS','jjtv.8jj.net,jjtv-h5.8jj.net,jjtv-api.8jj.net')
+            local.setenv('SITE_LEGACY_TENANT','jjtv')
+            local.setenv('SITE_API_HOSTS','jjtv-api.8jj.net')
             command.upgrade(config,'e6a1c3d9b742')
             target = sa.create_engine(target_url)
             password_hash = hash_password('isolated-test-password')
@@ -54,6 +59,7 @@ def test_existing_e6_deployment_allows_only_capability_appends_and_retries(engin
             receipt = run_upgrade(target,first,lambda: command.upgrade(config,'head'))
             assert receipt['before_revisions']==['e6a1c3d9b742']
             assert receipt['after_revisions']==[ScriptDirectory.from_config(config).get_current_head()]
+            assert receipt['site_urls']=={'tenant_id':'jjtv','changed_fields':['web_url','h5_url'],'web_url':'https://jjtv.8jj.net','h5_url':'https://jjtv-h5.8jj.net'}
             assert receipt['initialized_accounts']==0
             before = json.loads((first/'identity-before.json').read_text())
             after = json.loads((first/'identity-after-migration.json').read_text())
@@ -83,6 +89,7 @@ def test_existing_e6_deployment_allows_only_capability_appends_and_retries(engin
             second = tmp_path/'second'
             second.mkdir()
             retry = run_upgrade(target,second,lambda: command.upgrade(config,'head'))
+            assert retry['site_urls'] is None
             assert retry['initialized_accounts']==0 and retry['content_defaults'] is None
             assert retry['before_revisions']==retry['after_revisions']
     finally:
