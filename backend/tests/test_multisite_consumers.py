@@ -174,6 +174,8 @@ def test_pack_currency_requires_explicit_site_price_and_checkout_cannot_convert(
     from app.modules.billing.service import BillingError
     from app.modules.billing.commerce_models import CoinPackVersion
     _,b=two_sites(session)
+    from app.modules.tenancy.permissions import seed_tenant_defaults
+    seed_tenant_defaults(session,session.get(Tenant,'site-b'))
     session.add(SiteSettings(tenant_id='site-b',timezone='UTC',currency='EUR',web_url='https://b.example',h5_url='https://m.b.example'));session.commit()
     with site_context(session,'site-b'):
         with pytest.raises(BillingError) as exc:commerce.save_pack(session,'start',dict(name_en='Start',price_cents=500,currency='USD',base_coins=25),None)

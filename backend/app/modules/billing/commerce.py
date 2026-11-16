@@ -292,6 +292,7 @@ def product_snapshot(db,kind,code):
 
 def ensure_price(db,account,snapshot):
     from sqlalchemy import text
+    from app.modules.tenancy.consumer_scope import current_site
     fingerprint=account+':'+snapshot['product_type']+':'+str(snapshot['version_id'])+':'+snapshot['billing_mode']
     lock=int.from_bytes(hashlib.sha256(fingerprint.encode()).digest()[:8],'big') & ((1<<63)-1)
     db.execute(text('SELECT pg_advisory_xact_lock(:key)'),{'key':lock})
@@ -299,7 +300,7 @@ def ensure_price(db,account,snapshot):
     binding=db.scalar(select(StripePriceBinding).filter_by(**values))
     if binding:return binding.price_id
     price=None
-    if account=='env' and snapshot['product_type']=='membership':
+    if current_site(db)=='jjtv' and account=='env' and snapshot['product_type']=='membership':
         version=db.get(PlanVersion,snapshot['version_id'])
         price=version.stripe_price_id if snapshot['billing_mode']=='subscription' else version.stripe_one_time_price_id
     if price is None:
@@ -367,6 +368,23 @@ def assert_no_renewing_subscription(db,user_id):
             raise BillingError(409,'Original subscription cancellation is not confirmed; retry or contact support before another purchase')
         if not remote['cancel_at_period_end']:raise BillingError(409,'an active renewing subscription already exists; manage it before starting another')
 
+def require_new_sale(db,product_type):
+    from app.modules.sites.service import features_for,lock_site_settings
+    from app.modules.tenancy.consumer_scope import current_site
+    from app.modules.tenancy.models import Tenant
+    from app.modules.tenancy.modules import enabled_modules
+    product_keys={'membership':('plans','membership'),'coin_pack':('coin_packs','coins')}
+    if product_type not in product_keys:raise BillingError(422,'unknown product type')
+    site=current_site(db)
+    # Serialize first-order currency snapshots with both site settings editors.
+    # Hold their common Tenant -> SiteSettings locks until the order is durable.
+    lock_site_settings(db,site)
+    tenant=db.get(Tenant,site)
+    module,feature=product_keys[product_type]
+    if tenant is None or module not in enabled_modules(db,tenant) or not features_for(db,tenant).get(feature,False):
+        raise BillingError(403,'New '+('membership' if product_type=='membership' else 'coin pack')+' purchases are disabled for this site')
+
+
 def checkout(db,*,user_id,email,product_type,code,idempotency_key,account_code=None,success_url=None,cancel_url=None,source_drama_id=None,attribution_pid=None):
     from app.modules.tenancy.consumer_scope import require_owned,current_site
     require_owned(db,User,user_id)
@@ -390,6 +408,7 @@ def checkout(db,*,user_id,email,product_type,code,idempotency_key,account_code=N
         elif order.checkout_url:return _checkout_result(order,True)
         account=get_account(db,order.account_code);snapshot=order.product_snapshot
     else:
+        require_new_sale(db,product_type)
         if product_type=='membership':_membership_refund_checkout_guard(db,user_id)
         snapshot=product_snapshot(db,product_type,code)
         from app.modules.billing.site_merchants import assert_site_currency

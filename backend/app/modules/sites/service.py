@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlsplit
 from fastapi import HTTPException, Request
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from app.modules.sites.models import SiteSettings, SiteBrand, BrandRevision
 from app.modules.tenancy.models import Tenant, TenantDomain
 
@@ -22,6 +23,41 @@ def get_site(db, tenant_id):
         db.add(row)
         db.flush()
     return row
+
+
+def lock_site_settings(db, tenant_id):
+    """Shared currency/order lock, held until the caller commits or rolls back.
+
+    Platform edits already lock Tenant first. Take a compatible key-share lock
+    before SiteSettings so an order's tenant FK cannot invert that lock order.
+    """
+    if db.scalar(select(Tenant.id).where(Tenant.id == tenant_id).with_for_update(read=True, key_share=True)) is None:
+        raise HTTPException(404, detail='Site not found')
+    # Concurrent first checkouts may both observe a missing settings row.
+    # An atomic insert keeps their compatible Tenant key-share locks safe.
+    db.execute(pg_insert(SiteSettings).values(tenant_id=tenant_id,
+               timezone="America/Los_Angeles" if tenant_id == "jjtv" else "UTC")
+               .on_conflict_do_nothing(index_elements=["tenant_id"]))
+    return db.scalar(select(SiteSettings).where(SiteSettings.tenant_id == tenant_id)
+                     .with_for_update().execution_options(populate_existing=True))
+
+
+def assert_currency_change_allowed(db, locked_settings, requested_currency):
+    """Every order state freezes the site's reporting denomination, including
+    pending, failed and refunded orders whose immutable money snapshots remain.
+    The caller must retain lock_site_settings through its settings commit.
+    """
+    if requested_currency == locked_settings.currency:
+        return
+    from app.modules.billing.models import Order
+    orders = Order.__table__
+    existing = db.scalar(select(orders.c.id).where(orders.c.tenant_id == locked_settings.tenant_id).limit(1))
+    if existing is not None:
+        raise HTTPException(409, detail={
+            'code': 'site_currency_has_orders',
+            'message': 'Currency cannot be changed after this site has order history; create a separate site for another currency',
+            'currency': locked_settings.currency,
+        })
 
 
 def get_brand(db, tenant):

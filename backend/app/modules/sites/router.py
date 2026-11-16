@@ -15,7 +15,7 @@ from app.modules.ops.router import require_tenant_admin
 from app.modules.ops import service as auth
 from app.modules.ops.models import AdminUser
 from app.modules.sites.models import SiteBrand, BrandRevision
-from app.modules.sites.service import get_site, get_brand, site_out, features_for
+from app.modules.sites.service import get_site, get_brand, site_out, features_for, lock_site_settings, assert_currency_change_allowed
 from app.modules.tenancy.models import Tenant, TenantDomain
 
 public_router = APIRouter(prefix="/v1/site", tags=["site"])
@@ -144,8 +144,7 @@ def site(request: Request, db: Session = Depends(get_db), user=Depends(require_t
 @tenant_router.patch("/site")
 def patch_site(body: SitePatch, request: Request, db: Session = Depends(get_db), user=Depends(require_tenant_admin)):
     tenant = request.state.tenant
-    row = get_site(db, tenant.id)
-    db.refresh(row, with_for_update=True)
+    row = lock_site_settings(db, tenant.id)
     if body.version is not None and body.version != row.version:
         raise HTTPException(409, detail="Site settings changed; refresh before saving")
     values = body.model_dump(exclude_unset=True, exclude={"version"})
@@ -164,6 +163,8 @@ def patch_site(body: SitePatch, request: Request, db: Session = Depends(get_db),
         raise HTTPException(422, detail="Default language must be an enabled language")
     if "features" in values and not set(values["features"]) <= set(features_for(db, tenant)):
         raise HTTPException(422, detail="Unknown feature")
+    if "currency" in values:
+        assert_currency_change_allowed(db, row, values["currency"])
     for key, value in values.items(): setattr(row, key, value)
     row.version += 1
     audit(db, request, user, "site.settings.update")

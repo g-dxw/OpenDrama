@@ -116,16 +116,21 @@ BILLING_MODES = ("subscription", "one_time")
 
 def new_billing_settings(session,tenant_id=None):
     from sqlalchemy import func,text
+    site=tenant_id or current_site(session)
     session.execute(text("SELECT pg_advisory_xact_lock(hashtext('site-billing-settings'))"))
+    # Another first reader/provisioner may have created it while we waited.
+    # Keep the legacy explicit-ID allocator and the caller's transaction intact.
+    existing=session.scalar(select(BillingSettings).where(BillingSettings.tenant_id==site).execution_options(include_all_tenants=True,populate_existing=True))
+    if existing is not None:return existing
     identifier=(session.scalar(select(func.max(BillingSettings.id)).execution_options(include_all_tenants=True)) or 0)+1
-    return BillingSettings(id=identifier,tenant_id=tenant_id or current_site(session),billing_mode='one_time')
+    return BillingSettings(id=identifier,tenant_id=site,billing_mode='one_time')
 
 def get_billing_settings(session: Session) -> BillingSettings:
     row = session.scalar(select(BillingSettings).where(BillingSettings.tenant_id == current_site(session)))
     if row is None:
         row = new_billing_settings(session)
         session.add(row)
-        session.commit()
+        session.flush()
     return row
 
 
@@ -1376,13 +1381,29 @@ def revoke_membership(session:Session,*,user_id:int,mode:str,reason:str,actor_id
     return dict(mode=mode,before_until=before.isoformat(),after_until=before.isoformat() if mode=='period_end' else moment.isoformat(),stripe_canceled=bool(stripe_id))
 
 
-# Compatibility service callers still use the configured original merchant.
-# ContextVar isolates credentials per request without mutating process env.
+# Legacy admin callers must use the same site merchant and price bindings as
+# checkout. Only the original site's original merchant may use global price IDs.
 _legacy_ensure_stripe_price = ensure_stripe_price
 
 def ensure_stripe_price(session:Session,plan:Plan,version:PlanVersion,mode:str="subscription")->str:
-    with managed_stripe_runtime(session):
-        return _legacy_ensure_stripe_price(session,plan,version,mode)
+    from app.modules.billing.commerce import ensure_price
+    from app.modules.billing.site_merchants import purchase_account
+
+    plan = require_owned(session, Plan, plan.id)
+    version = require_owned(session, PlanVersion, version.id)
+    if version.plan_id != plan.id:
+        raise BillingError(404, "plan price version not found")
+    if mode not in BILLING_MODES:
+        raise BillingError(400, "unknown billing mode")
+    account = purchase_account(session)
+    if current_site(session) == 'jjtv' and account['code'] == 'env':
+        with managed_stripe_runtime(session, account['code']):
+            return _legacy_ensure_stripe_price(session, plan, version, mode)
+    return ensure_price(session, account['code'], dict(
+        product_type='membership', code=plan.code, name=plan.name_en,
+        version_id=version.id, price_cents=version.price_cents,
+        currency=version.currency, billing_mode=mode,
+    ))
 
 
 _original_fake_webhook=apply_webhook

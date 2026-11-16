@@ -456,8 +456,9 @@ def legacy_replace_members(tenant_id:str,request:Request,user:AdminUser=Depends(
 
 def apply_site_fields(db,tenant,row,body):
     from app.modules.sites.router import safe_url
-    from app.modules.sites.service import hostname_site
+    from app.modules.sites.service import hostname_site, lock_site_settings, assert_currency_change_allowed
     from urllib.parse import urlsplit
+    row = lock_site_settings(db, tenant.id)
     fields=set(SitePatch.model_fields)-{'version'}
     values=body.model_dump(include=fields,exclude_unset=True)
     if any(v is None for v in values.values()): raise HTTPException(422,detail='Site settings cannot be null')
@@ -469,6 +470,8 @@ def apply_site_fields(db,tenant,row,body):
             except ValueError as exc: raise HTTPException(422,detail=str(exc)) from None
             bound=hostname_site(db,urlsplit(values[field]).hostname)
             if bound is None or bound.id!=tenant.id: raise HTTPException(422,detail='URL must use a verified site domain')
+    if 'currency' in values:
+        assert_currency_change_allowed(db, row, values['currency'])
     for key,value in values.items(): setattr(row,key,value)
     if values: row.version+=1
 
