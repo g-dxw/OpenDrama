@@ -57,7 +57,7 @@ export function Home() {
         {(adjacent[0]?.cover_url || banner.cover_url) && <img className="hero-side-poster hero-side-left" src={adjacent[0]?.cover_url || banner.cover_url || ""} alt=""/>}
         {(adjacent[1]?.cover_url || banner.cover_url) && <img className="hero-side-poster hero-side-right" src={adjacent[1]?.cover_url || banner.cover_url || ""} alt=""/>}
         {banner.cover_url ? <img className="hero-poster" src={banner.cover_url} alt=""/> : <div className="hero-poster hero-poster-empty">{siteName()}</div>}
-        <span className="hero-poster-caption">{siteName()} · NO. {String(currentIndex+1).padStart(2,"0")}</span>
+        <span className="hero-poster-caption">{siteName()} · {t("Rank {number}",{number:String(currentIndex+1).padStart(2,"0")})}</span>
       </div>
     </section>}
     {banner && <div className="home-spotlight"><span><i/>{t("IN THE SPOTLIGHT")}</span><span>{t("CURATED FOR YOU")}</span><span>{String(currentIndex+1).padStart(2,"0")} / {String(banners.length).padStart(2,"0")}</span></div>}

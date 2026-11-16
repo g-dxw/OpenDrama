@@ -19,9 +19,7 @@ export function loadLocale(): Locale {
   try { const saved = localStorage.getItem(siteStorageKey(LOCALE_STORAGE_KEY)); return valid(saved) && getSite().tenant.locales.includes(saved) ? saved : (valid(siteLocale()) ? siteLocale() as Locale : "en"); }
   catch { return (valid(siteLocale()) ? siteLocale() as Locale : "en"); }
 }
-const dictionaries: Record<string, Record<string, string>> = { en: {"This feature is unavailable on this site.":"This feature is unavailable on this site.","Brand preview — this draft is not published.":"Brand preview — this draft is not published."}, zh:{"This feature is unavailable on this site.":"本站暂未开放此功能。","Brand preview — this draft is not published.":"品牌草稿预览 · 尚未发布。"} };
-Object.assign(dictionaries.en,{"Content availability":"Content availability","Available to watch until {date}":"Available to watch until {date}","Sales end {date}":"Sales end {date}","Could not load content availability.":"Could not load content availability."});
-Object.assign(dictionaries.zh ||= {},{"Content availability":"内容有效期","Available to watch until {date}":"本剧可观看至 {date}","Sales end {date}":"销售截至 {date}","Could not load content availability.":"暂时无法读取本剧授权期限，请稍后重试。"});
+const dictionaries: Record<string, Record<string, string>> = { en: {} };
 // Every section owns a plain data module; new sections do not couple UI to API code.
 const sections = import.meta.glob<Record<string, unknown>>("./locale-*.ts", { eager: true });
 for (const section of Object.values(sections)) {
