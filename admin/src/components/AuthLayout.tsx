@@ -3,7 +3,7 @@ import { ArrowRightOutlined, GlobalOutlined, PlaySquareOutlined, TeamOutlined } 
 import workspacePhoto from '../assets/login-workspace.webp';
 import './auth-layout.css';
 
-export default function AuthLayout({ children, chooser = false }: { children: ReactNode; chooser?: boolean }) {
+export default function AuthLayout({ children, systemLogin = false }: { children: ReactNode; systemLogin?: boolean }) {
   return <main className="auth-layout" data-testid="auth-layout">
     <aside className="auth-hero" data-testid="auth-hero" aria-label="OpenDrama 团队工作空间">
       <img className="auth-hero-image" src={workspacePhoto} alt="" width={1122} height={1402} loading="eager" decoding="async" />
@@ -27,7 +27,7 @@ export default function AuthLayout({ children, chooser = false }: { children: Re
           <svg viewBox="0 0 36 36" width="36" height="36" aria-hidden="true"><rect width="36" height="36" rx="10" fill="currentColor" /><path d="M14 10.5 26 18 14 25.5Z" fill="white" /></svg>
           <span>OpenDrama</span><span className="auth-brand-caption">管理控制台</span>
         </a>
-        {!chooser && <a className="auth-switch" href="/admin/login">切换入口<ArrowRightOutlined aria-hidden /></a>}
+        <a className="auth-switch" href={systemLogin ? "/admin/login" : "/admin/platform/login"}>{systemLogin ? "平台登录" : "管理系统登录"}<ArrowRightOutlined aria-hidden /></a>
       </header>
       <div className="auth-content"><div className="auth-form-wrap">{children}</div></div>
       <footer className="auth-footer">© {new Date().getFullYear()} OpenDrama<span>让内容连接世界</span></footer>

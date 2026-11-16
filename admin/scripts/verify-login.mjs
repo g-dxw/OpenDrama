@@ -187,7 +187,7 @@ async function testLoginRequest(platform) {
   const fixture = await fixturePage();
   const { page } = fixture;
   const route = platform ? '/admin/platform/login' : '/admin/t/jjtv/login';
-  const label = platform ? '登录平台' : '登录租户';
+  const label = platform ? '登录管理系统' : '登录所选平台';
   await visit(fixture, route, viewports[2]);
   await clearField(page, 'input[autocomplete="username"]');
   await clearField(page, 'input[autocomplete="current-password"]');
@@ -217,7 +217,7 @@ async function testLoginRequest(platform) {
 }
 
 async function selectJapan(page) {
-  await page.click('[aria-label="选择租户"]');
+  await page.click('[aria-label="选择平台"]');
   await page.waitForSelector('.ant-select-dropdown:not(.ant-select-dropdown-hidden)', { visible: true });
   await page.evaluate(() => {
     const option = [...document.querySelectorAll('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option')]
@@ -260,7 +260,7 @@ try {
 
   const empty = await fixturePage('empty');
   await visit(empty, '/admin/login', viewports[2]);
-  await text(empty.page, '当前没有开放登录的租户，请联系管理员。');
+  await text(empty.page, '当前没有开放登录的平台，请联系管理员。');
   assert(await empty.page.$eval('button[type="submit"]', button => button.disabled));
   await assertLayout(empty.page, '[data-testid="auth-entry-chooser"]', viewports[2]);
   await empty.page.close();
@@ -272,7 +272,7 @@ try {
     await fixture.page.evaluate(() => { window.__loginAcceptanceDocumentMarker = true; });
     if (fromChooser) {
       await selectJapan(fixture.page);
-      await Promise.all([fixture.page.waitForNavigation({ waitUntil: 'networkidle0' }), button(fixture.page, '进入租户登录')]);
+      await Promise.all([fixture.page.waitForNavigation({ waitUntil: 'networkidle0' }), button(fixture.page, '进入平台登录')]);
     } else {
       await Promise.all([fixture.page.waitForNavigation({ waitUntil: 'networkidle0' }), selectJapan(fixture.page)]);
     }
@@ -280,7 +280,7 @@ try {
     assert.equal(await fixture.page.evaluate(() => window.__loginAcceptanceDocumentMarker), undefined, 'Tenant change must load a new document');
     await fixture.page.waitForSelector('[data-testid="auth-login-form"]', { visible: true });
     await fillLogin(fixture.page);
-    await button(fixture.page, '登录租户');
+    await button(fixture.page, '登录所选平台');
     await text(fixture.page, '账号或密码不正确');
     const login = fixture.requests.filter(request => request.path === '/tenant/v1/auth/login').at(-1);
     assert.equal(login.body.tenant_code, 'japan');
