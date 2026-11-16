@@ -1,3 +1,4 @@
+import { respondSiteBootstrap } from "../../tests/frontend-site-fixture.mjs";
 /** Independent surfaces at the measured 1024px boundary; all APIs and assets are fixtures. */
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
@@ -363,6 +364,7 @@ const profile = (token) => ({
 });
 await page.setRequestInterception(true);
 page.on("request", async (req) => {
+  if (await respondSiteBootstrap(req)) return;
   inFlight.add(req);
   const url = new URL(req.url());
   if (url.pathname === "/fixtures/clip.webm") {
@@ -697,8 +699,8 @@ try {
     390,
   );
   assert.equal(await page.$$(".consumer-header").then((x) => x.length), 0);
-  assert.equal(await page.$$(".tabs [data-tab]").then((x) => x.length), 4);
-  pass("390px loads the independent H5 stage and four bottom tabs");
+  assert.deepEqual(await page.$$eval(".tabs [data-tab]", tabs => tabs.map(tab => tab.dataset.tab)), ["home", "foryou", "rewards", "mylist", "me"]);
+  pass("390px loads the independent H5 stage and five distinct bottom tabs");
   for (const width of [1000, 1023]) {
     await resize(width);
     await surface("mobile");
@@ -1064,12 +1066,25 @@ try {
     () => document.querySelector(".me-tab.on")?.textContent.trim() === "Saved",
   );
   pass("account section deep links open the matching H5 library tab");
+  await goto("#mylist");
+  await surface("mobile");
+  await page.waitForSelector(".mylist-page");
+  assert.equal(new URL(page.url()).hash, "#mylist");
+  assert.deepEqual(await page.$$eval('.tabs [role="tab"][aria-selected="true"]', tabs => tabs.map(tab => tab.dataset.tab)), ["mylist"]);
+  assert.equal(await page.$eval('.tabs [data-tab="mylist"] .tab-label', element => element.textContent.trim()), "My List");
+  assert.equal(await page.$eval('.tabs [data-tab="me"]', element => element.getAttribute("aria-selected")), "false");
+  assert.equal(await page.$(".consumer-header"), null);
+  pass("My List deep link keeps the independent mobile surface and selects only My List");
   await goto("#account");
   await surface("mobile");
   await page.waitForFunction(
     () =>
       document.querySelector(".me-hero h2")?.textContent === "Mobile viewer",
   );
+  assert.deepEqual(await page.$$eval('.tabs [role="tab"][aria-selected="true"]', tabs => tabs.map(tab => tab.dataset.tab)), ["me"]);
+  assert.equal(await page.$eval('.tabs [data-tab="me"] .tab-label', element => element.textContent.trim()), "Profile");
+  assert.equal(await page.$eval('.tabs [data-tab="mylist"]', element => element.getAttribute("aria-selected")), "false");
+  pass("Profile remains independent from My List and is the sole selected mobile tab");
   await page.$eval(
     ".me-page",
     (element) => (element.dataset.surfaceSentinel = "kept"),

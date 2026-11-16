@@ -73,7 +73,7 @@ const playing = await page.evaluate(async () => {
     duration: video?.duration ?? null,
     paused: video?.paused ?? null,
     width: video?.videoWidth ?? null,
-    epBar: document.querySelector(".ep-bar")?.textContent ?? null,
+    epBar: document.querySelector('.player-page .rail button[aria-label^="Episodes ·"], .player-page .rail button[aria-label^="选集 ·"]')?.textContent ?? null,
     title: document.querySelector(".meta h2")?.textContent ?? null,
     synLines: document.querySelector(".syn")?.getBoundingClientRect().height ?? null,
   };
@@ -84,7 +84,10 @@ await page.waitForTimeout(800);
 await page.screenshot({ path: `${OUT}-play.png` });
 
 // open the episode sheet
-await page.locator(".ep-bar").click();
+// Keyboard focus reveals the player's transient chrome before opening it.
+const playbackVideo = page.locator("video");
+if (await playbackVideo.count()) await playbackVideo.press("Tab");
+await page.getByRole("button", { name: /^(Episodes|选集) ·/ }).click();
 await page.waitForTimeout(600);
 const sheet = await page.evaluate(() => ({
   open: !!document.querySelector(".sheet"),

@@ -43,9 +43,9 @@ def upgrade():
         SELECT id, jsonb_build_object('name',CASE WHEN id='jjtv' THEN 'JJTV' ELSE name END,'logo_url','','favicon_url','','primary_color','#ff3347',
         'background_color','#07070a','font_family','Inter','button_radius',12,'customer_email','',
         'social_links','{}'::jsonb,'seo_title',CASE WHEN id='jjtv' THEN 'JJTV' ELSE name END,'seo_description',''),
-        jsonb_build_object('name',name,'logo_url','','favicon_url','','primary_color','#ff3347',
+        jsonb_build_object('name',CASE WHEN id='jjtv' THEN 'JJTV' ELSE name END,'logo_url','','favicon_url','','primary_color','#ff3347',
         'background_color','#07070a','font_family','Inter','button_radius',12,'customer_email','',
-        'social_links','{}'::jsonb,'seo_title',name,'seo_description','') FROM tenants"""))
+        'social_links','{}'::jsonb,'seo_title',CASE WHEN id='jjtv' THEN 'JJTV' ELSE name END,'seo_description','') FROM tenants"""))
     bind.execute(sa.text("INSERT INTO site_brand_revisions(tenant_id,version,settings) SELECT tenant_id,version,published FROM site_brands"))
 
 

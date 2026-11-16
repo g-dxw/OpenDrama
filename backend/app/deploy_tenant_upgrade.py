@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import secrets
 import traceback
+from urllib.parse import urlsplit, urlunsplit
 
 from alembic import command
 from alembic.config import Config
@@ -25,6 +26,7 @@ from app.tenant_identity_snapshot import export_snapshot
 
 BOOTSTRAP_ACTION = 'tenant.identity.credentials_initialized'
 DEFAULTS_ACTION = 'tenant.content_defaults.initial_backfill'
+SITE_URLS_ACTION = 'tenant.site_urls.initial_backfill'
 CHANGING_TABLES = {'admin_users','tenant_roles','tenant_members','audit_logs','india_connections'}
 
 
@@ -146,6 +148,90 @@ def verify_preserved(before, after):
         raise RuntimeError('Original account count decreased; API remains stopped')
 
 
+def _validated_site_url(value, snapshot, field):
+    """Validate a public origin/path without borrowing an unknown-host fallback."""
+    invalid = 'Invalid or missing '+field+' for the legacy JJTV site; API remains stopped'
+    if (not isinstance(value,str) or not value or len(value)>500 or
+            value != value.strip() or '\\' in value or any(ord(c)<=32 or ord(c)==127 for c in value)):
+        raise RuntimeError(invalid)
+    try:
+        parsed = urlsplit(value)
+        host = parsed.hostname
+        port = parsed.port
+        if (parsed.scheme!='https' or not host or parsed.username is not None or
+                parsed.password is not None or parsed.query or parsed.fragment or
+                port not in (None,443) or host.endswith('.') or not host.isascii()):
+            raise ValueError('invalid public URL')
+    except (ValueError,UnicodeError):
+        raise RuntimeError(invalid) from None
+    from app.modules.tenancy.domains import shared_hosts
+    api_hosts = {item.strip().lower() for item in os.environ.get('SITE_API_HOSTS','jjtv-api.8jj.net').split(',') if item.strip()}
+    if host in shared_hosts() or host in api_hosts:
+        raise RuntimeError(invalid)
+    tenant = next((row for row in snapshot.get('tenants',[]) if row.get('id')=='jjtv'),None)
+    if tenant is None or tenant.get('kind')!='native':
+        raise RuntimeError(invalid)
+    bindings = [row for row in snapshot.get('domains',[]) if str(row.get('hostname','')).lower()==host]
+    if bindings:
+        if len(bindings)!=1 or any(row.get('tenant_id')!='jjtv' or row.get('kind')!='site' or
+                row.get('status')!='active' or row.get('verified_at') is None for row in bindings):
+            raise RuntimeError(invalid)
+    else:
+        # The deployment must explicitly preserve its fixed legacy public hosts.
+        # A conflicting/pending binding above must never fall through to this list.
+        legacy_hosts = {item.strip().lower() for item in os.environ.get('SITE_LEGACY_HOSTS','').split(',') if item.strip()}
+        if os.environ.get('SITE_LEGACY_TENANT','jjtv')!='jjtv' or host not in legacy_hosts:
+            raise RuntimeError(invalid)
+    return urlunsplit(('https',host,parsed.path.rstrip('/'),'',''))
+
+
+def _site_url_plan(engine, snapshot):
+    if not any(row.get('id')=='jjtv' for row in snapshot.get('tenants',[])):
+        return None
+    if 'site_settings' in snapshot['table_counts']:
+        # A repeat deployment validates but never recreates/decorates an
+        # administrator's current values, even if runtime defaults changed.
+        with engine.connect() as db:
+            row = db.execute(text("SELECT web_url,h5_url FROM site_settings WHERE tenant_id='jjtv'")).mappings().one_or_none()
+        if row is None:
+            raise RuntimeError('Missing current JJTV site settings; API remains stopped')
+        for field in ('web_url','h5_url'):
+            _validated_site_url(row[field],snapshot,'site_settings.'+field)
+        return None
+    # Fail before changing the schema if old runtime configuration cannot be
+    # carried forward safely. A retry must not skip an uninitialized new table.
+    return {field:_validated_site_url(os.environ.get(variable,''),snapshot,variable)
+            for field,variable in (('web_url','SITE_URL'),('h5_url','H5_PUBLIC_BASE_URL'))}
+
+
+def _initialize_site_urls(engine, before, migrated, plan):
+    if plan is None:
+        return None
+    if 'site_settings' in before['table_counts'] or 'site_settings' not in migrated['table_counts']:
+        raise RuntimeError('Legacy site URL initialization requires the first site-settings migration; API remains stopped')
+    from app.modules.common.models import AuditLog
+    from app.modules.sites.models import SiteSettings
+    with Session(engine) as db:
+        row = db.get(SiteSettings,'jjtv',with_for_update=True)
+        if row is None:
+            raise RuntimeError('Missing migrated JJTV site settings; API remains stopped')
+        changed = []
+        for field in ('web_url','h5_url'):
+            existing = getattr(row,field)
+            _validated_site_url(existing or plan[field],migrated,'site_settings.'+field)
+            if not existing:
+                setattr(row,field,plan[field])
+                changed.append(field)
+        if changed:
+            row.version += 1
+            db.add(AuditLog(actor_type='system',actor_scope='system',tenant_id='jjtv',
+                            action=SITE_URLS_ACTION,target_type='tenant',target_id=None,
+                            payload={'tenant_code':'jjtv','fields':changed,'source':'verified_legacy_runtime'}))
+        result = dict(tenant_id='jjtv',changed_fields=changed,web_url=row.web_url,h5_url=row.h5_url)
+        db.commit()
+        return result
+
+
 def provision(engine, backup_dir):
     from app.modules.common.models import AuditLog
     from app.modules.ops.models import AdminUser
@@ -199,11 +285,13 @@ def run_upgrade(engine, backup_dir, upgrade):
     os.chmod(backup_dir,0o700)
     before = read_evidence(engine)
     private_json(backup_dir/'identity-before.json',before[0])
+    site_url_plan = _site_url_plan(engine,before[0])
     upgrade()
     migrated = read_evidence(engine)
     verify_preserved(before,migrated)
     # Every existing row, including content, is verified before additive seeds.
     private_json(backup_dir/'identity-after-migration.json',migrated[0])
+    site_urls = _initialize_site_urls(engine,before[0],migrated[0],site_url_plan)
     initialized,defaults = provision(engine,backup_dir)
     final = read_evidence(engine)
     # Provisioning changes only NEW migration-created accounts and adds an audit
@@ -218,6 +306,7 @@ def run_upgrade(engine, backup_dir, upgrade):
                    before_revisions=before[0]['revisions'],after_revisions=final[0]['revisions'],
                    original_accounts_preserved=len(set(before[1])-initialized),original_audit_rows_preserved=len(before[2]),
                    initialized_accounts=len(initialized),content_defaults=defaults,
+                   site_urls=site_urls,
                    credential_file='tenant-credentials.json',old_api_auto_restart=False)
     private_json(backup_dir/'upgrade-receipt.json',receipt)
     return receipt

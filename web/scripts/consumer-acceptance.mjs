@@ -1,3 +1,4 @@
+import { respondSiteBootstrap } from "../../tests/frontend-site-fixture.mjs";
 /** Browser contract and layout checks with explicit test fixtures; no provider calls. */
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
@@ -226,6 +227,7 @@ const archives = Array.from({ length: 26 }, (_, i) =>
 const supportDetail = () => ({ ticket, messages: replyMessages });
 await page.setRequestInterception(true);
 page.on("request", async (req) => {
+  if (await respondSiteBootstrap(req)) return;
   const url = new URL(req.url());
   if (url.pathname === "/fixtures/clip.webm") {
     mediaRequests.push({ scenario: feedEntitlement });

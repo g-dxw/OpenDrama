@@ -1,3 +1,4 @@
+import { respondSiteBootstrap } from "../../tests/frontend-site-fixture.mjs";
 /** Desktop language acceptance with explicit local API fixtures; no provider calls. */
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -96,7 +97,8 @@ const plans=[{...base,code:'week',name_en:'Server Weekly',name_zh:'运营周套�
 const packs=['Popular','Best value','Operator label'].map((badge,index)=>({code:'coins-'+index,name_en:'Server Coin Pack',name_zh:'运营金币包',price_cents:499,currency:'USD',coins:330,base_coins:300,bonus_coins:30,version_id:1,badge}));
 const tasks={balance:12345,checkin:{checked_today:false,streak:1,amount:30},items:[{code:'like_5',name:'Server task',description:'Operator task description',amount:20,progress:1000,target:5,claimed:false,metric:'like'}]};
 await page.setRequestInterception(true);
-page.on('request',request=>{
+page.on('request',async request=>{
+  if(await respondSiteBootstrap(request))return;
   const url=new URL(request.url());if(!url.pathname.startsWith('/v1/'))return request.continue();
   requests.push({path:url.pathname,query:url.search,method:request.method()});
   let status=200,data;const p=url.pathname;

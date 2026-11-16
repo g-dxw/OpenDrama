@@ -18,18 +18,10 @@ import {
   MOBILE_CHECKOUT_SURFACE_EVENT,
 } from "./surface";
 import { loadLocale, translate } from "./locale";
+import { readMobileRoute } from "../../h5/src/routes";
 export const DESKTOP_MIN_WIDTH = 1024;
 export function supportsMobile(hash: string) {
-  const [path, query = ""] = hash.replace(/^#\/?/, "").split("?");
-  const params = new URLSearchParams(query);
-  if (["", "home", "foryou", "rewards", "search", "premium"].includes(path))
-    return true;
-  if (path === "price") return params.get("tab") !== "coins";
-  if (/^watch\/[1-9]\d*$/.test(path))
-    return Number.isSafeInteger(Number(path.split("/")[1]));
-  return /^(account|me)(\/(history|favorites|likes|profile|ledger|orders|messages|settings))?$/.test(
-    path,
-  );
+  return readMobileRoute(hash).supported;
 }
 // Narrow desktop-only links keep their desktop layout instead of silently losing a route.
 export function desktopStyles(css: string) {
