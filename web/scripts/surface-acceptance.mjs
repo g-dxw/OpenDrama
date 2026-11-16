@@ -124,6 +124,7 @@ await page.evaluateOnNewDocument(() => {
   };
 });
 let activeMember = false,
+  membershipEnabled = true,
   playableFirst = false,
   media = Buffer.alloc(0),
   checkoutHold = null,
@@ -364,7 +365,7 @@ const profile = (token) => ({
 });
 await page.setRequestInterception(true);
 page.on("request", async (req) => {
-  if (await respondSiteBootstrap(req)) return;
+  if (await respondSiteBootstrap(req, { features: { membership: membershipEnabled } })) return;
   inFlight.add(req);
   const url = new URL(req.url());
   if (url.pathname === "/fixtures/clip.webm") {
@@ -1221,6 +1222,8 @@ try {
     "a late H5 checkout response for another token releases its pin without redirecting or overwriting the new order",
   );
   activeMember = true;
+  membershipEnabled = false;
+  const disabledPlanReads = calls.filter(call => call.path === "/v1/plans").length;
   await page.evaluate(() =>
     localStorage.setItem("minitv_h5_token", "mobile-token"),
   );
@@ -1229,6 +1232,8 @@ try {
   await page.reload({ waitUntil: "networkidle0" });
   await surface("mobile");
   await page.waitForSelector('[data-testid="premium-cancel"]');
+  assert.equal(calls.filter(call => call.path === "/v1/plans").length, disabledPlanReads);
+  assert.equal(await page.$('[data-testid="premium-extend"], [data-testid="premium-buy-pass"], [data-testid^="premium-buy-"]'), null);
   const cancellation = hold("cancel");
   await page.locator('[data-testid="premium-cancel"]').click();
   await cancellation.started;
@@ -1250,10 +1255,23 @@ try {
     ).length,
     profileReads,
   );
+  pass("disabled new membership sales preserve H5 renewal cancellation without loading plans; cancellation still ignores effects after unmount");
+  await goto("#premium");
+  await page.reload({ waitUntil: "networkidle0" });
+  await surface("desktop");
+  await page.waitForSelector('[data-testid="membership-cancel"]');
+  assert.equal(await page.$("#membership-plans"), null);
+  assert.equal(calls.filter(call => call.path === "/v1/plans").length, disabledPlanReads);
+  await page.locator('[data-testid="membership-cancel"]').click();
+  const desktopCancellation = hold("cancel");
+  await page.locator('[data-testid="membership-confirm-cancel"]').click();
+  await desktopCancellation.started;
+  await settleHeld(desktopCancellation);
+  await page.waitForSelector('[data-testid="membership-confirm-cancel"]', { hidden: true });
+  assert(calls.some(call => call.path === "/v1/billing/cancel" && call.headers.authorization === "Bearer desktop-token"));
+  pass("existing desktop subscribers can confirm cancellation while membership purchases are disabled");
   activeMember = false;
-  pass(
-    "membership cancellation uses the same mobile pin and ignores effects after the sheet unmounts",
-  );
+  membershipEnabled = true;
   await resize(390);
 
   const checkoutCalls = () =>

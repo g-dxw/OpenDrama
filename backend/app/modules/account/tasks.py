@@ -30,6 +30,7 @@ from app.modules.account.service import (
     _active_amount,
     _credit,
     la_today,
+    require_rewards,
 )
 from app.modules.ops.config_models import Checkin, RewardConfig, TaskClaim
 from app.modules.playback.models import PlaybackEvent
@@ -162,6 +163,7 @@ def tasks_overview(
 def claim_task(
     session: Session, user: User, code: str, *, day: date | None = None
 ) -> dict:
+    require_rewards(session)
     day = day or la_today(db=session)
     task = REWARD_TASK_BY_CODE.get(code)
     if task is None or task.get("period") != "daily":

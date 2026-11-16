@@ -16,6 +16,7 @@ import {
 } from "antd";
 import { api, errorText } from "../api";
 import { formatTime, useLoad } from "../hooks";
+import { cliCommands } from "../cli-commands";
 
 type KeyState = "active" | "expiring" | "expired" | "revoked";
 
@@ -67,11 +68,7 @@ const STATE_TAG: Record<KeyState, { color: string; label: string }> = {
   revoked: { color: "default", label: "已撤销" },
 };
 
-const shellQuote = (value: string) =>
-  "'" + value.replace(/'/g, "'\"'\"'") + "'";
-
-const CLI_ONE_LINER = (key: string) =>
-  `curl -fsSL ${shellQuote(window.location.origin + "/cli/install.sh")} | MINITV_CLI_BASE=${shellQuote(window.location.origin + "/cli")} MINITV_API_BASE=${shellQuote(API_BASE || window.location.origin)} MINITV_API_KEY=${shellQuote(key)} sh`;
+const { oneLiner: CLI_ONE_LINER } = cliCommands(window.location.origin, API_BASE);
 
 function scopeText(scopes: string[]): string {
   if (!scopes.length) return "跟随角色";

@@ -67,7 +67,7 @@ function Shell() {
   const [path, query = ""] = hash.replace(/^\/+/, "").split("?");
   const params = new URLSearchParams(query);
   const route = path.split("/");
-  const storeRoute = resolveStoreRoute(path, params.get("tab"), { coins: siteFeature("coins"), membership: siteFeature("membership") });
+  const storeRoute = resolveStoreRoute(path, params.get("tab"), { coins: siteFeature("coins"), membership: siteFeature("membership") }, Boolean(user?.membership?.active));
   const activeNavigation =
     ["account", "me"].includes(route[0]) || path === "rewards"
       ? "account"

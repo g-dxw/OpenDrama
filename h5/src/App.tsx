@@ -59,7 +59,7 @@ export function App() {
 }
 
 function AppShell() {
-  const { loginOpen, refresh, authError } = useAuth();
+  const { loginOpen, refresh, authError, user } = useAuth();
   const [locale, setLocale] = useState<Locale>(loadLocale);
   const [route, setRoute] = useState(readMobileRoute);
   const { tab, dramaId, searching } = route;
@@ -153,7 +153,7 @@ function AppShell() {
         </header>
       )}
       <main className={playing || tab === "foryou" ? "stage bleed" : "stage"}>
-        {((tab==="rewards"&&!siteFeature("rewards")) || (route.meSheet==="premium"&&!siteFeature("membership"))) ? (<div className="center" role="status"><h2>{locale==="zh"?"本站暂未开放此功能":"This feature is unavailable on this site."}</h2><a href="#home">{t(locale,"nav.home")}</a></div>) : !route.supported ? (
+        {((tab==="rewards"&&!siteFeature("rewards")) || (route.meSheet==="premium"&&!siteFeature("membership")&&!user?.membership?.active)) ? (<div className="center" role="status"><h2>{locale==="zh"?"本站暂未开放此功能":"This feature is unavailable on this site."}</h2><a href="#home">{t(locale,"nav.home")}</a></div>) : !route.supported ? (
           <div className="center">
             <h2>
               {locale === "zh" ? "在桌面版中继续" : "Continue in desktop view"}

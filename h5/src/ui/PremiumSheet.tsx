@@ -1,6 +1,6 @@
 import { RightsNotice } from "./RightsNotice";
 import type {ContentRights} from "../../../shared/consumer/types";
-import { getSite, siteMoney } from "../../../shared/site";
+import { getSite, siteMoney, siteFeature } from "../../../shared/site";
 import { useEffect, useRef, useState } from "react";
 import {
   ApiError,
@@ -136,12 +136,14 @@ export function PremiumSheet({
     if (mounted.current) setBusy(null);
   };
 
+  const purchasesEnabled = siteFeature("membership");
   const active = Boolean(membership?.active);
   const isPass = membership?.billing_mode === "one_time";
-  const showActive = active && !showPlans;
+  const showActive = active && (!purchasesEnabled || !showPlans);
 
   useEffect(() => {
     let alive = true;
+    if (!purchasesEnabled) { setPlans([]); setState("ready"); return; }
     getPlans()
       .then((payload) => {
         if (!alive) return;
@@ -155,10 +157,10 @@ export function PremiumSheet({
     return () => {
       alive = false;
     };
-  }, []);
+  }, [purchasesEnabled]);
 
   const subscribe = (code: string) => {
-    if (!mounted.current || ownedExpired) return;
+    if (!purchasesEnabled || !mounted.current || ownedExpired) return;
     awaitingAuth.current = status !== "user";
     setMobileCheckoutActive(pinOwner.current, true);
     requireAuth(() => {
@@ -412,7 +414,7 @@ export function PremiumSheet({
             <li>{t(locale, "premium_benefit_noads")}</li>
             <li>{t(locale, "premium_benefit_hd")}</li>
           </ul>
-          {mode === "one_time" && !isPass && (
+          {purchasesEnabled && mode === "one_time" && !isPass && (
             <button
               type="button"
               className="premium-secondary"
@@ -423,7 +425,7 @@ export function PremiumSheet({
             </button>
           )}
           {isPass ? (
-            <>
+            purchasesEnabled && <>
               <button
                 type="button"
                 className="premium-cta"

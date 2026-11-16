@@ -337,7 +337,7 @@ NGINX
     client_max_body_size 32m;
     resolver 127.0.0.11 valid=10s ipv6=off;
     location ~ "^/admin/v1/tenants/india-short-drama/india/admin/(uploads|covers|rights/evidence)/[A-Za-z0-9_-]{1,160}/content$" {
-        if ($host != jjtv-api.8jj.net) { return 404; }
+        if ($host !~ "^(jjtv-api[.]8jj[.]net|jjtv-admin[.]8jj[.]net)$") { return 404; }
         # PUT carries bytes; OPTIONS reaches the application's CORS middleware.
         limit_except PUT OPTIONS { deny all; }
         client_max_body_size 100m;

@@ -199,6 +199,9 @@ const pass = (name) => {
   assert.deepEqual(resolveStoreRoute("price", "coins", membersOnly), { kind: "coin_pack", available: false });
   assert.equal(resolveStoreRoute("price", null, { coins: false, membership: false }).available, false);
   assert.deepEqual(resolveStoreRoute("price", null, { coins: true, membership: true }), { kind: "membership", available: true });
+  assert.deepEqual(resolveStoreRoute("premium", null, { coins: false, membership: false }, true), { kind: "membership", available: true });
+  assert.deepEqual(resolveStoreRoute("price", null, { coins: false, membership: false }, true), { kind: "membership", available: true });
+  assert.deepEqual(resolveStoreRoute("coins", null, { coins: false, membership: false }, true), { kind: "coin_pack", available: false });
   pass("price entry resolves the same product for rendering and feature authorization across site configurations");
 }
 console.log(

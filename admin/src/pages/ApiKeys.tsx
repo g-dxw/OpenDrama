@@ -19,6 +19,7 @@ import { api, errorText } from "../api";
 import { useConfirm } from "../confirm";
 import { formatTime, useLoad } from "../hooks";
 import { ROLE_LABELS, useCanAdministerTenant, usePermission } from "../me";
+import { cliCommands } from "../cli-commands";
 
 type KeyState = "active" | "expiring" | "expired" | "revoked";
 
@@ -82,15 +83,12 @@ const TTL_OPTIONS = [
 ];
 
 /** One source of truth for the copy-paste commands (see docs/cli-execution-plan.md §3.7). */
-const shellQuote = (value: string) =>
-  "'" + value.replace(/'/g, "'\"'\"'") + "'";
-
-const CLI_ORIGIN = window.location.origin;
-const CLI_INSTALL = `curl -fsSL ${shellQuote(CLI_ORIGIN + "/cli/install.sh")} | MINITV_CLI_BASE=${shellQuote(CLI_ORIGIN + "/cli")} MINITV_API_BASE=${shellQuote(API_BASE || CLI_ORIGIN)} sh`;
-const CLI_SET_KEY = "minitv config set-key";
-const CLI_DOCTOR = "minitv doctor";
-const cliOneLiner = (key: string) =>
-  `curl -fsSL ${shellQuote(window.location.origin + "/cli/install.sh")} | MINITV_CLI_BASE=${shellQuote(window.location.origin + "/cli")} MINITV_API_BASE=${shellQuote(API_BASE || window.location.origin)} MINITV_API_KEY=${shellQuote(key)} sh`;
+const {
+  install: CLI_INSTALL,
+  setKey: CLI_SET_KEY,
+  doctor: CLI_DOCTOR,
+  oneLiner: cliOneLiner,
+} = cliCommands(window.location.origin, API_BASE);
 
 const STATE_TAG: Record<KeyState, { color: string; label: string }> = {
   active: { color: "green", label: "有效" },
@@ -691,7 +689,7 @@ export default function ApiKeys() {
           {
             title: "② 设置 API Key",
             code: CLI_SET_KEY,
-            hint: '隐藏输入、先校验再落盘；也可 echo "$KEY" | minitv config set-key --stdin。',
+            hint: `隐藏输入、先校验再落盘；也可 printf '%s' "$KEY" | ${CLI_SET_KEY} --stdin。`,
           },
           {
             title: "③ 自检",

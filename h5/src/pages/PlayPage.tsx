@@ -231,7 +231,6 @@ export function PlayPage({
       setPendingUnlock({ owner: currentOwner, episodeId: episode.id });
     });
 
-  const openMembership = () => { if (siteFeature("membership")) setPremiumOpen(true); };
 
   const unlockKeyFor = (episodeId: number) => {
     const existing = unlockKeys.current.get(episodeId);

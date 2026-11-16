@@ -232,6 +232,18 @@ def _credit(session: Session, user_id: int, amount: int, biz_type: str, biz_key:
     return after
 
 
+def rewards_enabled(session: Session) -> bool:
+    from app.modules.sites.service import features_for
+    from app.modules.tenancy.models import Tenant
+    tenant = session.get(Tenant, current_site(session))
+    return tenant is not None and features_for(session, tenant).get("rewards", False)
+
+
+def require_rewards(session: Session) -> None:
+    if not rewards_enabled(session):
+        raise AccountError(403, "Rewards are disabled for this site")
+
+
 def _active_amount(session: Session, code: str, today: date | None = None) -> int:
     today = today or la_today(db=session)
     row = session.scalar(
@@ -276,7 +288,8 @@ def _new_user(session: Session, *, email: str | None, display_name: str, avatar_
     session.flush()
     session.add(WalletAccount(user_id=user.id, balance=0))
     session.flush()
-    _credit(session, user.id, _active_amount(session, "register"), "register_reward", f"register:{user.id}")
+    if rewards_enabled(session):
+        _credit(session, user.id, _active_amount(session, "register"), "register_reward", f"register:{user.id}")
     return user
 
 
@@ -447,6 +460,7 @@ def oauth_login(session: Session, *, provider: str) -> None:
 
 
 def check_in(session: Session, user: User, *, today: date | None = None) -> dict:
+    require_rewards(session)
     today = today or la_today(db=session)
     existing = session.scalar(select(Checkin).where(Checkin.user_id == user.id, Checkin.day == today))
     if existing is not None:
@@ -469,6 +483,7 @@ def check_in(session: Session, user: User, *, today: date | None = None) -> dict
 
 
 def claim_ad(session: Session, user: User, *, today: date | None = None) -> dict:
+    require_rewards(session)
     today = today or la_today(db=session)
     existing = session.scalar(select(AdClaim).where(AdClaim.user_id == user.id, AdClaim.day == today))
     if existing is not None:
@@ -589,7 +604,7 @@ def bind_provider(session: Session, user: User, *, provider: str, provider_user_
     session.add(ThirdPartyIdentity(user_id=user.id, provider=provider, provider_user_id=provider_user_id))
     code = "bind_facebook" if provider == "facebook" else "bind_email" if provider == "email" else None
     rewarded = False
-    if code:
+    if code and rewards_enabled(session):
         _credit(session, user.id, _active_amount(session, code), code, f"{code}:{user.id}")
         rewarded = True
     session.commit()

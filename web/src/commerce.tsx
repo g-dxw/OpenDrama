@@ -399,6 +399,7 @@ export function Store({
             user.membership.billing_mode === "subscription" && (
               <button
                 className="button secondary"
+                data-testid="membership-cancel"
                 onClick={() => setCancelOpen(true)}
               >
                 {t("Cancel renewal")}</button>
@@ -662,6 +663,7 @@ export function Store({
             {t("Your membership benefits remain available until the end of your paid period.")}</p>
           <button
             className="button primary"
+            data-testid="membership-confirm-cancel"
             disabled={!!busy}
             onClick={() => {
               setBusy("cancel");

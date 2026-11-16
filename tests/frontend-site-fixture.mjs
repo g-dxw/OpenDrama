@@ -14,6 +14,7 @@ export function siteBootstrapFixture(url, overrides = {}) {
       customer_email: "", social_links: {}, seo_title: "JJTV", seo_description: "" },
     brand_version: 1, features, company: { name: "Browser acceptance fixture" },
     ...overrides,
+    features: { ...features, ...overrides.features },
   };
 }
 

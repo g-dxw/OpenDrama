@@ -59,6 +59,14 @@ router = APIRouter(prefix="/v1", tags=["public-flow"])
 def _registration_attribution(db,request,user_id,created=True):
     pid=request.headers.get('X-JJTV-Attribution','')[:100]
     if created and pid:
+        # Attribution is optional. Turning collection off must not turn a valid
+        # login/signup into an error, nor revive a disabled legacy capability.
+        from app.modules.tenancy.models import Tenant
+        from app.modules.sites.service import features_for
+        tenant_id = db.info.get('content_tenant_id')
+        tenant = db.get(Tenant, tenant_id) if tenant_id == 'jjtv' else None
+        if tenant is None or not features_for(db, tenant).get('attribution', False):
+            return
         from app.modules.attribution.service import record_registration
         record_registration(db,user_id=user_id,pid=pid,context={'user_agent':request.headers.get('user-agent','')[:500]},client_id=request.headers.get('X-Device-Id',''))
         db.commit()
@@ -339,7 +347,10 @@ def ledger(user: User = Depends(_require_user), db: Session = Depends(get_db)):
 
 @router.post("/me/checkin")
 def checkin(user: User = Depends(_require_user), db: Session = Depends(get_db)):
-    return accounts.check_in(db, user)
+    try:
+        return accounts.check_in(db, user)
+    except AccountError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
 @router.post("/me/ad-reward")
