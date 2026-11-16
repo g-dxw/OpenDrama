@@ -43,7 +43,7 @@ for(const locale of languages){
   }
   check(locale+' complete vocabulary ('+keys.length+' keys)');
 }
-for(const file of ['App','browse','components','account','support','login','player','commerce']){
+for(const file of ['App','browse','components','account','support','login','player','desktop-video-controls','commerce']){
   const source=await fs.readFile(path.join(ROOT,'src',file+'.tsx'),'utf8');
   const ast=ts.createSourceFile(file+'.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
   const issues=[];
@@ -56,7 +56,7 @@ for(const file of ['App','browse','components','account','support','login','play
   }
   walk(ast);assert.deepEqual(issues,[],file+' contains unlocalized interface text');
 }
-check('all eight desktop modules use declared UI keys');
+check('all desktop modules use declared UI keys');
 const helperSource=await fs.readFile(path.join(ROOT,'src','plan-display.ts'),'utf8');
 const helper=await transformWithEsbuild(helperSource,'plan-display.ts',{loader:'ts',format:'esm'});
 const {planPriceDisplay}=await import('data:text/javascript;base64,'+Buffer.from(helper.code).toString('base64'));

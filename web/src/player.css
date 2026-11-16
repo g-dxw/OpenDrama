@@ -484,6 +484,7 @@
 .for-you-page .feed-caption { bottom: 92px; }
 .pc-video-player > .loading { position: absolute; inset: 0; z-index: 8; display: grid; place-content: center; gap: 12px; text-align: center; pointer-events: none; }
 .pc-video-player > .video-error { z-index: 9; }
+.for-you-page .pc-video-player > .video-error { z-index: 3; }
 .pc-big-play {
   position: absolute;
   inset: 0;
