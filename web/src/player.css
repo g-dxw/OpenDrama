@@ -535,9 +535,9 @@
 .pc-player-time { padding-left: 1px; font-size: 10px; line-height: 16px; font-variant-numeric: tabular-nums; white-space: nowrap; color: #ffffffeb; }
 .pc-transport-spacer { flex: 1; min-width: 0; }
 .pc-volume { position: relative; flex-shrink: 0; }
-.pc-volume-popover { position: absolute; bottom: 42px; left: 50%; width: 108px; padding: 5px 12px; border: 1px solid #ffffff26; border-radius: 8px; background: #151113ed; opacity: 0; pointer-events: none; transform: translateX(-50%); transition: opacity .15s; }
+.pc-volume-popover { position: absolute; bottom: 38px; left: 50%; box-sizing: border-box; width: 40px; padding: 10px 7px; border: 1px solid #ffffff26; border-radius: 8px; background: #151113ed; opacity: 0; pointer-events: none; transform: translateX(-50%); transition: opacity .15s; }
 .pc-volume:hover .pc-volume-popover, .pc-volume:focus-within .pc-volume-popover { opacity: 1; pointer-events: auto; }
-.pc-volume input[type=range] { appearance: auto; -webkit-appearance: auto; accent-color: #fff; }
+.pc-volume input[type=range] { appearance: auto; -webkit-appearance: auto; width: 24px; height: 96px; min-height: 96px; writing-mode: vertical-lr; direction: rtl; accent-color: #fff; }
 .pc-player-notice { position: absolute; z-index: 8; left: 16px; right: 16px; bottom: 90px; margin: 0; padding: 9px 12px; border-radius: 8px; background: #20191de6; color: #fff; font-size: 12px; line-height: 1.5; text-align: center; }
 .pc-settings-portal .modal-backdrop { z-index: 100; background: #000b; backdrop-filter: blur(5px); }
 .pc-player-settings.modal { box-sizing: border-box; width: min(480px, calc(100vw - 32px)); max-width: none; padding: 0 18px 16px; border: 1px solid #ffffff1c; border-radius: 16px; background: #181315; color: #fff; box-shadow: 0 22px 80px #000a; }
