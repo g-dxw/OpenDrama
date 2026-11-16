@@ -22,7 +22,7 @@ export function useTenantLoginOptions(enabled = true): Directory {
         if (!Array.isArray(data?.items) || !data.items.every((item: TenantLoginOption) => typeof item?.name === 'string' && typeof item?.code === 'string' && /^[a-z0-9][a-z0-9-]{1,63}$/.test(item.code))) throw new Error('Invalid tenant directory');
         if (!controller.signal.aborted) setItems(data.items);
       } catch (cause) {
-        if (!controller.signal.aborted) { setItems([]); setError(cause instanceof ApiError ? errorText(cause) : '租户列表暂时无法加载，请重试。'); }
+        if (!controller.signal.aborted) { setItems([]); setError(cause instanceof ApiError ? errorText(cause) : '平台列表暂时无法加载，请重试。'); }
       } finally { if (!controller.signal.aborted) setLoading(false); }
     })();
     return () => controller.abort();
@@ -31,11 +31,11 @@ export function useTenantLoginOptions(enabled = true): Directory {
 }
 export default function TenantLoginSelector({ directory, value, onChange, id }: { directory: Directory; value?: string; onChange?: (code: string) => void; id?: string }) {
   return <Space direction="vertical" size="small" style={{ width: '100%' }}>
-    <Select id={id} value={value} onChange={onChange} aria-label="选择租户" size="large" style={{ width: '100%', height: 44 }}
+    <Select id={id} value={value} onChange={onChange} aria-label="选择平台" size="large" style={{ width: '100%', height: 44 }}
       showSearch optionFilterProp="label" loading={directory.loading} disabled={directory.loading || !!directory.error || !directory.items.length}
-      placeholder={directory.loading ? '正在加载租户…' : '请选择所属租户'}
-      notFoundContent="没有匹配的租户" options={directory.items.map(item => ({ value: item.code, label: item.name + '（' + item.code + '）' }))} />
+      placeholder={directory.loading ? '正在加载平台…' : '请选择所属平台'}
+      notFoundContent="没有匹配的平台" options={directory.items.map(item => ({ value: item.code, label: item.name + '（' + item.code + '）' }))} />
     {directory.error && <Alert showIcon type="error" message={directory.error} action={<Button onClick={directory.retry} style={{ minHeight: 44 }}>重新加载</Button>} />}
-    {!directory.loading && !directory.error && !directory.items.length && <Typography.Text type="secondary">当前没有开放登录的租户，请联系管理员。</Typography.Text>}
+    {!directory.loading && !directory.error && !directory.items.length && <Typography.Text type="secondary">当前没有开放登录的平台，请联系管理员。</Typography.Text>}
   </Space>;
 }

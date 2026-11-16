@@ -123,7 +123,7 @@ jobs:
         env:
           CHROME_PATH: /usr/bin/google-chrome
           SHOTS_DIR: ${{ runner.temp }}/jjtv-admin-acceptance
-        run: npm run accept:parity && npm run accept:commerce
+        run: npm run accept:parity && npm run accept:commerce && npm run accept:login
       - name: Keep browser acceptance evidence
         if: always()
         uses: actions/upload-artifact@v4

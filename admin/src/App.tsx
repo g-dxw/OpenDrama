@@ -86,7 +86,7 @@ export default function App() {
 }
 function PlatformApplication({ identity, onLogout, loggingOut, onPassword }: { identity: Identity; onLogout: () => void; loggingOut: boolean; onPassword: () => void }) {
   const location = useLocation(); const navigate = useNavigate(); const notice = new URLSearchParams(location.search).get('notice');
-  return <BackOfficeShell brand="MiniTV 公司总控" items={PLATFORM_NAV} route={location.pathname} scope="platform" onNavigate={key => navigate(key)} accountName={identity.user.display_name || identity.user.username} accountLabel="平台管理员" onLogout={onLogout} loadingLogout={loggingOut} onPassword={onPassword}>
+  return <BackOfficeShell brand="OpenDrama 公司总控" items={PLATFORM_NAV} route={location.pathname} scope="platform" onNavigate={key => navigate(key)} accountName={identity.user.display_name || identity.user.username} accountLabel="平台管理员" onLogout={onLogout} loadingLogout={loggingOut} onPassword={onPassword}>
     {notice === 'support-ended' && <Alert showIcon type="info" message="临时租户访问已结束，已返回平台管理。" style={{ marginBottom: 16 }} />}
     <Routes><Route path="/tenants" element={<Tenants />} /><Route path="/library" element={<LibraryPage platform />} /><Route path="/stripe-accounts" element={<StripeAccountsPage platform />} /><Route path="/audit" element={<PlatformAudit />} /><Route path="*" element={<Navigate to="/tenants" replace />} /></Routes>
   </BackOfficeShell>;

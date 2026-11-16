@@ -252,7 +252,7 @@ def bootstrap(request: Request, response: Response, preview_token: str | None = 
         published = data["brand"]
     import os
     result = dict(tenant=site_out(db, tenant), brand=published, brand_version=row.version,
-                  features=features_for(db, tenant), company=dict(name=os.environ.get("COMPANY_NAME", "MiniTV")))
+                  features=features_for(db, tenant), company=dict(name=os.environ.get("COMPANY_NAME", "OpenDrama")))
     response.headers["Cache-Control"] = "private, no-store"
     db.commit()
     return result

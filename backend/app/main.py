@@ -1,4 +1,4 @@
-"""MiniTV multi-site API and installation health endpoints."""
+"""OpenDrama multi-site API and installation health endpoints."""
 
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ async def lifespan(application):
     finally:
         stop_worker()
 
-app = FastAPI(title="JJTV API", version="0.0.0", lifespan=lifespan)
+app = FastAPI(title="OpenDrama API", version="0.0.0", lifespan=lifespan)
 
 _DEFAULT_ORIGINS = [
     "http://localhost:5173",

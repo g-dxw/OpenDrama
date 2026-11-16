@@ -1,5 +1,5 @@
 #!/bin/sh
-# MiniTV CLI installer.
+# OpenDrama CLI installer.
 #
 #   curl -fsSL https://YOUR_INSTANCE/cli/install.sh | MINITV_CLI_BASE=https://YOUR_INSTANCE/cli MINITV_API_BASE=https://YOUR_INSTANCE sh
 #   curl -fsSL https://YOUR_INSTANCE/cli/install.sh | MINITV_API_KEY='mk_live_...' sh

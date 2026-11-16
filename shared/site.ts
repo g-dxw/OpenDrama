@@ -47,7 +47,7 @@ export function contrastText(hex: string) {
     : "#ffffff";
 }
 export function siteName() {
-  return current?.brand.name || current?.tenant.name || "MiniTV";
+  return current?.brand.name || current?.tenant.name || "OpenDrama";
 }
 export function siteFeature(key: string) {
   return current?.features[key] === true;
