@@ -15,14 +15,15 @@ const executablePath=process.env.CHROME_PATH||(process.platform==='win32'?'C:/Pr
 const browser=await puppeteer.launch({executablePath,headless:true,args:['--no-first-run','--no-default-browser-check']});
 const page=await browser.newPage();await page.setViewport({width:1440,height:1000});
 const requests=[],errors=[],checks=[];let readOnly=false,refundAttempts=0,packSaveFailures=1,stripeTestFailures=1;
+let siteCurrency="USD",siteTimezone="UTC";
 let refundState=null,orderDetailFailures=0;
 let membershipResolution=null,resolutionAttempts=0,resolutionMode="unknown",releaseResolution=null;
 const refundUnknownError='Fixture refund outcome unknown; sources remain frozen';
 const pendingRefundReason='Original provider refund is not identifiable; keep frozen for manual reconciliation';
 const manualRefundReason='Refund identity or full amount does not match the frozen request; manual reconciliation required';
-const menus=['/coin-packs','/stripe-accounts','/plans','/finance','/coin-ledger'];
-const permissions=['coin_packs.view','coin_packs.manage','stripe.view','stripe.manage','plans.view','plans.manage','finance.view','finance.refund','coins.view','coins.export'];
-const identity=()=>({account_scope:'tenant',session_kind:'normal',is_platform_admin:false,is_tenant_admin:!readOnly,user:{id:1,username:'fixture-admin',display_name:'Commerce QA',role:'admin',must_change_password:false},tenant:{id:'jjtv',code:'jjtv',name:'JJTV 自营',kind:'native',status:'active'},role_name:'验收',permissions:readOnly?permissions.filter(p=>p.endsWith('.view')):permissions,menu_keys:menus,enabled_modules:['coin_packs','stripe','plans','finance','coins']});
+const menus=['/dashboard','/coin-packs','/stripe-accounts','/plans','/finance','/coin-ledger'];
+const permissions=['dashboard.view','coin_packs.view','coin_packs.manage','stripe.view','stripe.manage','plans.view','plans.manage','finance.view','finance.refund','coins.view','coins.export'];
+const identity=()=>({account_scope:'tenant',session_kind:'normal',is_platform_admin:false,is_tenant_admin:!readOnly,user:{id:1,username:'fixture-admin',display_name:'Commerce QA',role:'admin',must_change_password:false},tenant:{id:'jjtv',code:'jjtv',name:'JJTV 自营',kind:'native',status:'active',currency:siteCurrency,timezone:siteTimezone},role_name:'验收',permissions:readOnly?permissions.filter(p=>p.endsWith('.view')):permissions,menu_keys:menus,enabled_modules:['coin_packs','stripe','plans','finance','coins']});
 const pack={code:'starter',name_en:'Starter coins',name_zh:'测试金币包',currency:'USD',status:'active',price_cents:499,base_coins:500,bonus_coins:50,version:2,sort_order:0,badge:'popular'};
 const plan={code:'monthly',name_en:'Monthly',name_zh:'月度会员',currency:'USD',status:'active',price_cents:999,base_coins:300,bonus_coins:30,version:3,benefits:{items:['Member access','Monthly coins'],best:true,custom:'keep-this'}};
 const account={code:'fixture',name:'Stripe fixture',status:'active',is_default:true,secret_key_configured:true,webhook_secret_configured:true,remote_id:'acct_fixture',livemode:false};
@@ -34,6 +35,8 @@ await page.setRequestInterception(true);page.on('pageerror',error=>errors.push(e
 page.on('request',async request=>{const url=new URL(request.url()),p=url.pathname;if(!p.startsWith('/admin/v1/')&&!p.startsWith('/tenant/v1/')){if(url.origin===origin||url.protocol==='data:'||url.protocol==='about:')await request.continue();else await request.abort();return;}
  let body={};try{body=JSON.parse(request.postData()||'{}');}catch{}requests.push({path:p,method:request.method(),query:Object.fromEntries(url.searchParams),body,headers:request.headers()});let result,status=200;
  if(p==='/tenant/v1/context')result=identity();
+ else if(p==='/tenant/v1/site'){status=403;result={detail:'Tenant administrator required'};}
+ else if(p==='/admin/v1/dashboard')result={day:'2026-11-14',revenue_cents:1999,overview:{lifetime_revenue_cents:1999},trend:[],previous:{}};
  else if(p==='/admin/v1/coin-packs'){if(request.method()==='POST')result={...pack,...body};else result={items:[pack]};}
  else if(p==='/admin/v1/coin-packs/starter'){if(packSaveFailures-- >0){status=409;result={detail:'Fixture version conflict; review then retry'};}else{Object.assign(pack,body);result=pack;}}
  else if(p==='/admin/v1/coins/ladder')result={base_coins_per_usd:100,items:[]};
@@ -294,6 +297,15 @@ try {
  assert.equal(resolutionPosts().length,5);
  pass('required=false alone preserves an unknown intent; explicit same-order resolved evidence retires it without a new write');
  readOnly=true;await go('/plans');await text('月度会员');assert.equal(await page.$$('.admin-plan-card .ant-switch').then(x=>x.length),0);assert.equal(await page.$$('.admin-plan-card .ant-btn-block').then(x=>x.length),0);pass('read-only membership cards have no status or edit controls');await go('/coin-packs');await text('测试金币包');assert.equal(await page.evaluate(()=>[...document.querySelectorAll('button')].some(e=>e.textContent.trim()==='新增金币包')),false);await go('/finance');await click('详情 / 退款');await text('本订单权益来源');assert.equal(await page.evaluate(()=>[...document.querySelectorAll('button')].some(e=>e.textContent.trim()==='查询 / 重试本笔退款')),false);pass('read-only role sees evidence without create or refund controls');
+ siteCurrency='JPY';siteTimezone='Asia/Tokyo';await go('/dashboard');await text('Asia/Tokyo');
+ const expectedMoney=currency=>new Intl.NumberFormat('zh-CN',{style:'currency',currency}).format(1999/10**new Intl.NumberFormat('zh-CN',{style:'currency',currency}).resolvedOptions().maximumFractionDigits);
+ await text(expectedMoney('JPY'));
+ const staffFormat=()=>page.evaluate(async()=>{const f=await import('/src/site-format.ts');return {currency:f.operatorCurrency(),timezone:f.operatorTimezone(),date:f.operatorDate('2026-11-14T00:00:00Z')};});
+ assert.deepEqual(await staffFormat(),{currency:'JPY',timezone:'Asia/Tokyo',date:new Intl.DateTimeFormat('zh-CN',{dateStyle:'medium',timeStyle:'short',timeZone:'Asia/Tokyo'}).format(new Date('2026-11-14T00:00:00Z'))});
+ siteCurrency='EUR';siteTimezone='Europe/Paris';await page.evaluate(()=>window.dispatchEvent(new Event('focus')));await text('Europe/Paris');await text(expectedMoney('EUR'));
+ assert.deepEqual(await staffFormat(),{currency:'EUR',timezone:'Europe/Paris',date:new Intl.DateTimeFormat('zh-CN',{dateStyle:'medium',timeStyle:'short',timeZone:'Europe/Paris'}).format(new Date('2026-11-14T00:00:00Z'))});
+ assert.equal(requests.filter(r=>r.path==='/tenant/v1/site').length,0);
+ pass('non-admin staff use authenticated identity for currency and timezone, including zero-decimal JPY and refreshed site settings without privileged reads');
  assert.deepEqual(errors,[]);assert(requests.filter(r=>r.method==='POST'||r.method==='PATCH').every(r=>r.headers.authorization==='Bearer fixture-admin-token'&&r.headers['x-jjtv-tenant']==='jjtv'));pass('all actions are authenticated and tenant scoped; no browser errors');
  await fs.writeFile(path.join(OUT,'commerce-results.json'),JSON.stringify({checks,apiMode:'explicit fixtures; no real provider writes',screenshots:OUT},null,2));console.log(JSON.stringify({passed:checks.length,screenshots:OUT}));
 } catch(error) {await fs.writeFile(path.join(OUT,'commerce-failure.json'),JSON.stringify({error:String(error),body:await page.evaluate(()=>document.body.innerText),requests:requests.slice(-8),errors},null,2));throw error;} finally {await browser.close();await server.close();}

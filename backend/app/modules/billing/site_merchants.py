@@ -80,7 +80,10 @@ def event_order(db,code,payload):
     obj=(payload.get('data') or {}).get('object') or {}
     meta=obj.get('metadata') or {}
     parent=((obj.get('parent') or {}).get('subscription_details') or {})
-    number=meta.get('commerce_order_no') or (parent.get('metadata') or {}).get('commerce_order_no')
+    # First invoices can precede checkout completion. Use the same legacy and
+    # parent metadata shapes as settlement, then verify the stored merchant.
+    details_meta=parent.get('metadata') or (obj.get('subscription_details') or {}).get('metadata') or {}
+    number=meta.get('commerce_order_no') or details_meta.get('commerce_order_no')
     conditions=[]
     if number:
         identified=db.scalar(select(Order).where(Order.order_no==number).execution_options(include_all_tenants=True))

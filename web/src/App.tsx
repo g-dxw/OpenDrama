@@ -1,3 +1,4 @@
+import { resolveStoreRoute } from "./store-route";
 import { getSite, siteName, siteLink, siteFeature, siteStorageKey } from "../../shared/site";
 import { LocaleProvider, useLocale } from "./locale";
 import { LanguageMenu } from "./language-menu";
@@ -66,6 +67,7 @@ function Shell() {
   const [path, query = ""] = hash.replace(/^\/+/, "").split("?");
   const params = new URLSearchParams(query);
   const route = path.split("/");
+  const storeRoute = resolveStoreRoute(path, params.get("tab"), { coins: siteFeature("coins"), membership: siteFeature("membership") });
   const activeNavigation =
     ["account", "me"].includes(route[0]) || path === "rewards"
       ? "account"
@@ -98,11 +100,7 @@ function Shell() {
   else if (path === "premium" || path === "coins" || path === "price")
     content = (
       <Store
-        kind={
-          path === "coins" || params.get("tab") === "coins" || (path==="price"&&!siteFeature("membership")&&siteFeature("coins"))
-            ? "coin_pack"
-            : "membership"
-        }
+        kind={storeRoute.kind}
         sourceDramaId={Number(params.get("drama")) || undefined}
         sourceEpisodeId={Number(params.get("episode")) || undefined}
       />
@@ -124,7 +122,7 @@ function Shell() {
   else if (route[0] === "legal") content = <Legal slug={route[1] || "terms"} />;
   else if (path === "about" || path === "download") content = <About />;
   else content = <Home />;
-  if ((["coins","price","premium"].includes(path) && !siteFeature(path === "coins" || params.get("tab") === "coins" ? "coins" : "membership")) || (path === "rewards" && !siteFeature("rewards")) || (path === "support" && !siteFeature("support"))) content = <Failure message={t("This feature is unavailable on this site.")} />;
+  if ((["coins","price","premium"].includes(path) && !storeRoute.available) || (path === "rewards" && !siteFeature("rewards")) || (path === "support" && !siteFeature("support"))) content = <Failure message={t("This feature is unavailable on this site.")} />;
   return (
     <div className="consumer-app">
       {new URLSearchParams(window.location.search).has("preview_token") && <div className="site-preview-banner" role="status">{t("Brand preview — this draft is not published.")}</div>}

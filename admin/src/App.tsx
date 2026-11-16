@@ -59,10 +59,10 @@ function validIdentity(value: Identity): boolean {
 export default function App() {
   const token = getToken(); const [identity, setIdentity] = useState<Identity | null>(null); const [state, setState] = useState<'loading' | 'ready' | 'failed'>(token ? 'loading' : 'ready');
   const [error, setError] = useState(''); const [logoutLoading, setLogoutLoading] = useState(false); const [passwordOpen, setPasswordOpen] = useState(false);
-  const acceptIdentity = useCallback((value: Identity) => { if (!validIdentity(value)) throw new Error('登录身份与当前入口不匹配，请从正确入口重新登录。'); setCurrentTenantId(value.tenant?.id || ''); setIdentity(value); setState('ready'); setError(''); }, []);
+  const acceptIdentity = useCallback((value: Identity) => { if (!validIdentity(value)) throw new Error('登录身份与当前入口不匹配，请从正确入口重新登录。'); setCurrentTenantId(value.tenant?.id || ''); setOperatorSite(value.tenant ?? {}); setIdentity(value); setState('ready'); setError(''); }, []);
   const refresh = useCallback(async () => { const value = await api<Identity>(contextApi() + '/context'); acceptIdentity(value); }, [acceptIdentity]);
   useEffect(() => {
-    if (!token) { setIdentity(null); setState('ready'); if (CURRENT_ENTRY.kind === 'support') forceReauth('support_expired'); return; }
+    if (!token) { setOperatorSite({}); setIdentity(null); setState('ready'); if (CURRENT_ENTRY.kind === 'support') forceReauth('support_expired'); return; }
     let live = true; setState('loading');
     void api<Identity>(contextApi() + '/context').then(value => { if (live) acceptIdentity(value); }).catch(e => { if (live) { setError(errorText(e)); setState('failed'); } });
     return () => { live = false; };
@@ -70,7 +70,7 @@ export default function App() {
   const logout = useCallback(async () => {
     setLogoutLoading(true);
     try { await api(contextApi() + '/auth/logout', { method: 'POST', body: '{}' }); } catch { /* Local logout always completes. */ }
-    completeLogout();
+    setOperatorSite({}); completeLogout();
   }, []);
   if (CURRENT_ENTRY.kind === 'choose') return <EntryChooser />;
   if (!token) return CURRENT_ENTRY.kind === 'support' ? <div className="entry-page"><Spin /></div> : <Login onLogin={acceptIdentity} />;
@@ -93,7 +93,6 @@ function PlatformApplication({ identity, onLogout, loggingOut, onPassword }: { i
 }
 function TenantApplication({ identity, refresh, onLogout, loggingOut, onPassword }: { identity: Identity; refresh: () => Promise<void>; onLogout: () => void; loggingOut: boolean; onPassword?: () => void }) {
   const location = useLocation(); const navigate = useNavigate(); const [refreshing, setRefreshing] = useState(false); const [error, setError] = useState('');
-  useEffect(()=>{let active=true;void api<{timezone:string;currency:string}>('/tenant/v1/site').then(value=>{if(active)setOperatorSite(value);}).catch(()=>{});return()=>{active=false;};},[identity.tenant?.id]);
   const tenant = identity.tenant!; const support = identity.session_kind === 'support'; const systemAdmin = identity.is_tenant_admin || support; const partner = identity.user.role === 'partner';
   const current: Tenant = { ...tenant, permissions: identity.permissions, menu_keys: identity.menu_keys, role_name: identity.role_name };
   const refreshPermissions = useCallback(async () => { setRefreshing(true); try { await refresh(); setError(''); } catch (e) { setError(errorText(e)); } finally { setRefreshing(false); } }, [refresh]);

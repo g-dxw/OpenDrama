@@ -795,7 +795,8 @@ try {
   );
   await goto("?pid=landing#watch/1?episode=10&return=price");
   await surface("mobile");
-  await page.waitForSelector(".ep-bar");
+  await page.keyboard.press("Tab");
+  await page.waitForSelector('[data-player-action="episodes"]', { visible: true });
   await page.$eval(
     ".play",
     (element) => (element.dataset.surfaceSentinel = "kept"),
@@ -803,11 +804,9 @@ try {
   const beforePlayReads = calls.filter(
     (call) => call.path === "/v1/dramas/1/play",
   ).length;
-  await page.click(".ep-bar");
+  await page.click('[data-player-action="episodes"]');
   await page.waitForSelector(".ep-grid button");
-  await page.$$eval(".ep-grid button", (buttons) =>
-    buttons.find((button) => button.textContent.trim() === "2").click(),
-  );
+  await page.click('.ep-grid [data-episode-id="11"]');
   await page.waitForFunction(
     () =>
       new URLSearchParams(location.hash.split("?")[1]).get("episode") ===

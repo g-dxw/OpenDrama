@@ -560,7 +560,7 @@ export function PlayPage({
           </span>
           <span className="rail-label">{t(locale, "share")}</span>
         </button>
-        <button type="button" className="rail-btn" onClick={() => setSheet("episodes")}
+        <button type="button" className="rail-btn" data-player-action="episodes" onClick={() => setSheet("episodes")}
           aria-label={t(locale, "all_episodes_bar", { count: payload.items.length })}>
           <span className="rail-icon"><IconEpisodes size={28} /></span>
           <span className="rail-label">{current.episode_number}/{episodeTotal}</span>
@@ -870,7 +870,7 @@ function EpisodeSheet({ payload, index, tab, locale, onTab, onPick, onClose }: {
               ? Math.min(1, episode.progress_seconds / episode.duration_seconds) : 0;
             const state = episode.locked ? "locked" : episode.completed ? "done" : ratio > 0 ? "partial" : "";
             const stateLabel = t(locale, episode.locked ? "player.locked" : episode.completed ? "player.watched" : ratio > 0 ? "player.watching" : episode.free ? "player.free" : "player.available");
-            return <button type="button" key={episode.id} ref={position === index ? currentRef : undefined}
+            return <button type="button" key={episode.id} data-episode-id={episode.id} ref={position === index ? currentRef : undefined}
               className={(position === index ? "on " : "") + state} aria-current={position === index ? "true" : undefined}
               aria-label={t(locale, "episode_short", { number: episode.episode_number }) + " · " + stateLabel + (position === index ? " · " + t(locale, "player.current") : "")}
               onClick={() => onPick(position)}>

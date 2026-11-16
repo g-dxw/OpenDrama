@@ -32,7 +32,7 @@ class PackIn(BaseModel):
     name_en:str=Field(min_length=1,max_length=64)
     name_zh:str=Field(default='',max_length=64)
     price_cents:int=Field(ge=50)
-    currency:str='USD'
+    currency:str|None=Field(default=None,pattern='^[A-Z]{3}$')
     base_coins:int=Field(ge=1)
     bonus_coins:int=Field(default=0,ge=0)
     sort_order:int=Field(default=0,ge=0)
@@ -142,7 +142,7 @@ def admin_packs(user=Depends(require_admin),db:Session=Depends(get_db)):return {
 def create_pack(body:PackIn,request:Request,user=Depends(require_admin),db:Session=Depends(get_db)):
     require_permission(request,'coin_packs.manage')
     if db.scalar(select(CoinPack).where(CoinPack.code==body.code)):raise HTTPException(409,'pack code already exists')
-    return call(db,service.save_pack,db,body.code,body.model_dump(exclude={'code'}),user.id)
+    return call(db,service.save_pack,db,body.code,body.model_dump(exclude={'code'},exclude_none=True),user.id)
 @admin_router.patch('/coin-packs/{code}')
 def patch_pack(code:str,body:PackPatch,request:Request,user=Depends(require_admin),db:Session=Depends(get_db)):
     require_permission(request,'coin_packs.manage')
