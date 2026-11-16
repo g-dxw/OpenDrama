@@ -368,20 +368,30 @@ def assert_no_renewing_subscription(db,user_id):
             raise BillingError(409,'Original subscription cancellation is not confirmed; retry or contact support before another purchase')
         if not remote['cancel_at_period_end']:raise BillingError(409,'an active renewing subscription already exists; manage it before starting another')
 
-def require_new_sale(db,product_type):
-    from app.modules.sites.service import features_for,lock_site_settings
+_SALE_CAPABILITIES={'membership':('plans','membership'),'coin_pack':('coin_packs','coins')}
+
+
+def sale_allowed(db,product_type):
+    """Read the effective sales capability without taking checkout locks."""
+    from app.modules.sites.service import features_for
     from app.modules.tenancy.consumer_scope import current_site
     from app.modules.tenancy.models import Tenant
     from app.modules.tenancy.modules import enabled_modules
-    product_keys={'membership':('plans','membership'),'coin_pack':('coin_packs','coins')}
-    if product_type not in product_keys:raise BillingError(422,'unknown product type')
-    site=current_site(db)
+    keys=_SALE_CAPABILITIES.get(product_type)
+    if keys is None:return False
+    tenant=db.get(Tenant,current_site(db))
+    module,feature=keys
+    return tenant is not None and module in enabled_modules(db,tenant) and features_for(db,tenant).get(feature,False)
+
+
+def require_new_sale(db,product_type):
+    from app.modules.sites.service import lock_site_settings
+    from app.modules.tenancy.consumer_scope import current_site
+    if product_type not in _SALE_CAPABILITIES:raise BillingError(422,'unknown product type')
     # Serialize first-order currency snapshots with both site settings editors.
     # Hold their common Tenant -> SiteSettings locks until the order is durable.
-    lock_site_settings(db,site)
-    tenant=db.get(Tenant,site)
-    module,feature=product_keys[product_type]
-    if tenant is None or module not in enabled_modules(db,tenant) or not features_for(db,tenant).get(feature,False):
+    lock_site_settings(db,current_site(db))
+    if not sale_allowed(db,product_type):
         raise BillingError(403,'New '+('membership' if product_type=='membership' else 'coin pack')+' purchases are disabled for this site')
 
 

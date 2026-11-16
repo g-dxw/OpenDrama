@@ -795,3 +795,95 @@ def test_abandon_new_transfer_keeps_an_approved_imported_asset_unchanged(library
     assert site_episode.media_asset_id == original['asset_id']
     snapshot = env['db'].scalar(select(LibraryRevision).where(LibraryRevision.library_title_id == title['id'], LibraryRevision.version == title['version']))
     assert snapshot.snapshot['episodes'][0]['media_asset_id'] == original['asset_id']
+
+
+def set_library_gate(env, source, enabled):
+    from app.modules.sites.models import SiteSettings
+    from app.modules.tenancy.models import TenantModule
+    db, site = env['db'], env['sites'][0]
+    db.expire_all()
+    if source == 'feature':
+        settings = db.get(SiteSettings, site.id)
+        settings.features = dict(settings.features or {}, library=enabled)
+    else:
+        db.get(TenantModule, (site.id, 'dramas')).enabled = enabled
+    db.commit()
+
+
+@pytest.mark.parametrize('source', ['feature', 'module'])
+@pytest.mark.parametrize('adopt', [False, True])
+def test_new_import_respects_effective_library_gate_without_affecting_other_site(library_env, source, adopt):
+    env = library_env
+    title, _, _ = approved(env)
+    set_library_gate(env, source, False)
+    # Platform preallocation remains available while site imports are disabled.
+    first_grant, second_grant = grant(env, title), grant(env, title, 1)
+    body = dict(grant_id=first_grant['id'], adopt_new_version=adopt)
+    denied = env['client'].post(f"{TENANT}/{title['id']}/import", json=body, headers=env['headers'][0])
+    assert denied.status_code == 403, denied.text
+    if source == 'feature':
+        assert denied.json()['detail']['code'] == 'feature_disabled'
+    db = env['db']
+    db.expire_all()
+    assert db.scalar(select(func.count()).select_from(Drama)) == 0
+    assert db.scalar(select(func.count()).select_from(Episode)) == 0
+    # Service callers must use the same effective gate as the HTTP entry point.
+    from app.modules.library.service import import_title
+    with pytest.raises(HTTPException) as direct:
+        import_title(db, tenant=env['sites'][0], title_id=title['id'], grant_id=first_grant['id'],
+                     actor=env['owners'][0], overrides={}, adopt_new_version=adopt)
+    assert direct.value.status_code == 403
+    assert direct.value.detail['code'] == 'feature_disabled'
+    db.rollback()
+    other = imported(env, title, second_grant, 1)
+    assert other['created'] is True
+    set_library_gate(env, source, True)
+    enabled = ok(env['client'].post(f"{TENANT}/{title['id']}/import", json=body, headers=env['headers'][0]))
+    replay = ok(env['client'].post(f"{TENANT}/{title['id']}/import", json=body, headers=env['headers'][0]))
+    assert enabled['created'] is True and enabled['drama_id'] != other['drama_id']
+    assert replay == dict(enabled, created=False)
+
+
+@pytest.mark.parametrize('source', ['feature', 'module'])
+def test_library_gate_blocks_reimport_and_adoption_but_preserves_published_edition(library_env, source):
+    from app.modules.playback.service import authorize
+    from app.modules.common.models import AuditLog
+    env = library_env
+    title, _, _ = approved(env)
+    first_grant = grant(env, title)
+    first = imported(env, title, first_grant)
+    db = env['db']
+    drama = db.get(Drama, first['drama_id'])
+    episode = db.scalar(select(Episode).where(Episode.drama_id == drama.id))
+    drama.status = 'in_review'
+    db.commit()
+    drama.status, drama.free_episode_count, episode.status = 'published', 1, 'published'
+    db.commit()
+    old_ids = drama.id, episode.id, drama.library_version
+    title = ok(env['client'].patch(f"{PLATFORM}/{title['id']}",
+               json=dict(version=title['version'], title='New Edition'), headers=env['pheaders']))
+    title = ok(env['client'].post(f"{PLATFORM}/{title['id']}/approve",
+               json=dict(version=title['version']), headers=env['pheaders']))
+    new_grant = grant(env, title)
+    set_library_gate(env, source, False)
+    before_audits = db.scalar(select(func.count()).select_from(AuditLog))
+    # A disabled import action consistently returns 403, including no-op replays.
+    for row, adopt in ((first_grant, False), (new_grant, False), (new_grant, True)):
+        denied = env['client'].post(f"{TENANT}/{title['id']}/import",
+                 json=dict(grant_id=row['id'], adopt_new_version=adopt), headers=env['headers'][0])
+        assert denied.status_code == 403, denied.text
+    db.expire_all()
+    assert db.scalar(select(func.count()).select_from(Drama)) == 1
+    assert db.scalar(select(func.count()).select_from(Episode)) == 1
+    assert db.scalar(select(func.count()).select_from(AuditLog)) == before_audits
+    drama, episode = db.get(Drama, old_ids[0]), db.get(Episode, old_ids[1])
+    assert (drama.status, episode.status, drama.library_version) == ('published', 'published', old_ids[2])
+    db.info['content_tenant_id'] = drama.tenant_id
+    assert authorize(db, drama_id=drama.id, episode_id=episode.id, user_id=None)['allowed'] is True
+    db.info.pop('content_tenant_id', None)
+    db.rollback()
+    set_library_gate(env, source, True)
+    assert imported(env, title, first_grant) == dict(first, created=False)
+    adopted = ok(env['client'].post(f"{TENANT}/{title['id']}/import",
+                 json=dict(grant_id=new_grant['id'], adopt_new_version=True), headers=env['headers'][0]))
+    assert adopted['created'] is True and adopted['drama_id'] != old_ids[0]

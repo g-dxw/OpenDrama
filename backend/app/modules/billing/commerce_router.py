@@ -98,7 +98,8 @@ class MembershipRefundResolutionOut(BaseModel):
     replayed:bool
 
 @public_router.get('/coin-packs')
-def coin_packs(db:Session=Depends(get_db)):return {'items':service.list_packs(db)}
+def coin_packs(db:Session=Depends(get_db)):
+    return {'items':service.list_packs(db) if service.sale_allowed(db,'coin_pack') else []}
 @public_router.get('/billing/channels')
 def channels(db:Session=Depends(get_db)):
     from app.modules.billing.site_merchants import channels as site_channels

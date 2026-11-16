@@ -166,3 +166,60 @@ def test_new_key_cannot_bypass_shutdown_by_reusing_a_pending_subscription(sessio
     assert session.scalar(select(func.count()).select_from(Order)) == 1
     retry = checkout(client, headers, 'membership', alias=alias)
     assert retry.status_code == 200 and retry.json()['order_no'] == number and retry.json()['reused'], retry.text
+
+
+@pytest.mark.parametrize('via', ['module', 'feature'])
+def test_public_coin_catalog_hides_disabled_sales_without_changing_admin_permissions(session, sales, commercial, monkeypatch, via):
+    from app.modules.sites import service as sites
+    from tests.test_merchant_binding_identity import login
+    user, calls, client, _headers = sales
+    _same_user, actor, _same_calls = commercial
+    admin_headers = login(client, actor)
+    session.get(WalletAccount, user.id).balance = 77; session.commit()
+    disable_sales(session, 'coin_pack', via)
+    monkeypatch.setattr(sites, 'lock_site_settings', lambda *_: pytest.fail('public catalog must not take checkout locks'))
+    before = copy.deepcopy(calls)
+    public = client.get('/v1/coin-packs')
+    assert public.status_code == 200 and public.json() == {'items': []}, public.text
+    assert calls == before
+    assert [item['code'] for item in commerce.list_packs(session, True)] == ['starter']
+    admin = client.get('/admin/v1/coin-packs', headers=admin_headers)
+    if via == 'module':
+        assert admin.status_code == 403 and admin.json()['detail']['code'] == 'tenant_permission_denied', admin.text
+    else:
+        assert admin.status_code == 200, admin.text
+        assert [item['code'] for item in admin.json()['items']] == ['starter']
+    assert session.get(WalletAccount, user.id).balance == 77
+    if via == 'module':
+        bootstrap = client.get('/v1/site/bootstrap')
+        assert bootstrap.status_code == 200 and bootstrap.json()['features']['coins'] is True
+
+
+def test_public_coin_catalog_keeps_original_sales_on_prices(session, sales, monkeypatch):
+    from app.modules.sites import service as sites
+    _user, _calls, client, _headers = sales
+    expected = commerce.list_packs(session)
+    monkeypatch.setattr(sites, 'lock_site_settings', lambda *_: pytest.fail('public catalog must not take checkout locks'))
+    response = client.get('/v1/coin-packs')
+    assert response.status_code == 200 and response.json() == {'items': expected}, response.text
+    assert expected[0]['currency'] == 'USD' and expected[0]['price_cents'] == 500
+
+
+def test_public_coin_sale_switch_is_independent_for_another_site(session, sales):
+    from datetime import datetime, timezone
+    from app.modules.tenancy.models import Tenant, TenantDomain
+    from app.modules.tenancy.permissions import seed_tenant_defaults
+    from app.modules.tenancy.consumer_scope import site_context
+    _user, _calls, original, _headers = sales
+    site = Tenant(id='coin-catalog-site', code='coin-catalog-site', name='Coin catalog site', kind='native', status='active')
+    session.add(site); seed_tenant_defaults(session, site); session.flush()
+    session.add(SiteSettings(tenant_id=site.id))
+    session.add(TenantDomain(tenant_id=site.id, hostname='coin-catalog.example', kind='site', status='active', verified_at=datetime.now(timezone.utc)))
+    session.commit()
+    with site_context(session, site.id):
+        expected = commerce.save_pack(session, 'regional', dict(name_en='Regional', price_cents=800, base_coins=200), None)
+    disable_sales(session, 'coin_pack', 'module')
+    regional = TestClient(app, base_url='https://coin-catalog.example')
+    response = regional.get('/v1/coin-packs')
+    assert response.status_code == 200 and response.json() == {'items': [expected]}, response.text
+    assert original.get('/v1/coin-packs').json() == {'items': []}

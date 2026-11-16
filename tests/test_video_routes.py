@@ -1,6 +1,8 @@
 """Exercise the actual generated edge and inner nginx routes, without production IO."""
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import hashlib
+import hmac
 import http.client
 import json
 import os
@@ -20,6 +22,13 @@ DEPLOY = (ROOT / "deploy/video/remote-deploy.sh").read_text()
 WRITE_EDGE = "write_edge() {" + DEPLOY.split("write_edge() {", 1)[1].split("\ninstall_edge() {", 1)[0]
 HOSTS = ("jjtv.8jj.net", "jjtv-h5.8jj.net", "jjtv-admin.8jj.net", "jjtv-api.8jj.net")
 UPLOAD = "/admin/v1/tenants/india-short-drama/india/admin/{kind}/fixture-id/content"
+WEBHOOK_SECRET = b"whsec_nginx_fixture_only"
+
+
+def signature(body):
+    timestamp = "1234567890"
+    digest = hmac.new(WEBHOOK_SECRET, timestamp.encode() + b"." + body, hashlib.sha256).hexdigest()
+    return "t=" + timestamp + ",v1=" + digest
 
 
 def edge_config(tmp_path, tls):
@@ -66,7 +75,14 @@ def upstream():
             row = {"path": self.path, "method": self.command, "host": self.headers.get("Host"),
                    "authorization": self.headers.get("Authorization"), "size": len(body)}
             requests.append(row)
-            if self.command == "OPTIONS":
+            if self.path.startswith("/v1/billing/stripe/"):
+                row.update(stripe_signature=self.headers.get("Stripe-Signature"),
+                           raw_sha256=hashlib.sha256(body).hexdigest(), content_type=self.headers.get("Content-Type"))
+                if hmac.compare_digest(row["stripe_signature"] or "", signature(body)):
+                    status, payload = 200, json.dumps(row).encode()
+                else:
+                    status, payload = 401, b'{"detail":"bad Stripe signature"}'
+            elif self.command == "OPTIONS":
                 status, payload = 204, b""
             elif self.path == "/health" or row["authorization"] == "Bearer fixture-upload-token":
                 status, payload = 200, json.dumps(row).encode()
@@ -91,10 +107,11 @@ def upstream():
         server.server_close()
 
 
-def request(port, host, path, *, method="GET", body=None, token=None, tls=False, content_length=None):
+def request(port, host, path, *, method="GET", body=None, token=None, tls=False, content_length=None, extra_headers=None):
     connection = (http.client.HTTPSConnection("127.0.0.1", port, context=ssl._create_unverified_context(), timeout=15)
                   if tls else http.client.HTTPConnection("127.0.0.1", port, timeout=15))
     headers = {"Host": host}
+    headers.update(extra_headers or {})
     if token:
         headers["Authorization"] = "Bearer " + token
     if content_length is not None:
@@ -203,3 +220,43 @@ def test_same_origin_upload_cli_and_health_through_both_nginx_layers(tmp_path, u
         assert request(port, HOSTS[2], "/health", tls=tls)[0] == 200
         status, _, body = request(port, HOSTS[2], "/admin/v1/auth/me", token="fixture-upload-token", tls=tls)
         assert status == 200 and json.loads(body)["path"] == "/admin/v1/auth/me"
+
+
+@pytest.mark.parametrize("tls", [False, True])
+def test_admin_proxies_only_signed_stripe_callbacks_with_original_body_and_headers(tmp_path, upstream, tls):
+    upstream_port, requests = upstream
+    body = ' \n{ "id": "evt_fixture", "note": "签名必须保留原始字节" }\n'.encode()
+    headers = {"Stripe-Signature": signature(body), "Content-Type": "application/json; charset=utf-8"}
+    with nginx_stack(tmp_path, upstream_port, tls) as (_, port):
+        paths = ["/v1/billing/stripe/webhook", "/v1/billing/stripe/accounts/env/webhook",
+                 "/v1/billing/stripe/accounts/a_/webhook", "/v1/billing/stripe/accounts/" + "a" * 32 + "/webhook"]
+        for path in paths:
+            status, _, raw = request(port, HOSTS[2], path, method="POST", body=body, tls=tls, extra_headers=headers)
+            assert status == 200, (path, status, raw[:200])
+            row = json.loads(raw)
+            assert row["host"] == HOSTS[2] and row["method"] == "POST" and row["path"] == path
+            assert row["stripe_signature"] == headers["Stripe-Signature"]
+            assert row["content_type"] == headers["Content-Type"]
+            assert row["raw_sha256"] == hashlib.sha256(body).hexdigest() and row["size"] == len(body)
+            for invalid_headers in ({}, {"Stripe-Signature": "t=1234567890,v1=invalid"}):
+                assert request(port, HOSTS[2], path, method="POST", body=body, tls=tls,
+                               extra_headers=invalid_headers)[0] == 401
+            before = len(requests)
+            for method in ("GET", "HEAD", "OPTIONS", "PUT", "PATCH", "DELETE"):
+                assert request(port, HOSTS[2], path, method=method, tls=tls)[0] == 403
+            assert len(requests) == before
+        blocked = ["/v1/billing/webhook", "/v1/commerce/checkout", "/v1/site/bootstrap",
+                   "/v1/billing/stripe/accounts/a/webhook", "/v1/billing/stripe/accounts/" + "a" * 33 + "/webhook",
+                   "/v1/billing/stripe/accounts/UPPER/webhook", "/v1/billing/stripe/accounts/not-valid/webhook",
+                   "/v1/billing/stripe/accounts/env/webhook/extra", "/v1/billing/stripe/other/webhook"]
+        for path in blocked:
+            before = len(requests)
+            for method in ("GET", "POST"):
+                assert request(port, HOSTS[2], path, method=method, body=body, tls=tls, extra_headers=headers)[0] == 404
+            assert len(requests) == before
+        large_body = b'{"id":"evt_large","padding":"' + b"f" * (3 * 1024 * 1024) + b'"}'
+        assert request(port, HOSTS[2], paths[0], method="POST", body=large_body, tls=tls,
+                       extra_headers={"Stripe-Signature": signature(large_body)})[0] == 200
+        before = len(requests)
+        assert request(port, HOSTS[2], paths[0], method="POST", content_length=32 * 1024 * 1024 + 1, tls=tls)[0] == 413
+        assert len(requests) == before

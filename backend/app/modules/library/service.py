@@ -286,6 +286,11 @@ def import_title(db, *, tenant, title_id, grant_id, actor, overrides, adopt_new_
     # Serialize all imports to a site so concurrent repeated clicks return its
     # existing local IDs instead of a unique-key failure or two separate series.
     db.scalar(select(Tenant).where(Tenant.id == tenant.id).with_for_update())
+    from app.modules.sites.service import features_for
+    # Gate the action, including idempotent replays, before any site-local writes.
+    # Existing editions and their viewer entitlements remain independent of it.
+    if not features_for(db, tenant).get('library', False):
+        refuse('feature_disabled', '当前站点已关闭内容库引入', 403)
     grant = db.scalar(select(DistributionGrant).where(DistributionGrant.id == grant_id,
                      DistributionGrant.library_title_id == title_id, DistributionGrant.tenant_id == tenant.id).with_for_update())
     title = title_for(db, title_id)

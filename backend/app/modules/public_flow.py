@@ -697,6 +697,12 @@ def create_episode_comment(
     Visibility starts as pending: the author sees it right away, everyone else
     sees it only after the background worker approves it.
     """
+    from app.modules.sites.service import features_for
+    from app.modules.tenancy.consumer_scope import current_site
+    from app.modules.tenancy.models import Tenant
+    tenant = db.get(Tenant, current_site(db))
+    if tenant is None or not features_for(db, tenant).get("comments", False):
+        raise HTTPException(status_code=403, detail="New comments are disabled for this site")
     episode = _published_episode_or_404(db, episode_id)
     text = body.body.strip()
     if not text:
