@@ -1131,16 +1131,36 @@ try {
   await page.waitForFunction(() => document.querySelector('.pc-video-player video')?.paused);
   await waitForPlayerControl('Play');
   const progressSelector = '.pc-video-player input[type="range"][aria-label="Playback progress"]';
+  await page.evaluate((selector) => {
+    const video = document.querySelector('.pc-video-player video');
+    const range = document.querySelector(selector);
+    const state = { seeking: 0, seeked: 0, events: [] };
+    window.__pcFixtureSeek = state;
+    const record = (event) => {
+      if (event.type === 'seeking' || event.type === 'seeked') state[event.type]++;
+      state.events.push({ type: event.type, key: event.key, currentTime: video.currentTime, range: range.value, seeking: video.seeking, readyState: video.readyState });
+      if (state.events.length > 40) state.events.shift();
+    };
+    for (const name of ['seeking', 'seeked', 'pause', 'play', 'durationchange']) video.addEventListener(name, record);
+    for (const name of ['keydown', 'input', 'change']) range.addEventListener(name, record);
+  }, progressSelector);
   await page.focus(progressSelector);
   await page.keyboard.press('Home');
-  await page.waitForFunction(() => document.querySelector('.pc-video-player video').currentTime < 0.1);
-  await page.keyboard.press('ArrowRight');
+  // Wait for both the native seek and the controlled range to settle before the next key.
   await page.waitForFunction(() => {
     const video = document.querySelector('.pc-video-player video');
     const range = document.querySelector('.pc-video-player input[aria-label="Playback progress"]');
-    const ratio = (Number(range.value) - Number(range.min || 0)) / (Number(range.max) - Number(range.min || 0));
-    return video.paused && video.currentTime > 0 && Math.abs(video.currentTime - ratio * video.duration) < 0.15;
+    return video.paused && !video.seeking && video.currentTime < 0.01 && Number(range.value) === 0 && window.__pcFixtureSeek.seeked > 0;
   });
+  const seekedAfterHome = await page.evaluate(() => window.__pcFixtureSeek.seeked);
+  // A 10% keyboard step is beyond the first frame of the short 12fps WebM fixture.
+  await page.keyboard.press('PageUp');
+  await page.waitForFunction((seekedBefore) => {
+    const video = document.querySelector('.pc-video-player video');
+    const range = document.querySelector('.pc-video-player input[aria-label="Playback progress"]');
+    const ratio = (Number(range.value) - Number(range.min || 0)) / (Number(range.max) - Number(range.min || 0));
+    return video.paused && !video.seeking && video.currentTime > 0 && Number(range.value) > 0 && window.__pcFixtureSeek.seeked > seekedBefore && Math.abs(video.currentTime - ratio * video.duration) < 0.15;
+  }, {}, seekedAfterHome);
   const initiallyMuted = await page.$eval('.pc-video-player video', (video) => video.muted || video.volume === 0);
   await clickPlayerControl(initiallyMuted ? 'Unmute' : 'Mute');
   await page.waitForFunction((before) => {
@@ -2129,6 +2149,20 @@ try {
 } catch (error) {
   console.error("BODY", await page.evaluate(() => document.body.innerText));
   console.error("BROWSER_ERRORS", errors);
+  console.error("FIXTURE_MEDIA_STATE", JSON.stringify(await page.evaluate(() => {
+    const ranges = (value) => Array.from({ length: value.length }, (_, index) => [value.start(index), value.end(index)]);
+    return {
+      media: [...document.querySelectorAll('video')].map((video) => ({
+        currentTime: video.currentTime, duration: video.duration, paused: video.paused, ended: video.ended,
+        seeking: video.seeking, readyState: video.readyState, networkState: video.networkState,
+        buffered: ranges(video.buffered), seekable: ranges(video.seekable), playbackRate: video.playbackRate,
+        error: video.error ? { code: video.error.code, message: video.error.message } : null,
+        progress: [...video.closest('.pc-video-player')?.querySelectorAll('input[aria-label="Playback progress"]') || []].map((range) => ({ value: range.value, min: range.min, max: range.max, step: range.step, disabled: range.disabled })),
+      })),
+      activeControl: document.activeElement?.getAttribute('aria-label'),
+      seekTrace: window.__pcFixtureSeek || null,
+    };
+  }).catch((diagnosticError) => ({ diagnosticError: diagnosticError.message }))));
   console.error("LAST_REQUESTS", JSON.stringify(requests.slice(-8)));
   await page.screenshot({
     path: path.join(OUT, "failure.png"),
