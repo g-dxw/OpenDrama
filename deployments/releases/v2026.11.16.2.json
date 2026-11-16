@@ -1,0 +1,27 @@
+{
+  "version": "v2026.11.16.2",
+  "target": "video",
+  "status": "published",
+  "sha": "700d2262fc81993f90267981edc568b02467f62b",
+  "short_sha": "700d2262",
+  "command": [
+    "/opt/minitv-multisite-312/bin/python",
+    "scripts/deploy_video.py",
+    "--host",
+    "video",
+    "--phase",
+    "http"
+  ],
+  "exit_code": 0,
+  "started_at": "2026-11-16T17:36:38+08:00",
+  "finished_at": "2026-11-16T17:37:59+08:00",
+  "operator": {
+    "user": "root",
+    "host": "MM-202608191734",
+    "pid": 18,
+    "agent_session": null,
+    "cwd": "/mnt/d/workspace/new/minitv-multisite-v1"
+  },
+  "note": "OpenDrama branding, redesigned console login, upper-right management-system entry and platform selector; preserve site brands and TLS",
+  "dirty": false
+}
