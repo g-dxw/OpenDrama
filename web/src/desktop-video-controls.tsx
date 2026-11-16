@@ -132,13 +132,20 @@ export default function DesktopVideoControls(props: Props) {
   useEffect(() => {
     const root = container.current;
     if (!root) return;
-    let timer = 0;
+    let timer = 0, pointerActive = false;
     const wake = () => {
       setShown(true); window.clearTimeout(timer);
       if (!paused && !settingsOpen) timer = window.setTimeout(() => {
-        if (!root.contains(document.activeElement)) setShown(false);
+        const focused = document.activeElement;
+        if (pointerActive || (focused instanceof HTMLElement && root.contains(focused) && focused.matches(":focus-visible"))) return;
+        // Mouse clicks leave buttons focused; release that focus so :focus-within
+        // does not keep the transport visible after the pointer becomes idle.
+        if (focused instanceof HTMLElement && root.contains(focused)) focused.blur();
+        setShown(false);
       }, 2600);
     };
+    const pointerDown = () => { pointerActive = true; wake(); };
+    const pointerUp = () => { if (pointerActive) { pointerActive = false; wake(); } };
     const key = (event: KeyboardEvent) => {
       if (event.altKey || event.ctrlKey || event.metaKey || (event.target instanceof Element && event.target.closest("button,a,input,select,textarea,[role=dialog]"))) return;
       const value = event.key.toLowerCase();
@@ -150,11 +157,15 @@ export default function DesktopVideoControls(props: Props) {
       else seek((video.current?.currentTime || 0) + (value === "arrowleft" ? -5 : 5));
     };
     const surfaceClick = (event: MouseEvent) => { if (event.target === video.current) void togglePlay(); };
-    root.addEventListener("pointermove", wake); root.addEventListener("focusin", wake);
+    root.addEventListener("pointermove", wake); root.addEventListener("pointerdown", pointerDown);
+    root.addEventListener("focusin", wake); root.addEventListener("focusout", wake);
+    document.addEventListener("pointerup", pointerUp); document.addEventListener("pointercancel", pointerUp);
     root.addEventListener("keydown", key); root.addEventListener("click", surfaceClick); wake();
     return () => {
       window.clearTimeout(timer);
-      root.removeEventListener("pointermove", wake); root.removeEventListener("focusin", wake); root.removeEventListener("keydown", key);
+      root.removeEventListener("pointermove", wake); root.removeEventListener("pointerdown", pointerDown);
+      root.removeEventListener("focusin", wake); root.removeEventListener("focusout", wake); root.removeEventListener("keydown", key);
+      document.removeEventListener("pointerup", pointerUp); document.removeEventListener("pointercancel", pointerUp);
       root.removeEventListener("click", surfaceClick);
     };
   }, [container, paused, settingsOpen, enabled]);

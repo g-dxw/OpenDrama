@@ -784,13 +784,22 @@ async function clickText(value) {
   }, value);
 }
 const playerSettingsDialog = '.pc-player-settings[role="dialog"][aria-label="Playback settings"]';
+async function clickPlayerControl(label) {
+  const selector = '.pc-video-player .pc-transport-button[aria-label="' + label + '"]';
+  await page.waitForSelector(selector, { visible: true });
+  await page.click(selector);
+}
+async function waitForPlayerControl(label) {
+  await page.waitForSelector('.pc-video-player .pc-transport-button[aria-label="' + label + '"]', { visible: true });
+}
 async function choosePlayerSetting(group, label) {
   const selector = playerSettingsDialog + ' [role="group"][aria-label="' + group + '"] button';
   await page.waitForSelector(selector, { visible: true });
-  const buttons = await page.$(selector);
+  const buttons = await page.$$(selector);
   for (const button of buttons) {
     if ((await button.evaluate((node) => node.textContent.trim())) === label) {
       await button.click();
+      await page.waitForFunction((selector, label) => [...document.querySelectorAll(selector)].some((node) => node.textContent.trim() === label && node.getAttribute("aria-pressed") === "true"), {}, selector, label);
       return;
     }
   }
@@ -1107,19 +1116,20 @@ try {
   await page.waitForFunction(
     () => document.querySelector("video")?.currentTime > 0.2,
   );
-  await page.waitForSelector('.pc-video-player button[aria-label="Pause"]', { visible: true });
-  await page.click('.pc-video-player button[aria-label="Pause"]');
+  await clickPlayerControl('Pause');
   await page.waitForFunction(() => document.querySelector('.pc-video-player video')?.paused);
+  await waitForPlayerControl('Play');
   assert.equal(await page.$eval('.pc-video-player video', (video) => video.controls), false);
   const authorizationsBeforeControls = requests.filter((request) => request.path === '/v1/playback').length;
   const pausedPosition = await page.$eval('.pc-video-player video', (video) => video.currentTime);
-  await page.click('.pc-video-player button[aria-label="Play"]');
+  await clickPlayerControl('Play');
   await page.waitForFunction((position) => {
     const video = document.querySelector('.pc-video-player video');
     return video && !video.paused && video.currentTime > position + 0.05;
   }, {}, pausedPosition);
-  await page.click('.pc-video-player button[aria-label="Pause"]');
+  await clickPlayerControl('Pause');
   await page.waitForFunction(() => document.querySelector('.pc-video-player video')?.paused);
+  await waitForPlayerControl('Play');
   const progressSelector = '.pc-video-player input[type="range"][aria-label="Playback progress"]';
   await page.focus(progressSelector);
   await page.keyboard.press('Home');
@@ -1132,34 +1142,35 @@ try {
     return video.paused && video.currentTime > 0 && Math.abs(video.currentTime - ratio * video.duration) < 0.15;
   });
   const initiallyMuted = await page.$eval('.pc-video-player video', (video) => video.muted || video.volume === 0);
-  await page.click('.pc-video-player button[aria-label="' + (initiallyMuted ? 'Unmute' : 'Mute') + '"]');
+  await clickPlayerControl(initiallyMuted ? 'Unmute' : 'Mute');
   await page.waitForFunction((before) => {
     const video = document.querySelector('.pc-video-player video');
     return (video.muted || video.volume === 0) !== before;
   }, {}, initiallyMuted);
-  await page.click('.pc-video-player button[aria-label="' + (initiallyMuted ? 'Mute' : 'Unmute') + '"]');
+  await clickPlayerControl(initiallyMuted ? 'Mute' : 'Unmute');
   await page.waitForFunction((before) => {
     const video = document.querySelector('.pc-video-player video');
     return (video.muted || video.volume === 0) === before;
   }, {}, initiallyMuted);
-  await page.click('.pc-video-player button[aria-label="Playback settings"]');
+  await waitForPlayerControl(initiallyMuted ? 'Unmute' : 'Mute');
+  await clickPlayerControl('Playback settings');
   await page.waitForSelector(playerSettingsDialog, { visible: true });
   await choosePlayerSetting('Subtitles', 'Off');
   await page.waitForFunction(() => document.querySelector('video')?.textTracks[0]?.mode === 'disabled');
   await choosePlayerSetting('Subtitles', 'English');
   await page.waitForFunction(() => document.querySelector('video')?.textTracks[0]?.mode === 'showing');
   await choosePlayerSetting('Speed', '1.5×');
-  assert.equal(await page.$eval('video', (video) => video.playbackRate), 1.5);
-  const qualityOptions = await page.$eval(playerSettingsDialog + ' [role="group"][aria-label="Quality"] button', (buttons) => buttons.map((button) => button.textContent.trim()));
+  await page.waitForFunction(() => document.querySelector('video')?.playbackRate === 1.5);
+  const qualityOptions = await page.$$eval(playerSettingsDialog + ' [role="group"][aria-label="Quality"] button', (buttons) => buttons.map((button) => button.textContent.trim()));
   assert.deepEqual(qualityOptions, ['Auto'], 'A single-source fixture must not invent HLS renditions');
   await page.keyboard.press('Escape');
   await page.waitForSelector(playerSettingsDialog, { hidden: true });
-  await page.click('.pc-video-player button[aria-label="Fullscreen"]');
+  await clickPlayerControl('Fullscreen');
   await page.waitForFunction(() => {
     const root = document.fullscreenElement;
     return root && root.contains(document.querySelector('.pc-video-player video')) && root.querySelector('button[aria-label="Exit fullscreen"]');
   });
-  await page.click('button[aria-label="Exit fullscreen"]');
+  await clickPlayerControl('Exit fullscreen');
   await page.waitForFunction(() => !document.fullscreenElement);
   assert.equal(requests.filter((request) => request.path === '/v1/playback').length, authorizationsBeforeControls, 'Playback controls reuse the granted media source without minting another authorization');
   pass('real fixture media uses custom play/pause, keyboard seeking, mute and fullscreen controls without native controls or extra authorizations');

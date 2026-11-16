@@ -118,6 +118,16 @@ async function verifyStorefrontNavigation() {
  ]) await storefrontFixture(fixture, async (fixturePage, token) => {
   for (const width of [1440, 375]) {
    await fixturePage.setViewport({ width, height: width === 375 ? 844 : 1000 });
+   // CSS media queries resize immediately; Ant Design publishes lg/md breakpoint updates asynchronously.
+   // Wait for both visible shell modes before measuring, rather than waiting for the geometry assertion to pass.
+   await fixturePage.waitForFunction(expectedWidth => {
+    const header = document.querySelector('.backoffice-header');
+    const account = header?.querySelector('[aria-label="账号菜单"]');
+    const desktop = expectedWidth >= 992, narrow = expectedWidth < 768;
+    const navigation = header?.querySelector(desktop ? '[aria-label="收起导航"], [aria-label="展开导航"]' : '[aria-label="打开导航菜单"]');
+    return innerWidth === expectedWidth && !!navigation && !!account &&
+      !!document.querySelector('.ant-layout-sider') === desktop && !!account.querySelector('.ant-tag') === !narrow;
+   }, { polling: 'raf', timeout: 5000 }, width);
    const link = await fixturePage.$eval('.backoffice-header [aria-label="访问前台"]', element => {
     const rect = element.getBoundingClientRect(), header = element.closest('.backoffice-header').getBoundingClientRect();
     const location = document.querySelector('.app-header-location').getBoundingClientRect();
@@ -125,7 +135,7 @@ async function verifyStorefrontNavigation() {
    });
    assert.equal(link.tag, 'A'); assert(link.visible); assert.equal(new URL(link.href).href, new URL(fixture.expected).href);
    assert.equal(link.target, '_blank'); assert(link.rel.split(/\s+/).includes('noopener')); assert(link.rel.split(/\s+/).includes('noreferrer')); assert(!link.href.includes(token));
-   assert(!link.headerOverflow && !link.pageOverflow && link.locationRight <= link.left + 1 && link.right <= link.headerRight + 1, 'Storefront action stays in the header without overflow or overlapping navigation at ' + width);
+   assert(!link.headerOverflow && !link.pageOverflow && link.locationRight <= link.left + 1 && link.right <= link.headerRight + 1, 'Storefront action stays in the header without overflow or overlapping navigation at ' + width + ': ' + JSON.stringify(link));
    await fixturePage.screenshot({ path: path.join(OUT, 'storefront-' + fixture.code + '-' + width + '.png'), fullPage: true });
   }
  });
