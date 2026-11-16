@@ -45,6 +45,14 @@ export function Icon({ name, size = 20 }: { name: string; size?: number }) {
       </>
     ),
     play: <path d="m9 5 11 7-11 7Z" />,
+    pause: <path d="M8 5v14M16 5v14" />,
+    settings: <><path d="M9 2h6l.5 2.5 1.5.9 2.4-.8 3 5.2-1.9 1.7v1.8l1.9 1.7-3 5.2-2.4-.8-1.5.9L15 22H9l-.5-2.5-1.5-.9-2.4.8-3-5.2 1.9-1.7v-1.8L1.6 9l3-5.2 2.4.8 1.5-.9L9 2Z"/><circle cx="12" cy="12" r="3"/></>,
+    fullscreen: <path d="M8 3H3v5M16 3h5v5M21 16v5h-5M8 21H3v-5" />,
+    "fullscreen-exit": <path d="M3 8h5V3M21 8h-5V3M16 21v-5h5M8 21v-5H3" />,
+    display: <><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></>,
+    monitor: <><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></>,
+    subtitles: <><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M6 10h3M12 10h6M6 14h6M15 14h3"/></>,
+    clock: <><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></>,
     heart: (
       <path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8L12 21l8.8-8.6a5.5 5.5 0 0 0 0-7.8Z" />
     ),

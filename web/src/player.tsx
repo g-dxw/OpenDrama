@@ -3,6 +3,7 @@ import { siteFeature, siteName } from "../../shared/site";
 import { useLocale } from "./locale";
 import { useEffect, useRef, useState } from "react";
 import Hls from "hls.js";
+import DesktopVideoControls from "./desktop-video-controls";
 import {
   prepareSubtitleTracks,
   type SubtitleTrack,
@@ -642,6 +643,9 @@ export function Video({
   onDenied,
   muted = false,
   poster,
+  settingsOpen,
+  onSettingsOpenChange,
+  onMutedChange,
 }: {
   dramaId: number;
   episode: PlayEpisode;
@@ -649,9 +653,13 @@ export function Video({
   onDenied: () => void;
   muted?: boolean;
   poster?: string;
+  settingsOpen?: boolean;
+  onSettingsOpenChange?: (value: boolean) => void;
+  onMutedChange?: (value: boolean) => void;
 }) {
   const { t, number } = useLocale();
   const ownerToken = useRef(authToken());
+  const playerContainer = useRef<HTMLDivElement>(null);
   const video = useRef<HTMLVideoElement>(null),
     hls = useRef<Hls | null>(null),
     latest = useRef({ onFinished, onDenied });
@@ -848,12 +856,12 @@ export function Video({
     }
   }, [subtitle, tracks]);
   return (
-    <>
+    <div className="pc-video-player" ref={playerContainer} tabIndex={0} role="group" aria-label={t("player.video")}>
       <video
         ref={video}
         muted={muted}
         poster={poster}
-        controls
+        controls={false}
         playsInline
         preload="metadata"
         crossOrigin="anonymous"
@@ -884,69 +892,15 @@ export function Video({
           />
         </div>
       )}
-      <div className="video-options">
-        {subtitleError && (
-          <span className="muted small" role="status">
-            {t(subtitleError)}
-          </span>
-        )}
-        <label>
-          {t("pages.quality_571094")}
-          <select
-            aria-label={t("pages.video_quality_e89c29")}
-            value={quality}
-            onChange={(e) => {
-              const next = Number(e.target.value);
-              setQuality(next);
-              if (hls.current) hls.current.currentLevel = next;
-            }}
-          >
-            <option value={-1}>{t("pages.auto_06b928")}</option>
-            {levels.map((level) => (
-              <option value={level.index} key={level.index}>
-                {level.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          {t("pages.speed_44877c")}
-          <select
-            aria-label={t("pages.playback_speed_ae16ab")}
-            value={speed}
-            onChange={(e) => {
-              const next = Number(e.target.value);
-              setSpeed(next);
-              if (video.current) video.current.playbackRate = next;
-            }}
-          >
-            {[0.75, 1, 1.25, 1.5, 2].map((v) => (
-              <option value={v} key={v}>
-                {number(v)}×
-              </option>
-            ))}
-          </select>
-        </label>
-        {tracks.length > 0 && (
-          <label>
-            {t("pages.subtitles_6a7308")}
-            <select
-              aria-label={t("pages.subtitles_6a7308")}
-              value={subtitle}
-              onChange={(e) => setSubtitle(e.target.value)}
-            >
-              <option value="default">{t("pages.default_7a1920")}</option>
-              <option value="off">{t("pages.off_d15305")}</option>
-              {tracks.map((track) => (
-                <option value={track.language} key={track.language}>
-                  {track.label}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
-      </div>
-    </>
+      <DesktopVideoControls
+        video={video} container={playerContainer} enabled={Boolean(auth?.url) && !error}
+        canInteract={() => ownerToken.current === authToken()}
+        speed={speed} onSpeed={value => { setSpeed(value); if (video.current) video.current.playbackRate = value; }}
+        levels={levels} quality={quality} onQuality={value => { setQuality(value); if (hls.current) hls.current.currentLevel = value; }}
+        tracks={tracks} subtitle={subtitle} onSubtitle={setSubtitle} subtitleError={subtitleError}
+        settingsOpen={settingsOpen} onSettingsOpenChange={onSettingsOpenChange} onMutedChange={onMutedChange}
+      />
+    </div>
   );
 }
 export function Comments({ episodeId }: { episodeId: number }) {
