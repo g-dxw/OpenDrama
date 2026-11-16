@@ -1780,7 +1780,7 @@ body {
 }
 
 /* Measured desktop navigation and editorial home. */
-.consumer-home > :is(.feature-hero, .home-spotlight, .home-content) { max-width: none; }
+.consumer-home > :is(.feature-hero, .home-spotlight, .home-content) { max-width: 1440px; }
 .consumer-header > .consumer-brand { flex: 0 0 110px; }
 .consumer-header nav a.active { font-weight: 600; }
 .consumer-header .header-search-trigger { width:36px;height:36px;border:0;background:transparent;color:#aaa4a7; }
