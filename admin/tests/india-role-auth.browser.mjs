@@ -29,6 +29,12 @@ const series = {
   free_episode_count: 1, episode_count: 1, version: 1, status: 'draft', rights: null,
   episodes: [{ id: 'ui-episode', episode_no: 1, title: 'UI episode', duration_ms: 3000, media_status: 'ready' }],
 };
+const completeRights = {
+  holder: 'Example Rights Holder', license_version: 'license-v3', territories: ['IN'], languages: ['hi'],
+  platforms: ['web'], monetization_modes: ['free'], allowed_uses: ['streaming'], exclusive: false,
+  starts_at: '2026-01-01T00:00:00.000Z', ends_at: '2028-01-01T00:00:00.000Z',
+  evidence_ref: 'rights-evidence-v3', withdrawal_terms: 'Remove content when the license ends.',
+};
 
 async function fixture(permissions, options = {}) {
   const context = await browser.newContext({ viewport: options.viewport || { width: 1440, height: 1000 } });
@@ -123,6 +129,8 @@ try {
       await delegatedReady(page);
       const modal = await fillNewDraft(page);
       await expect(modal.getByText('版权授权（选填）', { exact: true })).toBeVisible();
+      await expect(modal.getByRole('checkbox', { name: '本次填写/更新版权授权', exact: true })).not.toBeChecked();
+      await expect(modal.getByLabel('权利持有人', { exact: true })).toHaveCount(0);
       await modal.getByRole('button', { name: '创建草稿', exact: true }).click();
       await expect.poll(() => state.writes.length).toBe(1);
       assert.equal(state.writes[0].method, 'POST');
@@ -141,33 +149,113 @@ try {
       await page.getByRole('button', { name: '保存资料', exact: true }).click();
       await expect.poll(() => state.writes.length).toBe(1);
       assert.equal(state.writes[0].method, 'PATCH');
-      assert.equal(state.writes[0].payload.rights, null);
+      assert.equal('rights' in state.writes[0].payload, false);
       assert.equal(state.writes[0].payload.version, 1);
       assert.equal(state.writes[0].payload.title, 'Edited draft without rights');
     } finally { await context.close(); }
+  });
+  await check('existing complete and incomplete rights stay untouched unless explicitly enabled', async () => {
+    for (const rights of [completeRights, { holder: 'Partially imported license', territories: [], evidence_ref: 'legacy-evidence' }]) {
+      const { page, context, state } = await fixture(['dramas.view', 'dramas.edit'], { series: { rights, version: 7 } });
+      try {
+        await delegatedReady(page);
+        await page.getByRole('button', { name: '管理内容', exact: true }).click();
+        const optIn = page.getByRole('checkbox', { name: '本次填写/更新版权授权', exact: true });
+        await expect(optIn).not.toBeChecked();
+        await expect(page.getByLabel('权利持有人', { exact: true })).toHaveCount(0);
+        await page.getByLabel('剧集名称', { exact: true }).fill('Edited with untouched existing rights');
+        if (!rights.license_version) {
+          await page.getByRole('button', { name: '保存资料', exact: true }).scrollIntoViewIfNeeded();
+          const section = await page.getByText('版权授权（选填）', { exact: true }).locator('..').boundingBox();
+          const form = await page.getByLabel('剧集名称', { exact: true }).locator('xpath=ancestor::form').boundingBox();
+          const button = await page.getByRole('button', { name: '保存资料', exact: true }).boundingBox();
+          await mkdir(screenshots, { recursive: true });
+          await page.screenshot({ path: screenshots + 'optional-rights-existing.png', clip: { x: form.x, y: section.y, width: form.width, height: button.y + button.height - section.y + 8 } });
+        }
+        await page.getByRole('button', { name: '保存资料', exact: true }).click();
+        await expect.poll(() => state.writes.length).toBe(1);
+        assert.equal('rights' in state.writes[0].payload, false);
+        assert.equal(state.writes[0].payload.version, 7);
+        assert.deepEqual(state.series.rights, rights);
+      } finally { await context.close(); }
+    }
   });
   await check('partially entered licensing details cannot be saved', async () => {
     const { page, context, state } = await fixture(['dramas.view', 'dramas.edit']);
     try {
       await delegatedReady(page);
       await page.getByRole('button', { name: '管理内容', exact: true }).click();
+      await page.getByRole('checkbox', { name: '本次填写/更新版权授权', exact: true }).check();
       await page.getByLabel('权利持有人', { exact: true }).fill('Example Rights Holder');
       await page.getByRole('button', { name: '保存资料', exact: true }).click();
       await expect(page.getByText('请填写此项', { exact: true }).first()).toBeVisible();
       assert.equal(state.writes.length, 0);
     } finally { await context.close(); }
   });
+  await check('closing incomplete licensing edits removes validation and preserves existing rights', async () => {
+    const rights = { holder: 'Partially imported license', territories: [], evidence_ref: 'legacy-evidence' };
+    const { page, context, state } = await fixture(['dramas.view', 'dramas.edit'], { series: { rights, version: 5 } });
+    try {
+      await delegatedReady(page);
+      await page.getByRole('button', { name: '管理内容', exact: true }).click();
+      const optIn = page.getByRole('checkbox', { name: '本次填写/更新版权授权', exact: true });
+      await optIn.check();
+      await page.getByLabel('权利持有人', { exact: true }).fill('Unfinished replacement holder');
+      await page.getByRole('button', { name: '保存资料', exact: true }).click();
+      await expect(page.getByText('请填写此项', { exact: true }).first()).toBeVisible();
+      assert.equal(state.writes.length, 0);
+      await optIn.uncheck();
+      await expect(page.getByLabel('权利持有人', { exact: true })).toHaveCount(0);
+      await expect(page.getByText('请填写此项', { exact: true })).toHaveCount(0);
+      await page.getByLabel('剧集名称', { exact: true }).fill('Metadata saved after cancelling rights edits');
+      await page.getByRole('button', { name: '保存资料', exact: true }).click();
+      await expect.poll(() => state.writes.length).toBe(1);
+      assert.equal('rights' in state.writes[0].payload, false);
+      assert.deepEqual(state.series.rights, rights);
+    } finally { await context.close(); }
+  });
+  await check('explicit licensing opt-in accepts entered IN and hi tags and multiple checkbox choices', async () => {
+    const { page, context, state } = await fixture(['dramas.view', 'dramas.edit', 'dramas.pricing']);
+    try {
+      await delegatedReady(page);
+      const modal = await fillNewDraft(page);
+      await modal.getByRole('checkbox', { name: '本次填写/更新版权授权', exact: true }).check();
+      await modal.getByLabel('权利持有人', { exact: true }).fill('Example Rights Holder');
+      await modal.getByLabel('授权文件版本', { exact: true }).fill('license-v3');
+      for (const [label, value] of [['授权地区', 'IN'], ['授权语言', 'hi']]) {
+        const input = modal.getByLabel(label, { exact: true });
+        await input.fill(value);
+        await input.press('Enter');
+        await input.press('Escape');
+      }
+      // Leave the tags editor before clicking nearby checkbox groups.
+      await modal.getByLabel('授权文件版本', { exact: true }).click();
+      for (const label of ['Web', 'Android', 'iOS', '免费', '订阅', '在线播放', '推广']) {
+        const checkbox = modal.getByRole('checkbox', { name: label, exact: true });
+        await checkbox.check();
+        await expect(checkbox).toBeChecked();
+      }
+      await modal.getByLabel('授权开始（本地时间）', { exact: true }).fill('2026-01-01T08:00');
+      await modal.getByLabel('授权结束（本地时间）', { exact: true }).fill('2028-01-01T08:00');
+      await modal.getByLabel('撤回与下架条款', { exact: true }).fill('Remove content when the license ends.');
+      await modal.getByRole('button', { name: '创建草稿', exact: true }).click();
+      await expect.poll(() => state.writes.length).toBe(1);
+      assert.deepEqual(state.writes[0].payload.rights.territories, ['IN']);
+      assert.deepEqual(state.writes[0].payload.rights.languages, ['hi']);
+      assert.deepEqual(state.writes[0].payload.rights.platforms, ['web', 'android', 'ios']);
+      assert.deepEqual(state.writes[0].payload.rights.monetization_modes, ['free', 'subscription']);
+      assert.deepEqual(state.writes[0].payload.rights.allowed_uses, ['streaming', 'promotion']);
+      assert.equal(state.writes[0].payload.rights.evidence_ref, '');
+      await expect(modal).toBeHidden();
+    } finally { await context.close(); }
+  });
   await check('complete existing rights retain evidence and reject an invalid date range', async () => {
-    const rights = {
-      holder: 'Example Rights Holder', license_version: 'license-v3', territories: ['IN'], languages: ['hi'],
-      platforms: ['web'], monetization_modes: ['free'], allowed_uses: ['streaming'], exclusive: false,
-      starts_at: '2026-01-01T00:00:00.000Z', ends_at: '2028-01-01T00:00:00.000Z',
-      evidence_ref: 'rights-evidence-v3', withdrawal_terms: 'Remove content when the license ends.',
-    };
+    const rights = completeRights;
     const { page, context, state } = await fixture(['dramas.view', 'dramas.edit'], { series: { rights, version: 7 } });
     try {
       await delegatedReady(page);
       await page.getByRole('button', { name: '管理内容', exact: true }).click();
+      await page.getByRole('checkbox', { name: '本次填写/更新版权授权', exact: true }).check();
       const starts = page.getByLabel('授权开始（本地时间）', { exact: true });
       const ends = page.getByLabel('授权结束（本地时间）', { exact: true });
       await ends.fill(await starts.inputValue());

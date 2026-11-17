@@ -4,16 +4,13 @@ import { indiaApi, indiaErrorText, type IndiaSeries } from "./india-api";
 
 const required = [{ required: true, message: "请填写此项" }];
 const options = (values: string[]) => values.map(value => ({ value, label: value }));
-function hasRights(values?: Record<string, unknown> | null) {
-  return Object.values(values || {}).some(value => Array.isArray(value) ? value.length > 0 : typeof value === "string" ? value.trim().length > 0 : value === true);
-}
 function localDate(value?: string) {
   if (!value || !Number.isFinite(Date.parse(value))) return "";
   const d = new Date(value);
   return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
 }
 function fields(record?: IndiaSeries | null) {
-  return { ...record, member_mode: record?.member_window?.mode || "standard", public_at: localDate(record?.member_window?.public_at),
+  return { ...record, edit_rights: false, member_mode: record?.member_window?.mode || "standard", public_at: localDate(record?.member_window?.public_at),
     rights: { ...record?.rights, starts_at: localDate(record?.rights?.starts_at), ends_at: localDate(record?.rights?.ends_at) },
     content_format: record?.content_format || "unknown", content_collections: record?.content_collections || [],
     tags: record?.tags || [], actors: record?.actors || [], search_aliases: record?.search_aliases || [], descriptors: record?.descriptors || [],
@@ -26,8 +23,7 @@ export default function IndiaSeriesForm({ record, writable, canPricing, onSaved 
   const [stale, setStale] = useState(false);
   const [dirty, setDirty] = useState(false);
   const memberMode = Form.useWatch("member_mode", form);
-  const rightsValues = Form.useWatch("rights", form);
-  const rightsRequired = record?.rights || hasRights(rightsValues) ? required : [];
+  const editRights = Form.useWatch("edit_rights", form);
   useEffect(() => {
     if (dirty && record?.version !== loadedVersion) { setStale(true); return; }
     form.resetFields(); form.setFieldsValue(fields(record)); setLoadedVersion(record?.version); setStale(false); setDirty(false);
@@ -37,16 +33,14 @@ export default function IndiaSeriesForm({ record, writable, canPricing, onSaved 
     if ((!writable && !(record && canPricing)) || stale) return;
     const payload: Record<string, unknown> = {};
     if (writable) {
-      let rights = null;
-      if (record?.rights || hasRights(values.rights)) {
+      if (values.edit_rights) {
         const starts = new Date(values.rights?.starts_at), ends = new Date(values.rights?.ends_at);
         if (!Number.isFinite(starts.getTime()) || !Number.isFinite(ends.getTime()) || ends <= starts) { message.error("授权结束时间必须晚于开始时间"); return; }
-        rights = { ...values.rights, starts_at: starts.toISOString(), ends_at: ends.toISOString(), exclusive: !!values.rights.exclusive, evidence_ref: record?.rights?.evidence_ref || "" };
-      }
+        payload.rights = { ...values.rights, starts_at: starts.toISOString(), ends_at: ends.toISOString(), exclusive: !!values.rights.exclusive, evidence_ref: record?.rights?.evidence_ref || "" };
+      } else if (!record) payload.rights = null;
       Object.assign(payload, { title: values.title.trim(), title_hi: values.title_hi || "", synopsis: values.synopsis, genre: values.genre, language: values.language,
         content_origin: values.content_origin, age_rating: values.age_rating, content_format: values.content_format,
-        content_collections: values.content_collections || [], tags: values.tags || [], actors: values.actors || [], search_aliases: values.search_aliases || [], descriptors: values.descriptors || [],
-        rights });
+        content_collections: values.content_collections || [], tags: values.tags || [], actors: values.actors || [], search_aliases: values.search_aliases || [], descriptors: values.descriptors || [] });
     }
     if (canPricing) {
       if (values.member_mode === "early_access" && !Number.isFinite(Date.parse(values.public_at))) { message.error("请填写有效的公开时间"); return; }
@@ -87,24 +81,25 @@ export default function IndiaSeriesForm({ record, writable, canPricing, onSaved 
       <Form.Item label="内容提示" name="descriptors"><Select mode="tags" tokenSeparators={[",", "，"]} /></Form.Item>
     </div>
     <Divider orientation="left">版权授权（选填）</Divider>
-    <Alert showIcon type="info" style={{ marginBottom: 16 }} message="可先创建草稿和上传视频，版权资料可后续补录。填写时请补全授权信息；审核及上架仍需通过版权校验。" />
-    <div className="india-form-grid">
-      <Form.Item label="权利持有人" name={["rights", "holder"]} rules={rightsRequired}><Input maxLength={300} /></Form.Item>
-      <Form.Item label="授权文件版本" name={["rights", "license_version"]} rules={rightsRequired}><Input maxLength={100} placeholder="与上传的版权证明版本一致" /></Form.Item>
-      <Form.Item label="授权地区" name={["rights", "territories"]} rules={[...rightsRequired, { validator: (_, value) => !value || value.every((v: string) => /^[A-Z]{2}$/.test(v)) ? Promise.resolve() : Promise.reject(new Error("使用大写两位国家代码，如 IN")) }]}><Select mode="tags" tokenSeparators={[",", "，"]} placeholder="如 IN" /></Form.Item>
-      <Form.Item label="授权语言" name={["rights", "languages"]} rules={rightsRequired}><Select mode="tags" tokenSeparators={[",", "，"]} placeholder="如 hi、en" /></Form.Item>
-      <Form.Item label="授权平台" name={["rights", "platforms"]} rules={rightsRequired}><Checkbox.Group options={[{ value: "web", label: "Web" }, { value: "android", label: "Android" }, { value: "ios", label: "iOS" }]} /></Form.Item>
-      <Form.Item label="变现授权" name={["rights", "monetization_modes"]} rules={rightsRequired}><Checkbox.Group options={[{ value: "free", label: "免费" }, { value: "subscription", label: "订阅" }, { value: "advertising", label: "广告" }]} /></Form.Item>
-      <Form.Item className="india-form-full" label="允许的用途" name={["rights", "allowed_uses"]} rules={rightsRequired}><Checkbox.Group options={[
+    <Alert showIcon type="info" style={{ marginBottom: 16 }} message="版权选填，未勾选时可直接保存草稿和上传视频，已有版权保持不变。需要补录或修改时再勾选；审核及上架仍按现有版权规则校验。" />
+    <Form.Item name="edit_rights" valuePropName="checked"><Checkbox>本次填写/更新版权授权</Checkbox></Form.Item>
+    {editRights && <div className="india-form-grid">
+      <Form.Item label="权利持有人" name={["rights", "holder"]} rules={required}><Input maxLength={300} /></Form.Item>
+      <Form.Item label="授权文件版本" name={["rights", "license_version"]} rules={required}><Input maxLength={100} placeholder="与上传的版权证明版本一致" /></Form.Item>
+      <Form.Item label="授权地区" name={["rights", "territories"]} rules={[...required, { validator: (_, value) => !value || value.every((v: string) => /^[A-Z]{2}$/.test(v)) ? Promise.resolve() : Promise.reject(new Error("使用大写两位国家代码，如 IN")) }]}><Select mode="tags" tokenSeparators={[",", "，"]} placeholder="如 IN" /></Form.Item>
+      <Form.Item label="授权语言" name={["rights", "languages"]} rules={required}><Select mode="tags" tokenSeparators={[",", "，"]} placeholder="如 hi、en" /></Form.Item>
+      <Form.Item label="授权平台" name={["rights", "platforms"]} rules={required}><Checkbox.Group options={[{ value: "web", label: "Web" }, { value: "android", label: "Android" }, { value: "ios", label: "iOS" }]} /></Form.Item>
+      <Form.Item label="变现授权" name={["rights", "monetization_modes"]} rules={required}><Checkbox.Group options={[{ value: "free", label: "免费" }, { value: "subscription", label: "订阅" }, { value: "advertising", label: "广告" }]} /></Form.Item>
+      <Form.Item className="india-form-full" label="允许的用途" name={["rights", "allowed_uses"]} rules={required}><Checkbox.Group options={[
         { value: "streaming", label: "在线播放" }, { value: "promotion", label: "推广" }, { value: "clips", label: "剪辑" }, { value: "adaptation", label: "改编" }, { value: "dubbing", label: "配音" },
         { value: "ai_inputs", label: "AI 输入" }, { value: "ai_voice", label: "AI 声音" }, { value: "ai_likeness", label: "AI 形象" }, { value: "offline_download", label: "离线下载" },
       ]} /></Form.Item>
-      <Form.Item label="授权开始（本地时间）" name={["rights", "starts_at"]} rules={rightsRequired}><Input type="datetime-local" /></Form.Item>
-      <Form.Item label="授权结束（本地时间）" name={["rights", "ends_at"]} rules={rightsRequired}><Input type="datetime-local" /></Form.Item>
+      <Form.Item label="授权开始（本地时间）" name={["rights", "starts_at"]} rules={required}><Input type="datetime-local" /></Form.Item>
+      <Form.Item label="授权结束（本地时间）" name={["rights", "ends_at"]} rules={required}><Input type="datetime-local" /></Form.Item>
       <Form.Item label="独家授权" name={["rights", "exclusive"]} valuePropName="checked"><Switch checkedChildren="是" unCheckedChildren="否" /></Form.Item>
       <Form.Item label="已登记版权证明"><Input readOnly value={record?.rights?.evidence_ref || "保存草稿后，在文件页上传版权证明"} /></Form.Item>
-      <Form.Item className="india-form-full" label="撤回与下架条款" name={["rights", "withdrawal_terms"]} rules={rightsRequired}><Input.TextArea rows={2} maxLength={3000} /></Form.Item>
-    </div>
+      <Form.Item className="india-form-full" label="撤回与下架条款" name={["rights", "withdrawal_terms"]} rules={required}><Input.TextArea rows={2} maxLength={3000} /></Form.Item>
+    </div>}
     <Space><Button type="primary" htmlType={writable ? "submit" : "button"} onClick={!writable && canPricing && record ? async () => { const values = await form.validateFields(["free_episode_count", "member_mode", ...(memberMode === "early_access" ? ["public_at"] : [])]).catch(() => null); if (values) void submit(values); } : undefined} loading={saving} disabled={(!writable && !(record && canPricing)) || stale || saving}>{record ? "保存资料" : "创建草稿"}</Button>
       {record && <span style={{ color: "#8c8c8c" }}>保存资料会重新进入草稿及审核流程</span>}</Space>
   </Form>;
