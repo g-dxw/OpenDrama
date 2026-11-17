@@ -33,7 +33,7 @@ const series = {
 async function fixture(permissions, options = {}) {
   const context = await browser.newContext({ viewport: options.viewport || { width: 1440, height: 1000 } });
   await context.addInitScript(() => localStorage.setItem('jjtv_tenant_token:india', 'synthetic-ui-token'));
-  const state = { permissions, contentCalls: 0, sessionCalls: 0 };
+  const state = { permissions, contentCalls: 0, sessionCalls: 0, writes: [], series: { ...series, ...options.series, status: options.status || series.status } };
   const tenant = { id: 'india-short-drama', code: 'india', name: 'India UI fixture', kind: 'india_legacy', status: 'active', version: 1 };
   await context.route('**/tenant/v1/context', route => route.fulfill({ json: {
     user: { id: 93001, username: 'ui.operator', display_name: 'UI operator', role: 'ops', must_change_password: false },
@@ -49,8 +49,14 @@ async function fixture(permissions, options = {}) {
       return route.fulfill({ json: options.session || { configured: true, connected: true, auth_mode: 'jjtv_delegated', permissions: state.permissions } });
     }
     state.contentCalls++;
-    if (request.method() === 'GET' && path === 'admin/series') return route.fulfill({ json: { data: { items: [{ ...series, status: options.status || series.status }], next_cursor: null } } });
-    if (request.method() === 'GET' && path === 'admin/series/ui-series') return route.fulfill({ json: { data: { ...series, status: options.status || series.status } } });
+    if (request.method() === 'GET' && path === 'admin/series') return route.fulfill({ json: { data: { items: [state.series], next_cursor: null } } });
+    if (request.method() === 'GET' && path === 'admin/series/ui-series') return route.fulfill({ json: { data: state.series } });
+    if ((request.method() === 'POST' && path === 'admin/series') || (request.method() === 'PATCH' && path === 'admin/series/ui-series')) {
+      const payload = request.postDataJSON();
+      state.writes.push({ method: request.method(), payload });
+      state.series = { ...state.series, ...payload, version: request.method() === 'POST' ? 1 : state.series.version + 1 };
+      return route.fulfill({ status: request.method() === 'POST' ? 201 : 200, json: { data: state.series } });
+    }
     if (request.method() === 'POST' && path === 'admin/episodes/ui-episode/uploads') return route.fulfill({ json: { data: { upload_id: 'ui-upload', upload_url: '/v1/admin/uploads/ui-upload/content', max_bytes: 100000 } } });
     if (request.method() === 'PUT' && path === 'admin/uploads/ui-upload/content') return route.fulfill({ json: { data: { sha256: '0'.repeat(64) } } });
     if (request.method() === 'POST' && path === 'admin/uploads/ui-upload/complete') return route.fulfill({ json: { data: { job_id: 'ui-job', status: 'failed' } } });
@@ -68,6 +74,20 @@ async function delegatedReady(page) {
   await expect(page.getByText('India role fixture', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: /连接旧站运营账号|更换旧站账号|续期连接|^断开$/ })).toHaveCount(0);
   await expect(page.getByText(/^到期 /)).toHaveCount(0);
+}
+
+async function fillNewDraft(page) {
+  await page.getByRole('button', { name: '新增剧集', exact: true }).click();
+  const modal = page.getByRole('dialog', { name: '新增 India 剧集', exact: true });
+  await modal.getByLabel('剧集名称', { exact: true }).fill('Draft without rights');
+  await modal.getByLabel('剧情简介', { exact: true }).fill('An upload draft with licensing details to follow.');
+  await modal.getByLabel('题材', { exact: true }).fill('drama');
+  await modal.getByLabel('原声语言代码', { exact: true }).fill('hi');
+  await modal.getByLabel('内容来源', { exact: true }).click();
+  await page.getByText('真人实拍', { exact: true }).last().click();
+  await modal.getByLabel('年龄分级', { exact: true }).click();
+  await page.getByText('U', { exact: true }).last().click();
+  return modal;
 }
 
 async function check(name, run) {
@@ -96,6 +116,102 @@ try {
       await page.getByRole('button', { name: '刷新当前租户权限', exact: true }).click();
       await expect(page.getByRole('button', { name: '新增剧集', exact: true })).toBeDisabled();
     } finally { await context.close(); }
+  });
+  await check('editor creates an upload draft with blank optional rights', async () => {
+    const { page, context, state } = await fixture(['dramas.view', 'dramas.edit', 'dramas.pricing']);
+    try {
+      await delegatedReady(page);
+      const modal = await fillNewDraft(page);
+      await expect(modal.getByText('版权授权（选填）', { exact: true })).toBeVisible();
+      await modal.getByRole('button', { name: '创建草稿', exact: true }).click();
+      await expect.poll(() => state.writes.length).toBe(1);
+      assert.equal(state.writes[0].method, 'POST');
+      assert.equal(state.writes[0].payload.rights, null);
+      assert.equal(state.writes[0].payload.title, 'Draft without rights');
+      assert.equal('version' in state.writes[0].payload, false);
+      await expect(modal).toBeHidden();
+    } finally { await context.close(); }
+  });
+  await check('editor saves an existing draft without licensing details', async () => {
+    const { page, context, state } = await fixture(['dramas.view', 'dramas.edit']);
+    try {
+      await delegatedReady(page);
+      await page.getByRole('button', { name: '管理内容', exact: true }).click();
+      await page.getByLabel('剧集名称', { exact: true }).fill('Edited draft without rights');
+      await page.getByRole('button', { name: '保存资料', exact: true }).click();
+      await expect.poll(() => state.writes.length).toBe(1);
+      assert.equal(state.writes[0].method, 'PATCH');
+      assert.equal(state.writes[0].payload.rights, null);
+      assert.equal(state.writes[0].payload.version, 1);
+      assert.equal(state.writes[0].payload.title, 'Edited draft without rights');
+    } finally { await context.close(); }
+  });
+  await check('partially entered licensing details cannot be saved', async () => {
+    const { page, context, state } = await fixture(['dramas.view', 'dramas.edit']);
+    try {
+      await delegatedReady(page);
+      await page.getByRole('button', { name: '管理内容', exact: true }).click();
+      await page.getByLabel('权利持有人', { exact: true }).fill('Example Rights Holder');
+      await page.getByRole('button', { name: '保存资料', exact: true }).click();
+      await expect(page.getByText('请填写此项', { exact: true }).first()).toBeVisible();
+      assert.equal(state.writes.length, 0);
+    } finally { await context.close(); }
+  });
+  await check('complete existing rights retain evidence and reject an invalid date range', async () => {
+    const rights = {
+      holder: 'Example Rights Holder', license_version: 'license-v3', territories: ['IN'], languages: ['hi'],
+      platforms: ['web'], monetization_modes: ['free'], allowed_uses: ['streaming'], exclusive: false,
+      starts_at: '2026-01-01T00:00:00.000Z', ends_at: '2028-01-01T00:00:00.000Z',
+      evidence_ref: 'rights-evidence-v3', withdrawal_terms: 'Remove content when the license ends.',
+    };
+    const { page, context, state } = await fixture(['dramas.view', 'dramas.edit'], { series: { rights, version: 7 } });
+    try {
+      await delegatedReady(page);
+      await page.getByRole('button', { name: '管理内容', exact: true }).click();
+      const starts = page.getByLabel('授权开始（本地时间）', { exact: true });
+      const ends = page.getByLabel('授权结束（本地时间）', { exact: true });
+      await ends.fill(await starts.inputValue());
+      await page.getByRole('button', { name: '保存资料', exact: true }).click();
+      await expect(page.getByText('授权结束时间必须晚于开始时间', { exact: true })).toBeVisible();
+      assert.equal(state.writes.length, 0);
+      // One calendar year later is valid in every browser timezone.
+      await ends.fill((await starts.inputValue()).replace(/^2026/, '2027'));
+      await page.getByRole('button', { name: '保存资料', exact: true }).click();
+      await expect.poll(() => state.writes.length).toBe(1);
+      assert.equal(state.writes[0].method, 'PATCH');
+      assert.equal(state.writes[0].payload.version, 7);
+      assert.deepEqual(state.writes[0].payload.rights, { ...rights, ends_at: '2027-01-01T00:00:00.000Z' });
+    } finally { await context.close(); }
+  });
+  await check('rights evidence requires saved licensing details while cover upload stays available', async () => {
+    const withoutRights = await fixture(['dramas.view', 'dramas.upload']);
+    try {
+      await delegatedReady(withoutRights.page);
+      await withoutRights.page.getByRole('button', { name: '管理内容', exact: true }).click();
+      await withoutRights.page.getByRole('tab', { name: '封面与版权证明', exact: true }).click();
+      const files = withoutRights.page.getByRole('tabpanel', { name: '封面与版权证明', exact: true });
+      await expect(files.getByText('请先在资料页补全并保存版权授权，再上传版权证明。', { exact: true })).toBeVisible();
+      await expect(files.getByLabel('授权文件版本', { exact: true })).toBeDisabled();
+      await expect(files.getByRole('button', { name: '上传版权证明', exact: true })).toBeDisabled();
+      await expect(files.getByRole('button', { name: '上传 / 替换封面', exact: true })).toBeEnabled();
+    } finally { await withoutRights.context.close(); }
+    const withRights = await fixture(['dramas.view', 'dramas.upload'], { series: { rights: {
+      holder: 'Example Rights Holder', license_version: 'license-v3', territories: ['IN'], languages: ['hi'],
+      platforms: ['web'], monetization_modes: ['free'], allowed_uses: ['streaming'], exclusive: false,
+      starts_at: '2026-01-01T00:00:00.000Z', ends_at: '2028-01-01T00:00:00.000Z',
+      evidence_ref: 'rights-evidence-v3', withdrawal_terms: 'Remove content when the license ends.',
+    } } });
+    try {
+      await delegatedReady(withRights.page);
+      await withRights.page.getByRole('button', { name: '管理内容', exact: true }).click();
+      await withRights.page.getByRole('tab', { name: '封面与版权证明', exact: true }).click();
+      const files = withRights.page.getByRole('tabpanel', { name: '封面与版权证明', exact: true });
+      await expect(files.getByText('请先在资料页补全并保存版权授权，再上传版权证明。', { exact: true })).toHaveCount(0);
+      await expect(files.getByLabel('授权文件版本', { exact: true })).toBeEnabled();
+      await expect(files.getByLabel('授权文件版本', { exact: true })).toHaveValue('license-v3');
+      await expect(files.getByRole('button', { name: '上传版权证明', exact: true })).toBeEnabled();
+      await expect(files.getByRole('button', { name: '上传 / 替换封面', exact: true })).toBeEnabled();
+    } finally { await withRights.context.close(); }
   });
   await check('uploader can upload and retry without old admin role', async () => {
     const { page, context } = await fixture(['dramas.view', 'dramas.upload']);

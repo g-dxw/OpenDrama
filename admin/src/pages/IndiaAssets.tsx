@@ -13,6 +13,7 @@ export default function IndiaAssets({ series, writable, onChanged }: { series: I
   useEffect(() => { if (!busy) setDocumentVersion(series.rights?.license_version || ""); }, [series.rights?.license_version]);
   const upload = async (file: File, cover: boolean) => {
     if (!writable || busy) return;
+    if (!cover && !series.rights) { message.error("请先在资料页补全并保存版权授权，再上传版权证明。"); return; }
     const ext = file.name.toLowerCase().split(".").pop();
     const type = ({ png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", pdf: "application/pdf", txt: "text/plain" } as Record<string, string>)[ext || ""];
     if (!type || cover && !["image/png", "image/jpeg"].includes(type) || file.size > (cover ? 5 : 10) * 1024 * 1024 || !file.size) {
@@ -44,10 +45,11 @@ export default function IndiaAssets({ series, writable, onChanged }: { series: I
     <Card size="small" title="版权证明">
       <Space direction="vertical" style={{ width: "100%" }}>
         <Typography.Text type="secondary">当前证明：{series.rights?.evidence_ref || "未登记"}。授权版本必须与证明文件版本一致。</Typography.Text>
+        {!series.rights && <Alert showIcon type="info" message="请先在资料页补全并保存版权授权，再上传版权证明。" />}
         <label htmlFor="india-document-version">授权文件版本</label>
-        <Input id="india-document-version" value={documentVersion} onChange={event => setDocumentVersion(event.target.value)} maxLength={100} disabled={!writable || !!busy} />
-        <Upload accept=".pdf,.png,.jpg,.jpeg,.txt" showUploadList={false} disabled={!writable || !!busy || !documentVersion.trim()} beforeUpload={file => { void upload(file, false); return false; }}>
-          <Button icon={<UploadOutlined aria-hidden />} disabled={!writable || !!busy || !documentVersion.trim()}>上传版权证明</Button>
+        <Input id="india-document-version" value={documentVersion} onChange={event => setDocumentVersion(event.target.value)} maxLength={100} disabled={!writable || !!busy || !series.rights} />
+        <Upload accept=".pdf,.png,.jpg,.jpeg,.txt" showUploadList={false} disabled={!writable || !!busy || !series.rights || !documentVersion.trim()} beforeUpload={file => { void upload(file, false); return false; }}>
+          <Button icon={<UploadOutlined aria-hidden />} disabled={!writable || !!busy || !series.rights || !documentVersion.trim()}>上传版权证明</Button>
         </Upload>
         <Typography.Text type="secondary">PDF / PNG / JPEG / TXT，最大 10 MiB。提交审核前请检查剧集授权声明与此证明一致。</Typography.Text>
       </Space>
