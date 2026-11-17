@@ -1,0 +1,27 @@
+{
+  "version": "v2026.11.17.2",
+  "target": "video",
+  "status": "published",
+  "sha": "b8b1b0d02785091ed252631da3cd4740c48c7455",
+  "short_sha": "b8b1b0d0",
+  "command": [
+    "/opt/minitv-multisite-312/bin/python",
+    "/mnt/d/workspace/new/jjtv-india-optional-rights/scripts/deploy_video.py",
+    "--host",
+    "video",
+    "--phase",
+    "http"
+  ],
+  "exit_code": 0,
+  "started_at": "2026-11-17T22:07:50+08:00",
+  "finished_at": "2026-11-17T22:08:54+08:00",
+  "operator": {
+    "user": "root",
+    "host": "MM-202608191734",
+    "pid": 111,
+    "agent_session": null,
+    "cwd": "/mnt/d/workspace/new/jjtv-india-optional-rights"
+  },
+  "note": "India copyright editing is explicit opt-in; prefilled licenses no longer block draft metadata saves; preserve existing rights and evidence",
+  "dirty": false
+}
