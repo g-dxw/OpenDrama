@@ -228,11 +228,10 @@ try {
         await input.press('Enter');
         await input.press('Escape');
       }
-      // Leave the tags editor before clicking nearby checkbox groups.
-      await modal.getByLabel('授权文件版本', { exact: true }).click();
       for (const label of ['Web', 'Android', 'iOS', '免费', '订阅', '在线播放', '推广']) {
         const checkbox = modal.getByRole('checkbox', { name: label, exact: true });
-        await checkbox.check();
+        await checkbox.focus();
+        await checkbox.press('Space');
         await expect(checkbox).toBeChecked();
       }
       await modal.getByLabel('授权开始（本地时间）', { exact: true }).fill('2026-01-01T08:00');
