@@ -183,6 +183,36 @@ try {
       assert.deepEqual(state.writes[0].payload.rights, { ...rights, ends_at: '2027-01-01T00:00:00.000Z' });
     } finally { await context.close(); }
   });
+  await check('rights evidence requires saved licensing details while cover upload stays available', async () => {
+    const withoutRights = await fixture(['dramas.view', 'dramas.upload']);
+    try {
+      await delegatedReady(withoutRights.page);
+      await withoutRights.page.getByRole('button', { name: '管理内容', exact: true }).click();
+      await withoutRights.page.getByRole('tab', { name: '封面与版权证明', exact: true }).click();
+      const files = withoutRights.page.getByRole('tabpanel', { name: '封面与版权证明', exact: true });
+      await expect(files.getByText('请先在资料页补全并保存版权授权，再上传版权证明。', { exact: true })).toBeVisible();
+      await expect(files.getByLabel('授权文件版本', { exact: true })).toBeDisabled();
+      await expect(files.getByRole('button', { name: '上传版权证明', exact: true })).toBeDisabled();
+      await expect(files.getByRole('button', { name: '上传 / 替换封面', exact: true })).toBeEnabled();
+    } finally { await withoutRights.context.close(); }
+    const withRights = await fixture(['dramas.view', 'dramas.upload'], { series: { rights: {
+      holder: 'Example Rights Holder', license_version: 'license-v3', territories: ['IN'], languages: ['hi'],
+      platforms: ['web'], monetization_modes: ['free'], allowed_uses: ['streaming'], exclusive: false,
+      starts_at: '2026-01-01T00:00:00.000Z', ends_at: '2028-01-01T00:00:00.000Z',
+      evidence_ref: 'rights-evidence-v3', withdrawal_terms: 'Remove content when the license ends.',
+    } } });
+    try {
+      await delegatedReady(withRights.page);
+      await withRights.page.getByRole('button', { name: '管理内容', exact: true }).click();
+      await withRights.page.getByRole('tab', { name: '封面与版权证明', exact: true }).click();
+      const files = withRights.page.getByRole('tabpanel', { name: '封面与版权证明', exact: true });
+      await expect(files.getByText('请先在资料页补全并保存版权授权，再上传版权证明。', { exact: true })).toHaveCount(0);
+      await expect(files.getByLabel('授权文件版本', { exact: true })).toBeEnabled();
+      await expect(files.getByLabel('授权文件版本', { exact: true })).toHaveValue('license-v3');
+      await expect(files.getByRole('button', { name: '上传版权证明', exact: true })).toBeEnabled();
+      await expect(files.getByRole('button', { name: '上传 / 替换封面', exact: true })).toBeEnabled();
+    } finally { await withRights.context.close(); }
+  });
   await check('uploader can upload and retry without old admin role', async () => {
     const { page, context } = await fixture(['dramas.view', 'dramas.upload']);
     try {
