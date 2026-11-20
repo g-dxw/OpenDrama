@@ -1,4 +1,4 @@
-import { respondSiteBootstrap } from "../../tests/frontend-site-fixture.mjs";
+import { respondSiteBootstrap, siteBootstrapFixture } from "../../tests/frontend-site-fixture.mjs";
 /** Desktop language acceptance with explicit local API fixtures; no provider calls. */
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -153,7 +153,8 @@ try{
     assert((await page.$eval('table tbody tr td:nth-child(2)',node=>node.textContent)).includes('Server Order Product'));
     await waitText('table tbody tr td:nth-child(3)',await formatted(locale,1234.56,'EUR'));
     await waitText('table tbody tr .status-tag',copy(locale,'Paid'));
-    const date=await page.evaluate((tag,value)=>new Intl.DateTimeFormat(tag,{dateStyle:'medium',timeStyle:'short'}).format(new Date(value)),tags[locale],createdAt);
+    const timeZone=siteBootstrapFixture(origin).tenant.timezone;
+    const date=await page.evaluate((tag,value,timeZone)=>new Intl.DateTimeFormat(tag,{dateStyle:'medium',timeStyle:'short',timeZone}).format(new Date(value)),tags[locale],createdAt,timeZone);
     await waitText('table tbody tr td:first-child small',date);
     check(locale+' order status/date/amount and immutable product label');
     await route('support?new=1','.support-main form');
@@ -183,7 +184,7 @@ try{
     assert((await page.$eval('.auth-sheet',node=>node.textContent)).includes(pageCopy(locale,'Email address')));
     await page.click('.auth-sheet .modal-head button');
     assert.equal(await page.evaluate(()=>document.documentElement.lang),tags[locale]);
-    assert.equal(await page.$eval('.header-language',node=>node.textContent.replace('⌄','').trim()),locale.toUpperCase());
+    assert.equal(await page.$eval('.header-language',node=>node.textContent.trim()),locale.toUpperCase());
     check(locale+' login copy and locale survives reload');console.log('Verified '+locale+' desktop pages');
   }
   await page.evaluate(()=>localStorage.setItem('jjtv_pc_token','locale-fixture-token'));
