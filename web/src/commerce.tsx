@@ -1,7 +1,7 @@
 import {RightsNotice} from "./rights-notice";
 import {
   checkoutReturnMarker,
-  isProductMappedProvider,
+  isReconciledProvider,
   paymentChannelOptions,
   selectedPaymentChannel,
   paymentChannelFields,
@@ -722,7 +722,7 @@ function PaymentChannelSelect({channels, selected, label, disabled, onSelect}: {
   onSelect: (key: string) => void;
 }) {
   if (channels.length < 2) {
-    return selected && isProductMappedProvider(selected.provider)
+    return selected && isReconciledProvider(selected.provider)
       ? <p className="muted payment-channel">{label} · {selected.name}</p>
       : null;
   }

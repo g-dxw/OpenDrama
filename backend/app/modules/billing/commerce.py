@@ -190,7 +190,10 @@ def _account_lock(db,code):
 def _account_has_history(db,code):
     candidates = (
         select(Order.id).where(Order.account_code == code, Order.provider == 'stripe'),
-        select(Subscription.id).where(Subscription.account_code == code),
+        select(Subscription.id).where(
+            Subscription.account_code == code, Subscription.creem_subscription_id.is_(None),
+            Subscription.pancake_subscription_id.is_(None), Subscription.waffo_subscription_id.is_(None),
+        ),
         select(StripePriceBinding.id).where(StripePriceBinding.account_code == code),
     )
     return any(db.scalar(stmt.limit(1).execution_options(include_all_tenants=True)) is not None for stmt in candidates)
@@ -440,6 +443,13 @@ def checkout(db,*,user_id,email,product_type,code,idempotency_key,account_code=N
             idempotency_key=idempotency_key, account_code=account_code, success_url=success_url,
             cancel_url=cancel_url, source_drama_id=source_drama_id, attribution_pid=attribution_pid,
         )
+    if provider == 'waffo':
+        from app.modules.billing import waffo_commerce
+        return waffo_commerce.checkout(
+            db, user_id=user_id, email=email, product_type=product_type, code=code,
+            idempotency_key=idempotency_key, account_code=account_code, success_url=success_url,
+            cancel_url=cancel_url, source_drama_id=source_drama_id, attribution_pid=attribution_pid,
+        )
     from app.modules.tenancy.consumer_scope import require_owned
     require_owned(db,User,user_id)
     success=return_url(success_url,'success',db);cancel=return_url(cancel_url,'cancel',db)
@@ -468,9 +478,10 @@ def checkout(db,*,user_id,email,product_type,code,idempotency_key,account_code=N
         from app.modules.billing.site_merchants import assert_site_currency
         assert_site_currency(db,snapshot['currency'])
         if snapshot['billing_mode']=='subscription':
-            from app.modules.billing import creem_commerce, pancake_commerce
+            from app.modules.billing import creem_commerce, pancake_commerce, waffo_commerce
             creem_commerce.guard_other_recurring(db,user_id)
             pancake_commerce.guard_other_recurring(db,user_id)
+            waffo_commerce.guard_other_recurring(db,user_id)
             # Persisted orders reserve the right to create ONE subscription even
             # while a remote response or its first invoice has not arrived.
             pending=list(db.scalars(select(Order).where(Order.user_id==user_id,Order.product_type=='membership',Order.billing_mode=='subscription',Order.status.in_(('created','paid','failed'))).order_by(Order.id)))
@@ -522,7 +533,7 @@ def cancel_checkout(db,user_id,order_no):
     wallet_lock(db,user_id)
     order=db.scalar(select(Order).where(Order.order_no==order_no,Order.user_id==user_id).with_for_update())
     if order is None:raise BillingError(404,'order not found')
-    if (order.provider in {'creem','waffo_pancake'} and order.billing_mode=='subscription' and order.status=='created'
+    if (order.provider in {'creem','waffo_pancake','waffo'} and order.billing_mode=='subscription' and order.status=='created'
             and not order.checkout_url and not order.subscription_ref and not order.checkout_context.get('provider_checkout_id')):
         order.status='failed'
         order.checkout_context={**order.checkout_context,'checkout_expired':True}
@@ -558,8 +569,13 @@ def _administratively_revoked_membership(db,order,grant=None):
     source=dict(order_id=order.id)
     if grant is not None:source['grant_id']=grant.id
     matches=[AuditLog.payload['revoked_membership_sources'].contains([source])]
-    if order.billing_mode=='subscription' and order.subscription_ref and order.provider in {'creem','waffo_pancake'}:
-        key = 'revoked_creem_subscription_bindings' if order.provider=='creem' else 'revoked_pancake_subscription_bindings'
+    provider_fences = {
+        'creem': 'revoked_creem_subscription_bindings',
+        'waffo_pancake': 'revoked_pancake_subscription_bindings',
+        'waffo': 'revoked_waffo_subscription_bindings',
+    }
+    if order.billing_mode=='subscription' and order.subscription_ref and order.provider in provider_fences:
+        key = provider_fences[order.provider]
         matches.append(AuditLog.payload[key].contains([
             dict(account_code=order.account_code,subscription_id=order.subscription_ref),
         ]))
@@ -737,10 +753,11 @@ def process_event(db,code,payload):
         if sub is not None and sub.user_id!=order.user_id:raise BillingError(409,'subscription owner does not match frozen order')
         if sub is None:
             old=None if administratively_revoked else db.scalar(select(Subscription).where(Subscription.user_id==order.user_id,Subscription.status=='active').with_for_update())
-            if old and old.stripe_subscription_id and old.stripe_subscription_id!=subscription and old.canceled_at is None:
-                raise BillingError(409,'another renewing subscription already exists')
             preserved_pass=None
             if old:
+                from app.modules.billing.service import _is_recurring
+                if _is_recurring(old) and old.stripe_subscription_id != subscription and old.canceled_at is None:
+                    raise BillingError(409,'another renewing subscription already exists')
                 # Keep old merchant/subscription IDs and version as history.
                 # Managed paid periods live in their own grants; legacy/manual
                 # windows must remain usable through the new active binding.
@@ -840,6 +857,12 @@ def refund_payment_review_reason(db,order):
             return 'Waffo Pancake 订阅退款需人工核对后续扣费和会员权益'
         if not order.external_txn_id or not (order.checkout_context or {}).get('provider_trade_no'):
             return 'Waffo Pancake 订单缺少可验证的原始交易'
+        return None
+    if order.provider == 'waffo':
+        if order.billing_mode != 'one_time':
+            return 'Waffo 订阅退款需人工核对后续扣费和会员权益'
+        if not order.external_txn_id or not (order.checkout_context or {}).get('provider_order_id'):
+            return 'Waffo 订单缺少可验证的原始交易'
         return None
     context=order.checkout_context or {}
     ids=context.get('invoice_payment_intent_ids') or []
@@ -1102,6 +1125,9 @@ def request_refund(db,order_no,actor,reason,idempotency_key):
     if order.provider=='waffo_pancake':
         from app.modules.billing import pancake_commerce
         return pancake_commerce.request_refund(db,order,wallet,existing,actor,reason)
+    if order.provider=='waffo':
+        from app.modules.billing import waffo_commerce
+        return waffo_commerce.request_refund(db,order,wallet,existing,actor,reason)
     if existing:
         db.commit()
         return reconcile_refund(db,order,existing)
@@ -1149,7 +1175,7 @@ def _reconcile_failed_one_time_membership(db,order,refund,grant,status):
         case=dict(version=1,provider_status=status,provider_refund_id=refund.refund_id,conflicting_settlement_order_ids=newer,blockers_at_outcome=blockers,budget_error=budget_error)
         order.checkout_context={**context,'membership_refund_reconciliation':case}
         refund.status='manual_review';order.status='refund_review'
-        provider_name = {'stripe': 'Stripe', 'creem': 'Creem', 'waffo_pancake': 'Waffo Pancake'}.get(order.provider, order.provider)
+        provider_name = {'stripe': 'Stripe', 'creem': 'Creem', 'waffo_pancake': 'Waffo Pancake', 'waffo': 'Waffo'}.get(order.provider, order.provider)
         refund.error=provider_name+'退款已确认'+('失败' if status=='failed' else '取消')+'；会员来源需要按冻结剩余时长结案，原权益和金币继续冻结。'+(budget_error or ('存在冻结后结算的会员订单：'+','.join(map(str,newer)) if newer else '；'.join(reasons)))
         db.add(AuditLog(actor_type='system',action='membership_source.reconciliation_required',target_type='order',target_id=order.id,created_at=now(),payload=dict(source_order_id=order.id,grant_id=grant.id,freeze=frozen,case=case)))
         db.flush();return True

@@ -9,7 +9,7 @@ from sqlalchemy import select, text
 from app.modules.billing import commerce, pancake_accounts, waffo_pancake as pancake
 from app.modules.billing.commerce_models import GatewayAccount, MembershipGrant
 from app.modules.billing.models import Order, PancakePeriodEvidence, PlanVersion, Subscription
-from app.modules.billing.service import BillingError, INTERVAL_OF, active_subscription
+from app.modules.billing.service import BillingError, INTERVAL_OF, _is_recurring, active_subscription
 
 
 PROVIDER = pancake_accounts.PROVIDER
@@ -187,9 +187,7 @@ def _advance_period(db, initial, order, reference, start, end, remote):
             raise BillingError(409, "Original Waffo Pancake subscription plan is unavailable")
         previous = active_subscription(db, initial.user_id, for_update=True)
         revoked = commerce._administratively_revoked_membership(db, order)
-        superseded = bool(previous and not previous.canceled_at and (
-            previous.stripe_subscription_id or previous.creem_subscription_id or previous.pancake_subscription_id
-        ))
+        superseded = bool(previous and not previous.canceled_at and _is_recurring(previous))
         pass_end = None
         if previous and not revoked and not superseded:
             windows = [previous.pass_end, previous.current_period_end if not previous.managed_commerce else None]

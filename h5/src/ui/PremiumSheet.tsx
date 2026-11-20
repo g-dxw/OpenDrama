@@ -2,7 +2,6 @@ import { RightsNotice } from "./RightsNotice";
 import type {ContentRights} from "../../../shared/consumer/types";
 import { getSite, siteMoney, siteFeature } from "../../../shared/site";
 import {
-  isProductMappedProvider,
   isReconciledProvider,
   paymentChannelOptions,
   selectedPaymentChannel,
@@ -166,7 +165,7 @@ export function PremiumSheet({
   function channelPicker(planCode = "") {
     const {key, options, selected} = channelPreference(planCode);
     if (options.length < 2) {
-      return selected && isProductMappedProvider(selected.provider)
+      return selected && isReconciledProvider(selected.provider)
         ? <p className="premium-note">{t(locale, "premium_payment_option")} · {selected.name}</p>
         : null;
     }
@@ -317,7 +316,7 @@ export function PremiumSheet({
         "action" in detail && (
           detail.action === "resume_only" ||
           (detail.action === "resume_or_cancel" && "provider" in detail &&
-            typeof detail.provider === "string" && isProductMappedProvider(detail.provider))
+            typeof detail.provider === "string" && isReconciledProvider(detail.provider))
         ) &&
         "order_no" in detail && typeof detail.order_no === "string" && detail.order_no
       ) {

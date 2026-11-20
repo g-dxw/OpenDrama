@@ -130,9 +130,10 @@ def checkout(db, *, user_id, email, product_type, code, idempotency_key, account
         if product_type == "membership":
             commerce._membership_refund_checkout_guard(db, user_id)
         if bill == "subscription":
-            from app.modules.billing import pancake_commerce
+            from app.modules.billing import pancake_commerce, waffo_commerce
             guard_other_recurring(db, user_id)
             pancake_commerce.guard_other_recurring(db, user_id)
+            waffo_commerce.guard_other_recurring(db, user_id)
             _assert_stripe_reservation_released(db, user_id)
         commerce.validate_checkout_source(db, source_drama_id)
         binding = creem_accounts.product_binding(db, account.code, product_type, snapshot["version_id"], bill)

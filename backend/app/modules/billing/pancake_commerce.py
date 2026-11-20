@@ -110,8 +110,10 @@ def checkout(db, *, user_id, email, product_type, code, idempotency_key, account
         if product_type == "membership":
             commerce._membership_refund_checkout_guard(db, user_id)
         if bill == "subscription":
+            from app.modules.billing import waffo_commerce
             guard_other_recurring(db, user_id)
             creem_commerce.guard_other_recurring(db, user_id)
+            waffo_commerce.guard_other_recurring(db, user_id)
             creem_commerce._assert_stripe_reservation_released(db, user_id)
         commerce.validate_checkout_source(db, source_drama_id)
         binding = gateway_products.binding(db, PROVIDER, account.code, product_type, snapshot["version_id"], bill)

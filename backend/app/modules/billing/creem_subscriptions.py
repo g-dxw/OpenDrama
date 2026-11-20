@@ -9,7 +9,7 @@ from sqlalchemy import select, text
 from app.modules.billing import commerce, creem, creem_accounts
 from app.modules.billing.commerce_models import CommerceSettlement, GatewayAccount, MembershipGrant
 from app.modules.billing.models import Order, PlanVersion, Subscription
-from app.modules.billing.service import BillingError, active_subscription
+from app.modules.billing.service import BillingError, _is_recurring, active_subscription
 
 
 PROVIDER = creem_accounts.PROVIDER
@@ -225,8 +225,7 @@ def _advance_paid_period(db, account, initial, order, sub_id, start, end):
             raise BillingError(409, "Original Creem subscription plan is unavailable")
         previous = active_subscription(db, order.user_id, for_update=True)
         revoked = commerce._administratively_revoked_membership(db, order)
-        superseded = bool(previous and not previous.canceled_at
-                          and (previous.stripe_subscription_id or previous.creem_subscription_id))
+        superseded = bool(previous and not previous.canceled_at and _is_recurring(previous))
         pass_end = None
         if not revoked and not superseded and previous:
             windows = [previous.pass_end, previous.current_period_end if not previous.managed_commerce else None]

@@ -94,6 +94,7 @@ class Subscription(Base):
     stripe_price_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     creem_subscription_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     pancake_subscription_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    waffo_subscription_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     billing_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="subscription")
     # End of one-time passes; independent from current_period_end so a renewal
     # never wipes access that was bought outright.
@@ -130,6 +131,13 @@ class Subscription(Base):
             "pancake_subscription_id",
             unique=True,
             postgresql_where=text("pancake_subscription_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_subscriptions_waffo_account_id",
+            "account_code",
+            "waffo_subscription_id",
+            unique=True,
+            postgresql_where=text("waffo_subscription_id IS NOT NULL"),
         ),
     )
 

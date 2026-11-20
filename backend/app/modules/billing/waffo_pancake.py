@@ -85,7 +85,7 @@ _ORDER_FIELDS = {
     """,
 }
 _REFUND_FIELDS = """
-  id paymentId ticketId status orderMerchantExternalId refundTicketMerchantExternalId
+  id paymentId ticketId status orderMerchantExternalId refundTicketMerchantExternalId isAmountMismatch
   amount { display currency }
   requestedAmountDetails { amount currency }
   pspAmountDetails { amount currency }

@@ -414,7 +414,7 @@ def _window_base(row: Subscription) -> datetime:
 
 
 def _is_recurring(row: Subscription) -> bool:
-    return bool(row.stripe_subscription_id or row.creem_subscription_id or row.pancake_subscription_id)
+    return bool(row.stripe_subscription_id or row.creem_subscription_id or row.pancake_subscription_id or row.waffo_subscription_id)
 
 
 def _describe(sub: Subscription, plan: Plan) -> dict:
@@ -1316,6 +1316,12 @@ def cancel_subscription(session:Session,user_id:int)->None:
     from app.modules.billing.commerce import wallet_lock
     wallet_lock(session,user_id)
     row=active_subscription(session,user_id,for_update=True)
+    if row is not None and row.waffo_subscription_id:
+        from app.modules.billing.waffo_subscriptions import cancel_renewal
+
+        cancel_renewal(session,row)
+        session.commit()
+        return
     if row is not None and row.pancake_subscription_id:
         from app.modules.billing.pancake_subscriptions import cancel_renewal
 
@@ -1351,7 +1357,7 @@ def _existing_membership_sources(session:Session,user_id:int)->list[dict]:
 
 
 def revoke_membership(session:Session,*,user_id:int,mode:str,reason:str,actor_id:int)->dict:
-    from app.modules.billing import commerce, creem_subscriptions, pancake_subscriptions
+    from app.modules.billing import commerce, creem_subscriptions, pancake_subscriptions, waffo_subscriptions
     from app.modules.billing.commerce_models import MembershipGrant
     if mode not in REVOKE_MODES:raise BillingError(422,'unknown revoke mode')
     if not reason.strip():raise BillingError(422,'请填写取消原因')
@@ -1361,8 +1367,9 @@ def revoke_membership(session:Session,*,user_id:int,mode:str,reason:str,actor_id
     revoked_bindings=_existing_managed_subscription_bindings(session,user_id) if mode=='now' else []
     revoked_creem=creem_subscriptions.existing_bindings(session,user_id) if mode=='now' else []
     revoked_pancake=pancake_subscriptions.revocable_bindings(session,user_id) if mode=='now' else []
+    revoked_waffo=waffo_subscriptions.revocable_bindings(session,user_id) if mode=='now' else []
     revoked_sources=_existing_membership_sources(session,user_id) if mode=='now' else []
-    if not grants and (row is None or not row.managed_commerce) and not revoked_bindings and not revoked_creem and not revoked_pancake and not revoked_sources:
+    if not grants and (row is None or not row.managed_commerce) and not revoked_bindings and not revoked_creem and not revoked_pancake and not revoked_waffo and not revoked_sources:
         with managed_stripe_runtime(session,row.account_code if row else "env"):
             return _legacy_revoke_membership(session,user_id=user_id,mode=mode,reason=reason,actor_id=actor_id)
     before=access_until(session,user_id)
@@ -1370,7 +1377,8 @@ def revoke_membership(session:Session,*,user_id:int,mode:str,reason:str,actor_id
     stripe_id=row.stripe_subscription_id if row else None
     creem_id=row.creem_subscription_id if row else None
     pancake_id=row.pancake_subscription_id if row else None
-    if mode=='period_end' and not (stripe_id or creem_id or pancake_id):raise BillingError(409,'时长包没有续费概念，请选择「立即收回」')
+    waffo_id=row.waffo_subscription_id if row else None
+    if mode=='period_end' and not (stripe_id or creem_id or pancake_id or waffo_id):raise BillingError(409,'时长包没有续费概念，请选择「立即收回」')
     if stripe_id:
         if row.managed_commerce:
             if mode=='period_end':
@@ -1390,6 +1398,8 @@ def revoke_membership(session:Session,*,user_id:int,mode:str,reason:str,actor_id
         creem_subscriptions.cancel_renewal(session,row)
     if mode=='period_end' and pancake_id:
         pancake_subscriptions.cancel_renewal(session,row)
+    if mode=='period_end' and waffo_id:
+        waffo_subscriptions.cancel_renewal(session,row)
     if mode=='now':
         if creem_id:
             binding = dict(account_code=row.account_code,subscription_id=creem_id)
@@ -1401,6 +1411,11 @@ def revoke_membership(session:Session,*,user_id:int,mode:str,reason:str,actor_id
             if binding not in revoked_pancake:
                 revoked_pancake.append(binding)
         pancake_subscriptions.cancel_known_bindings(session,revoked_pancake,row)
+        if waffo_id:
+            binding = dict(account_code=row.account_code,subscription_id=waffo_id)
+            if binding not in revoked_waffo:
+                revoked_waffo.append(binding)
+        waffo_subscriptions.cancel_known_bindings(session,revoked_waffo,row)
     moment=_now()
     if row:row.canceled_at=moment
     if mode=='now':
@@ -1415,6 +1430,8 @@ def revoke_membership(session:Session,*,user_id:int,mode:str,reason:str,actor_id
             payload['revoked_creem_subscription_bindings']=revoked_creem
         if revoked_pancake:
             payload['revoked_pancake_subscription_bindings']=revoked_pancake
+        if revoked_waffo:
+            payload['revoked_waffo_subscription_bindings']=revoked_waffo
     session.add(AuditLog(actor_type='admin',actor_id=actor_id,action='membership_revoke',target_type='user',target_id=user_id,payload=payload,created_at=_now()))
     session.commit()
     result=dict(mode=mode,before_until=before.isoformat(),after_until=before.isoformat() if mode=='period_end' else moment.isoformat(),stripe_canceled=bool(stripe_id))
@@ -1422,6 +1439,8 @@ def revoke_membership(session:Session,*,user_id:int,mode:str,reason:str,actor_id
         result['creem_canceled']=True
     if pancake_id or revoked_pancake:
         result['pancake_canceled']=True
+    if waffo_id or revoked_waffo:
+        result['waffo_canceled']=True
     return result
 
 

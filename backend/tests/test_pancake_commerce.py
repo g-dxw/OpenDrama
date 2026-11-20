@@ -158,6 +158,11 @@ def test_pancake_refund_runs_once_and_needs_matching_executed_amount(merchant, s
     assert len(submitted) == 1
     assert submitted[0]['refund_no'] == 'jjtv-refund-' + number
     assert session.get(WalletAccount, buyer.id).balance == 0
+    monkeypatch.setattr(pancake, 'get_refund', lambda **_: {
+        'status': 'succeeded', 'amount': {'display': '5.00', 'currency': 'USD'}, 'isAmountMismatch': True,
+    })
+    assert request()['status'] == 'pending'
+    monkeypatch.setattr(pancake, 'get_refund', lambda **_: None)
     callback = {'currency': 'USD', 'refundStatus': 'succeeded',
                 'refundTicketMerchantExternalId': 'jjtv-refund-' + number, 'refundedAmount': '4.99'}
     assert signed_event(client, number, kind='refund.succeeded', extra=callback).status_code == 200

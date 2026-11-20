@@ -34,6 +34,7 @@ export function paymentChannelOptions(
     code,
     enabled.filter((channel) => {
       if (channel.provider === "epay") return Boolean(channel.method) && mode === "one_time";
+      if (channel.provider === "waffo") return channel.billing_modes?.includes(mode) === true;
       if (isProductMappedProvider(channel.provider)) {
         return channel.products?.some((item) =>
           item.product_type === productType && item.product_code === code && item.billing_mode === mode,
@@ -65,6 +66,7 @@ const returnFields = {
   epay: ["pid", "trade_no", "out_trade_no", "type", "name", "money", "trade_status", "sign", "sign_type", "param"],
   creem: ["request_id", "checkout_id", "order_id", "customer_id", "subscription_id", "product_id", "signature"],
   waffo_pancake: ["sessionId"],
+  waffo: [],
 };
 
 export function isReconciledProvider(provider?: string | null): provider is keyof typeof returnFields {

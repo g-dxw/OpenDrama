@@ -79,7 +79,7 @@ class CheckoutIn(BaseModel):
     product_type:str=Field(pattern='^(membership|coin_pack)$')
     code:str=Field(min_length=1,max_length=32)
     account_code:str|None=None
-    provider:Literal['stripe','epay','creem','waffo_pancake']='stripe'
+    provider:Literal['stripe','epay','creem','waffo_pancake','waffo']='stripe'
     payment_method:str|None=Field(default=None,pattern='^[a-z0-9_]{1,64}$')
     idempotency_key:str=Field(min_length=8,max_length=100)
     success_url:str|None=Field(default=None,max_length=2000)
@@ -136,6 +136,10 @@ def _consumer_order_detail(order_no,response,user,db,*,reconcile=False):
     elif reconcile and row.provider=='waffo_pancake':
         from app.modules.billing import pancake_commerce
         call(db,pancake_commerce.reconcile,db,row)
+        db.refresh(row)
+    elif reconcile and row.provider=='waffo':
+        from app.modules.billing import waffo_commerce
+        call(db,waffo_commerce.reconcile,db,row)
         db.refresh(row)
     snapshot=row.product_snapshot if isinstance(row.product_snapshot,dict) else {}
     code=snapshot.get('code')
@@ -217,6 +221,23 @@ async def pancake_webhook(code: str, request: Request, signature: str = Header(d
             raise HTTPException(413, 'Waffo Pancake notification is too large')
         body.extend(chunk)
     return await run_in_threadpool(call, db, pancake_commerce.receive, db, code, bytes(body), signature)
+
+
+@public_router.post('/billing/waffo/accounts/{code}/webhook', include_in_schema=False)
+async def waffo_webhook(code: str, request: Request, signature: str = Header(default='', alias='X-SIGNATURE'),
+                        db: Session = Depends(get_db)):
+    from fastapi.concurrency import run_in_threadpool
+    from app.modules.billing import waffo_commerce
+
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > 1024 * 1024:
+            raise HTTPException(413, 'Waffo notification is too large')
+        body.extend(chunk)
+    payload, signed = await run_in_threadpool(
+        call, db, waffo_commerce.receive, db, code, bytes(body), signature or request.headers.get('X-Waffo-Signature', ''),
+    )
+    return Response(payload, media_type='application/json', headers={'X-SIGNATURE': signed, 'Cache-Control': 'no-store'})
 
 @admin_router.get('/coin-packs')
 def admin_packs(user=Depends(require_admin),db:Session=Depends(get_db)):return {'items':service.list_packs(db,True)}
@@ -646,3 +667,78 @@ def pancake_save_product(body: PancakeProductBindingIn, db: Session = Depends(ge
     from app.modules.billing import pancake_accounts
 
     return call(db, pancake_accounts.save_binding, db, body.model_dump(), user.id)
+
+
+WaffoMerchant = Annotated[str, StringConstraints(pattern=r'^[A-Za-z0-9_-]{1,100}$')]
+GatewayCurrency = Annotated[str, StringConstraints(pattern=r'^[A-Z]{3}$')]
+WAFFO_SECRETS = ('api_key', 'private_key', 'public_key')
+
+
+class WaffoAccountIn(BaseModel):
+    code: GatewayCode
+    name: str = Field(min_length=1, max_length=100)
+    status: GatewayStatus = 'draft'
+    mode: GatewayMode
+    merchant_id: WaffoMerchant
+    currency: GatewayCurrency = 'USD'
+    subscriptions_enabled: bool = False
+    api_key: SecretStr | None = None
+    private_key: SecretStr | None = None
+    public_key: SecretStr | None = None
+
+
+class WaffoAccountPatch(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    status: GatewayStatus | None = None
+    mode: GatewayMode | None = None
+    merchant_id: WaffoMerchant | None = None
+    currency: GatewayCurrency | None = None
+    subscriptions_enabled: bool | None = None
+    api_key: SecretStr | None = None
+    private_key: SecretStr | None = None
+    public_key: SecretStr | None = None
+
+
+@platform_router.get('/waffo/accounts')
+def waffo_account_list(db: Session = Depends(get_db), user=Depends(require_platform_admin)):
+    from app.modules.billing import gateway_accounts, waffo_accounts
+
+    return {'items': [waffo_accounts.account_public(row) for row in gateway_accounts.accounts(db, 'waffo')]}
+
+
+@platform_router.post('/waffo/accounts')
+def waffo_create_account(body: WaffoAccountIn, db: Session = Depends(get_db), user=Depends(require_platform_admin)):
+    from app.modules.billing import waffo_accounts
+
+    return call(db, waffo_accounts.save_account, db, body.code,
+                _gateway_settings(body, WAFFO_SECRETS, max_chars=16384), user.id, create=True)
+
+
+@platform_router.patch('/waffo/accounts/{code}')
+def waffo_update_account(code: GatewayCode, body: WaffoAccountPatch, db: Session = Depends(get_db),
+                          user=Depends(require_platform_admin)):
+    from app.modules.billing import waffo_accounts
+
+    return call(db, waffo_accounts.save_account, db, code,
+                _gateway_settings(body, WAFFO_SECRETS, max_chars=16384), user.id)
+
+
+@platform_router.post('/waffo/accounts/{code}/test')
+def waffo_test_account(code: GatewayCode, db: Session = Depends(get_db), user=Depends(require_platform_admin)):
+    from app.modules.billing import waffo_accounts
+
+    return call(db, waffo_accounts.test_account, db, code)
+
+
+@tenant_router.get('/waffo/merchant-binding')
+def waffo_read_binding(db: Session = Depends(get_db), user=Depends(require_tenant_admin)):
+    from app.modules.billing import waffo_accounts
+
+    return call(db, waffo_accounts.binding_info, db)
+
+
+@tenant_router.put('/waffo/merchant-binding')
+def waffo_set_binding(body: GatewayBindingIn, db: Session = Depends(get_db), user=Depends(require_tenant_admin)):
+    from app.modules.billing import waffo_accounts
+
+    return call(db, waffo_accounts.bind, db, body.account_code, user.id)

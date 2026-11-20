@@ -135,7 +135,8 @@ let activeMember = false,
   orderHold = null,
   epayAvailable = false,
   creemAvailable = false,
-  pancakeAvailable = false;
+  pancakeAvailable = false,
+  waffoAvailable = false;
 const recoveryReplies = [];
 const checkoutFacts = new Map();
 const pending = [],
@@ -562,7 +563,7 @@ page.on("request", async (req) => {
         await fulfillHeld(req, held, result);
         return;
       }
-    } else if (["EPAY-H5-ORDER", "EPAY-H5-SECOND", "CREEM-H5-ORDER", "PANCAKE-H5-ORDER"].some((id) => p === "/v1/commerce/orders/" + id + "/reconcile") && req.method() === "POST") {
+    } else if (["EPAY-H5-ORDER", "EPAY-H5-SECOND", "CREEM-H5-ORDER", "PANCAKE-H5-ORDER", "WAFFO-H5-ORDER"].some((id) => p === "/v1/commerce/orders/" + id + "/reconcile") && req.method() === "POST") {
       const order = checkoutFacts.get(p.split("/")[4]);
       if (order) {
         order.status = "paid";
@@ -570,19 +571,22 @@ page.on("request", async (req) => {
       }
       result = { order, settled: order?.settled };
     } else if (p === "/v1/commerce/checkout") {
-      if ((creemAvailable && body.provider === "creem") ||
-          (pancakeAvailable && body.provider === "waffo_pancake")) {
+      const hostedOrder = {
+        creem: creemAvailable && {
+          id: "CREEM-H5-ORDER", fields: "&subscription_id=sub_fixture&product_id=prod_fixture&signature=fixture",
+        },
+        waffo_pancake: pancakeAvailable && {id: "PANCAKE-H5-ORDER", fields: "&sessionId=other_session"},
+        waffo: waffoAvailable && {id: "WAFFO-H5-ORDER", fields: ""},
+      }[body.provider];
+      if (hostedOrder) {
         const order = {
-          order_no: body.provider === "creem" ? "CREEM-H5-ORDER" : "PANCAKE-H5-ORDER",
-          product_type: "membership", product_code: body.code, status: "created", settled: false,
+          order_no: hostedOrder.id, product_type: "membership",
+          product_code: body.code, status: "created", settled: false,
         };
         checkoutFacts.set(order.order_no, order);
-        const fields = body.provider === "creem"
-          ? "&subscription_id=sub_fixture&product_id=prod_fixture&signature=fixture"
-          : "&sessionId=other_session";
         result = {
           url: origin + "/?checkout=success&surface=h5&payment_provider=" + body.provider +
-            "&order_no=" + order.order_no + fields + "#account/orders",
+            "&order_no=" + order.order_no + hostedOrder.fields + "#account/orders",
           order_no: order.order_no, session_id: "fixture_session",
         };
       } else if (epayAvailable && body.provider === "epay") {
@@ -647,7 +651,7 @@ page.on("request", async (req) => {
       }
     } else if (p === "/v1/plans")
       result = {
-        billing_mode: creemAvailable ? "subscription" : "one_time",
+        billing_mode: creemAvailable || waffoAvailable ? "subscription" : "one_time",
         items: [
           {
             code: "weekly",
@@ -658,11 +662,11 @@ page.on("request", async (req) => {
             version: 1,
             version_id: 1,
             benefits: { items: ["Configured benefit"] },
-            duration_days: creemAvailable ? null : 7,
-            recurring_interval: creemAvailable ? "week" : null,
-            billing_mode: creemAvailable ? "subscription" : "one_time",
+            duration_days: creemAvailable || waffoAvailable ? null : 7,
+            recurring_interval: creemAvailable || waffoAvailable ? "week" : null,
+            billing_mode: creemAvailable || waffoAvailable ? "subscription" : "one_time",
           },
-          ...(creemAvailable ? [{
+          ...(creemAvailable || waffoAvailable ? [{
             code: "monthly", name_en: "Monthly unmapped", name_zh: "月卡",
             price_cents: 799, currency: "USD", version: 1, version_id: 2,
             benefits: {}, recurring_interval: "month", billing_mode: "subscription",
@@ -711,6 +715,10 @@ page.on("request", async (req) => {
             code: "pancake-fixture", name: "Waffo Pancake fixture", provider: "waffo_pancake", enabled: true,
             billing_modes: ["one_time"],
             products: [{product_type: "membership", product_code: "weekly", billing_mode: "one_time"}],
+          }] : []),
+          ...(waffoAvailable ? [{
+            code: "waffo-fixture", name: "Waffo fixture", provider: "waffo", enabled: true,
+            billing_modes: ["one_time", "subscription"],
           }] : []),
         ],
       };
@@ -1344,6 +1352,29 @@ try {
   assert.deepEqual([...new URL(page.url()).searchParams.keys()], ["surface"]);
   pancakeAvailable = false;
   pass("H5 confirms Waffo Pancake one-time membership using the server-owned order");
+  waffoAvailable = true;
+  await goto("#price");
+  await page.reload({waitUntil: "networkidle0"});
+  await surface("mobile");
+  await page.waitForSelector(h5PaymentSelector);
+  const waffoChoice = await page.$eval(h5PaymentSelector, (select) =>
+    [...select.options].find((item) => item.textContent === "Waffo fixture").value,
+  );
+  await page.select(h5PaymentSelector, waffoChoice);
+  const waffoCalls = calls.length;
+  await page.locator('[data-testid="premium-buy-monthly"]').click();
+  await page.waitForFunction(() =>
+    document.querySelector(".checkout-return-notice p")?.textContent.includes("Payment confirmed."),
+  );
+  const waffoRequests = calls.slice(waffoCalls);
+  const waffoCheckout = waffoRequests.find((call) => call.path === "/v1/commerce/checkout")?.body;
+  assert.equal(waffoCheckout.provider, "waffo");
+  assert.equal(waffoCheckout.account_code, "waffo-fixture");
+  assert.equal(waffoCheckout.code, "monthly");
+  assert.equal(waffoCheckout.payment_method, undefined);
+  assert.equal(waffoRequests.filter((call) => call.path === "/v1/commerce/orders/WAFFO-H5-ORDER/reconcile" && call.method === "POST").length, 1);
+  waffoAvailable = false;
+  pass("H5 uses enabled Waffo enterprise subscriptions across products without external mappings");
   await goto("#price");
   await page.reload({waitUntil: "networkidle0"});
   await surface("mobile");

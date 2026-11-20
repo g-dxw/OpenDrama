@@ -47,7 +47,7 @@ def accepting_orders(mode):
             and os.environ.get("APP_ENV", "local").lower() not in {"prod", "production"})
 
 
-def bind(db, provider, code, actor, *, currency=None):
+def bind(db, provider, code, actor, *, currency=None, match_account_currency=False):
     from app.modules.billing.commerce import audit
     from app.modules.sites.service import lock_site_settings
 
@@ -59,11 +59,12 @@ def bind(db, provider, code, actor, *, currency=None):
         if row is not None:
             db.delete(row)
     else:
-        if currency is not None and settings.currency != currency:
-            raise BillingError(409, f'This payment gateway requires a {currency} site')
         account = db.get(GatewayAccount, (provider, code), populate_existing=True)
         if account is None or account.status != "active":
             raise BillingError(409, "Select an active payment merchant")
+        required_currency = account.config["currency"] if match_account_currency else currency
+        if required_currency is not None and settings.currency != required_currency:
+            raise BillingError(409, f'This payment gateway requires a {required_currency} site')
         other = db.scalar(select(SiteGatewayBinding).where(
             SiteGatewayBinding.provider == provider,
             SiteGatewayBinding.account_code == code,

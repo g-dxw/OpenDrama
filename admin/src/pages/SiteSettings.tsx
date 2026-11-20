@@ -866,6 +866,7 @@ export function MerchantBindingPage() {
         <GatewayBindingCard provider="epay" l={l} />
         <GatewayBindingCard provider="creem" l={l} />
         <GatewayBindingCard provider="waffo-pancake" l={l} />
+        <GatewayBindingCard provider="waffo" l={l} />
       </>}
     </Space>
   );
@@ -875,13 +876,14 @@ type GatewayBinding = {
   account_code: string | null;
   configured: boolean;
   currency: string;
-  available_accounts: { code: string; name: string; status: string; mode?: "test" | "production" }[];
+  available_accounts: { code: string; name: string; status: string; mode?: "test" | "production"; currency?: string }[];
 };
 
-const merchantProviderNames = { epay: "Epay", creem: "Creem", "waffo-pancake": "Waffo Pancake" };
+const merchantProviderNames = { epay: "Epay", creem: "Creem", "waffo-pancake": "Waffo Pancake", waffo: "Waffo" };
 
-function GatewayBindingCard({ provider, l }: { provider: "epay" | CatalogGateway; l: ReturnType<typeof useCopy>["l"] }) {
+function GatewayBindingCard({ provider, l }: { provider: "epay" | "waffo" | CatalogGateway; l: ReturnType<typeof useCopy>["l"] }) {
   const isEpay = provider === "epay";
+  const isWaffo = provider === "waffo";
   const name = merchantProviderNames[provider];
   const path = "/tenant/v1/" + provider + "/merchant-binding";
   const [form] = Form.useForm<{ account_code?: string }>();
@@ -897,6 +899,10 @@ function GatewayBindingCard({ provider, l }: { provider: "epay" | CatalogGateway
 
   async function save({ account_code }: { account_code?: string }) {
     if (!binding || (account_code && !eligible)) return;
+    if (isWaffo && account_code && binding.available_accounts.find(account => account.code === account_code)?.currency !== binding.currency) {
+      setSaveError(l("Waffo 账号币种必须与本站币种一致。", "The Waffo account currency must match the site currency."));
+      return;
+    }
     setSaving(true);
     setSaveError("");
     try {
@@ -929,7 +935,12 @@ function GatewayBindingCard({ provider, l }: { provider: "epay" | CatalogGateway
             : binding.account_code
               ? l(name + " 账号已绑定，渠道暂未启用", name + " account bound, payments are currently disabled")
               : l("选择本站的 " + name + " 账号", "Choose the site's " + name + " account")}
-        description={!isEpay
+        description={isWaffo
+          ? l(
+            `选择与本站币种（${binding.currency}）一致的收款账号。沙盒账号只在启用测试收款的环境中向观众展示。`,
+            `Choose an account using the site currency (${binding.currency}). Viewers see sandbox accounts only where test payments are enabled.`,
+          )
+          : !isEpay
           ? l("测试账号可用于联调，只有启用测试收款的环境才会向观众展示。", "Use test accounts for integration. Viewers see them only where test payments are enabled.")
           : !eligible
           ? l(`本站币种为 ${binding.currency}。将本站币种设为 CNY 后可绑定 Epay。`, `This site uses ${binding.currency}. Set the site currency to CNY before binding Epay.`)
@@ -951,8 +962,9 @@ function GatewayBindingCard({ provider, l }: { provider: "epay" | CatalogGateway
             options={(binding?.available_accounts ?? []).map(account => ({
               value: account.code,
               label: account.name + " · " + account.code + (account.mode ? " · " +
-                (account.mode === "test" ? l("测试", "Test") : l("生产", "Production")) : ""),
-              disabled: !eligible || account.status !== "active",
+                (account.mode === "test" ? (isWaffo ? l("沙盒", "Sandbox") : l("测试", "Test")) : l("生产", "Production")) : "") +
+                (isWaffo && account.currency ? " · " + account.currency : ""),
+              disabled: !eligible || account.status !== "active" || (isWaffo && account.currency !== binding?.currency),
             }))}
           />
         </Form.Item>
@@ -960,7 +972,7 @@ function GatewayBindingCard({ provider, l }: { provider: "epay" | CatalogGateway
           {l("保存 " + name + " 绑定", "Save " + name + " binding")}
         </Button>
       </Form>
-      {!isEpay && binding?.account_code && <>
+      {!isEpay && !isWaffo && binding?.account_code && <>
         <Divider/>
         <GatewayProductBindings key={binding.account_code} provider={provider} accountCode={binding.account_code} l={l} />
       </>}
