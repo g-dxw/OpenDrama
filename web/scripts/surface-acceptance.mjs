@@ -882,6 +882,15 @@ try {
     }),
   );
   playableFirst = true;
+  const completedFirstEpisode = page.waitForResponse((response) => {
+    const request = response.request();
+    if (new URL(response.url()).pathname !== "/v1/playback/complete" || request.method() !== "POST") return false;
+    try {
+      return JSON.parse(request.postData() || "{}").episode_id === 10;
+    } catch {
+      return false;
+    }
+  });
   await goto("#watch/1?episode=10");
   await surface("mobile");
   await page.waitForFunction(
@@ -890,6 +899,9 @@ try {
         "11" &&
       document.querySelector(".back-title")?.textContent.includes("2"),
   );
+  const completedResponse = await completedFirstEpisode;
+  assert.equal(completedResponse.status(), 200);
+  await completedResponse.json();
   assert(
     calls.some(
       (call) =>

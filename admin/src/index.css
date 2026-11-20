@@ -285,3 +285,7 @@ body {
 
 .tenant-permission-choice { min-height: 40px; display: flex; align-items: center; }
 @media (max-width: 767px) { .tenant-permission-choice { min-height: 44px; } .support-session-banner { flex-wrap: wrap; align-items: flex-start; } .support-session-banner .ant-alert-content { flex-basis: calc(100% - 32px); } .support-session-banner .ant-alert-action { margin-inline-start: 28px; margin-top: 8px; } }
+
+.tenant-storefront-action { display: inline-flex; }
+.tenant-storefront-link.ant-btn { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px; white-space: nowrap; }
+@media (max-width: 767px) { .tenant-storefront-link.ant-btn { padding-inline: 12px; } .tenant-storefront-label { display: none; } }

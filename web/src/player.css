@@ -462,3 +462,103 @@
 @media (max-width: 480px) {
   .watch-page .episode-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
 }
+
+/* Shared desktop transport: the media and its controls remain one 9:16 stage. */
+.pc-video-player {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  flex: 1 1 0;
+  background: #000;
+}
+.watch-page .video-frame .pc-video-player > video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  object-fit: contain;
+}
+.for-you-page .feed-video-frame > .pc-video-player { position: absolute; inset: 0; }
+.for-you-page .pc-video-player > video { position: relative; z-index: 1; width: 100%; height: 100%; min-height: 0; object-fit: cover; }
+.for-you-page .feed-caption { bottom: 92px; }
+.pc-video-player > .loading { position: absolute; inset: 0; z-index: 8; display: grid; place-content: center; gap: 12px; text-align: center; pointer-events: none; }
+.pc-video-player > .video-error { z-index: 9; }
+.for-you-page .pc-video-player > .video-error { z-index: 3; }
+.pc-big-play {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #fff;
+  cursor: pointer;
+}
+.pc-big-play > span { display: grid; place-items: center; width: 70px; height: 70px; padding-left: 3px; border: 1px solid #ffffff6b; border-radius: 50%; background: #0004; box-shadow: 0 0 0 1px #ffffff0a; transition: background .16s, border-color .16s; }
+.pc-big-play:hover > span { background: #0008; border-color: #ffffffc2; }
+.pc-big-play svg { fill: currentColor; stroke-width: 1; }
+.pc-player-buffering { position: absolute; inset: 0; z-index: 4; display: grid; place-items: center; pointer-events: none; }
+.pc-player-controls {
+  position: absolute;
+  z-index: 6;
+  inset: auto 0 0;
+  padding: 28px 12px 4px;
+  background: linear-gradient(transparent, #0006 30%, #000b 100%);
+  color: #fff;
+  opacity: 1;
+  transition: opacity .18s;
+}
+.pc-player-controls[data-visible=false] { opacity: 0; pointer-events: none; }
+.pc-player-controls:focus-within { opacity: 1; pointer-events: auto; }
+.pc-seek { position: relative; height: 24px; margin-inline: 2px; }
+.pc-seek-track { position: absolute; inset: 10px 0 auto; height: 3px; overflow: hidden; border-radius: 4px; background: #ffffff40; pointer-events: none; }
+.pc-seek-buffer, .pc-seek-played { position: absolute; inset: 0 auto 0 0; height: 100%; border-radius: inherit; }
+.pc-seek-buffer { background: #ffffff4d; }
+.pc-seek-played { background: #fff; }
+.pc-seek input[type=range], .pc-volume input[type=range] { appearance: none; -webkit-appearance: none; display: block; box-sizing: border-box; width: 100%; height: 24px; min-height: 24px; margin: 0; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; cursor: pointer; }
+.pc-seek input[type=range] { position: relative; z-index: 1; }
+.pc-seek input[type=range]::-webkit-slider-runnable-track { height: 3px; background: transparent; }
+.pc-seek input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 9px; height: 9px; margin-top: -3px; border: 0; border-radius: 50%; background: #fff; box-shadow: 0 0 3px #0005; }
+.pc-seek input[type=range]::-moz-range-track { height: 3px; background: transparent; }
+.pc-seek input[type=range]::-moz-range-thumb { width: 9px; height: 9px; border: 0; border-radius: 50%; background: #fff; }
+.pc-seek input:disabled { cursor: default; opacity: .35; }
+.pc-transport { display: flex; align-items: center; gap: 2px; min-height: 40px; }
+.pc-transport-button { display: grid; place-items: center; flex: 0 0 40px; width: 40px; height: 40px; min-height: 40px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: #fff; opacity: .86; cursor: pointer; }
+.pc-transport-button:hover { opacity: 1; background: #ffffff0a; }
+.pc-transport-button:disabled { opacity: .35; cursor: default; }
+.pc-transport-button svg { pointer-events: none; }
+.pc-player-time { padding-left: 1px; font-size: 10px; line-height: 16px; font-variant-numeric: tabular-nums; white-space: nowrap; color: #ffffffeb; }
+.pc-transport-spacer { flex: 1; min-width: 0; }
+.pc-volume { position: relative; flex-shrink: 0; }
+/* Clear the seek hit area; delayed hiding lets the pointer cross without a hit-test bridge. */
+.pc-volume-popover { position: absolute; z-index: 2; bottom: calc(100% + 32px); left: 50%; box-sizing: border-box; width: 40px; padding: 10px 7px; border: 1px solid #ffffff26; border-radius: 8px; background: #151113ed; opacity: 0; visibility: hidden; transform: translateX(-50%); transition: opacity .12s .15s, visibility 0s .3s; }
+.pc-volume:hover .pc-volume-popover, .pc-volume:focus-within .pc-volume-popover { opacity: 1; visibility: visible; transition-delay: 0s; }
+.pc-volume input[type=range] { appearance: auto; -webkit-appearance: auto; width: 24px; height: 96px; min-height: 96px; writing-mode: vertical-lr; direction: rtl; accent-color: #fff; }
+.pc-player-notice { position: absolute; z-index: 8; left: 16px; right: 16px; bottom: 90px; margin: 0; padding: 9px 12px; border-radius: 8px; background: #20191de6; color: #fff; font-size: 12px; line-height: 1.5; text-align: center; }
+.pc-settings-portal .modal-backdrop { z-index: 100; background: #000b; backdrop-filter: blur(5px); }
+.pc-player-settings.modal { box-sizing: border-box; width: min(480px, calc(100vw - 32px)); max-width: none; padding: 0 18px 16px; border: 1px solid #ffffff1c; border-radius: 16px; background: #181315; color: #fff; box-shadow: 0 22px 80px #000a; }
+.pc-player-settings .modal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 -18px 16px; padding: 6px 12px 6px 18px; border-bottom: 1px solid #ffffff0d; }
+.pc-player-settings .modal-head h2 { margin: 0; font: 700 15px/22px system-ui, sans-serif; color: #fff; letter-spacing: -.25px; }
+.pc-player-settings .modal-head .icon-button { display: grid; place-items: center; width: 44px; height: 44px; min-height: 44px; padding: 0; border: 0; border-radius: 50%; background: radial-gradient(circle, #ffffff0b 14px, transparent 14.5px); color: #ffffffa6; cursor: pointer; }
+.pc-player-settings .modal-head .icon-button:hover { color: #fff; }
+.pc-settings-group + .pc-settings-group { margin-top: 18px; }
+.pc-settings-label { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 9px; font: 600 13px/20px system-ui, sans-serif; }
+.pc-settings-label > span { display: inline-flex; align-items: center; gap: 8px; }
+.pc-settings-label svg { color: var(--pc-gold); }
+.pc-settings-label strong { padding: 1px 8px; border-radius: 20px; background: #e83d4517; color: var(--pc-brand-hover); font-size: 11px; line-height: 20px; font-weight: 600; }
+.pc-setting-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(80px, 1fr)); gap: 8px; }
+.pc-speed-options { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.pc-setting-options button { min-width: 0; min-height: 40px; padding: 8px 7px; border: 1px solid #ffffff0d; border-radius: 9px; background: #ffffff0a; color: #ffffffb3; font: 600 12px/20px system-ui, sans-serif; cursor: pointer; overflow-wrap: anywhere; }
+.pc-setting-options button:hover { border-color: #ffffff3d; color: #fff; }
+.pc-setting-options button[aria-pressed=true] { border-color: #ffffff3b; background: var(--pc-cta); color: var(--site-primary-text, #fff); box-shadow: 0 4px 17px #ed304633; }
+.pc-player-settings :is(button,input):focus-visible, .pc-player-controls :is(button,input):focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.pc-settings-notice { margin: 14px 0 0; color: #ffffffb3; font: 12px/1.5 system-ui, sans-serif; }
+.video-frame:fullscreen { width: 100vw; height: 100vh; min-height: 0; max-width: none; margin: 0; border: 0; border-radius: 0; aspect-ratio: auto; background: #000; }
+.video-frame:fullscreen .pc-video-player { width: 100%; height: 100%; }
+.video-frame:fullscreen .pc-video-player > video { object-fit: contain; }
+@media (prefers-reduced-motion: reduce) { .pc-player-controls, .pc-big-play > span { transition: none; } .pc-volume-popover { opacity: 1; transition: visibility 0s .3s; } }
