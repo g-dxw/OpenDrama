@@ -3,8 +3,11 @@ import { Alert, Button, Form, Input, Modal, Popconfirm, Space, Table, Tag, Typog
 import { api, errorText } from "../api";
 import { useLoad } from "../hooks";
 
-const path = "/tenant/v1/creem/product-bindings";
-const productIdPattern = /^prod_[a-zA-Z0-9_-]+$/;
+const providers = {
+  creem: { name: "Creem", prefix: "prod_", productIdPattern: /^prod_[a-zA-Z0-9_-]+$/ },
+  "waffo-pancake": { name: "Waffo Pancake", prefix: "PROD_", productIdPattern: /^PROD_[a-zA-Z0-9]+$/ },
+};
+export type CatalogGateway = keyof typeof providers;
 type Copy = (zh: string, en: string) => string;
 type BillingMode = "one_time" | "subscription";
 type ProductBinding = {
@@ -30,7 +33,9 @@ function rowKey(item: ProductBinding) {
   return [item.product_type, item.version_id, item.billing_mode].join(":");
 }
 
-export function CreemProductBindings({ accountCode, l }: { accountCode: string; l: Copy }) {
+export function GatewayProductBindings({ provider, accountCode, l }: { provider: CatalogGateway; accountCode: string; l: Copy }) {
+  const { name, prefix, productIdPattern } = providers[provider];
+  const path = "/tenant/v1/" + provider + "/product-bindings";
   const state = useLoad<ProductBindings | null>(path, null);
   const [updated, setUpdated] = useState<ProductBindings | null>(null);
   const data = updated ?? state.data;
@@ -68,8 +73,8 @@ export function CreemProductBindings({ accountCode, l }: { accountCode: string; 
       setUpdated(value);
       setEditing(null);
       message.success(externalProductId
-        ? l("Creem 商品映射已保存", "Creem product mapping saved")
-        : l("Creem 商品映射已移除", "Creem product mapping removed"));
+        ? l(name + " 商品映射已保存", name + " product mapping saved")
+        : l(name + " 商品映射已移除", name + " product mapping removed"));
     } catch (cause) {
       setError(errorText(cause));
     } finally {
@@ -92,13 +97,16 @@ export function CreemProductBindings({ accountCode, l }: { accountCode: string; 
   const errorTextToDisplay = state.error || (!editing && error);
   return <section>
     <Space wrap style={{ justifyContent: "space-between", width: "100%", marginBottom: 8 }}>
-      <Typography.Title level={5} style={{ margin: 0 }}>{l("Creem 商品映射", "Creem product mappings")}</Typography.Title>
+      <Typography.Title level={5} style={{ margin: 0 }}>{l(name + " 商品映射", name + " product mappings")}</Typography.Title>
       <Button loading={state.loading} disabled={Boolean(saving)} onClick={() => { setUpdated(null); setError(""); void state.reload(); }}>
         {l("刷新商品", "Refresh products")}
       </Button>
     </Space>
     <Typography.Paragraph type="secondary">
-      {l("按本站商品版本和计费方式填写 Creem 商品 ID。修改售价或权益生成新版本后，请为新版本配置映射。", "Map each site product version and billing mode to a Creem Product ID. Set a new mapping after a price or benefit change creates a new version.")}
+      {l(
+        "按本站商品版本和计费方式填写 " + name + " 商品 ID。修改售价或权益生成新版本后，请为新版本配置映射。",
+        "Map each site product version and billing mode to a " + name + " Product ID. Set a new mapping after a price or benefit change creates a new version.",
+      )}
     </Typography.Paragraph>
     {errorTextToDisplay && <Alert type="error" showIcon message={errorTextToDisplay} style={{ marginBottom: 16 }} />}
     {data && data.account_code !== accountCode && <Alert type="warning" showIcon
@@ -122,7 +130,7 @@ export function CreemProductBindings({ accountCode, l }: { accountCode: string; 
           {item.product_type === "membership" && item.billing_mode === data?.billing_mode &&
             <span className="management-row-secondary">{l("本站当前模式", "Current site mode")}</span>}
         </> },
-        { title: "Creem Product ID", dataIndex: "external_product_id", render: (value: string | null) => value
+        { title: name + " Product ID", dataIndex: "external_product_id", render: (value: string | null) => value
           ? <Typography.Text copyable>{value}</Typography.Text>
           : <Typography.Text type="secondary">{l("待映射", "Unmapped")}</Typography.Text> },
         { title: l("操作", "Actions"), key: "actions", render: (_, item) => <Space wrap>
@@ -137,7 +145,7 @@ export function CreemProductBindings({ accountCode, l }: { accountCode: string; 
       ]}
     />
     <Modal
-      title={l("编辑 Creem 商品映射", "Edit Creem product mapping")}
+      title={l("编辑 " + name + " 商品映射", "Edit " + name + " product mapping")}
       open={Boolean(editing)}
       confirmLoading={Boolean(saving)}
       okText={l("保存映射", "Save mapping")}
@@ -148,13 +156,13 @@ export function CreemProductBindings({ accountCode, l }: { accountCode: string; 
     >
       {editing && <Typography.Paragraph>{editing.product_name} · v{editing.version} · {billingLabel(editing)} · {price(editing)}</Typography.Paragraph>}
       {editing && error && <Alert type="error" showIcon message={error} style={{ marginBottom: 16 }} />}
-      <Form name="creem-product-mapping" form={form} layout="vertical" onFinish={values => { if (editing) void save(editing, values.external_product_id.trim()); }}>
+      <Form name={provider + "-product-mapping"} form={form} layout="vertical" onFinish={values => { if (editing) void save(editing, values.external_product_id.trim()); }}>
         <Form.Item
-          label="Creem Product ID"
+          label={name + " Product ID"}
           name="external_product_id"
-          extra={l("选择匹配的 Creem 商品，保存时将核对售价、币种和计费周期。", "Use the matching Creem product. Price, currency, and billing cycle are checked on save.")}
-          rules={[{ required: true, pattern: productIdPattern, message: l("输入以 prod_ 开头的 Creem 商品 ID", "Enter a Creem product ID starting with prod_") }]}
-        ><Input placeholder="prod_..." maxLength={128} /></Form.Item>
+          extra={l("选择匹配的 " + name + " 商品，保存时将核对售价、币种和计费周期。", "Use the matching " + name + " product. Price, currency, and billing cycle are checked on save.")}
+          rules={[{ required: true, pattern: productIdPattern, message: l("输入以 " + prefix + " 开头的商品 ID", "Enter a product ID starting with " + prefix) }]}
+        ><Input placeholder={prefix + "..."} maxLength={128} /></Form.Item>
       </Form>
     </Modal>
   </section>;

@@ -65,7 +65,8 @@ def get_db(request: Request):
     try:
         path = request.url.path
         is_webhook = path in {"/v1/billing/webhook", "/v1/billing/stripe/webhook"} or (
-            path.startswith(("/v1/billing/stripe/accounts/", "/v1/billing/epay/accounts/", "/v1/billing/creem/accounts/"))
+            path.startswith(("/v1/billing/stripe/accounts/", "/v1/billing/epay/accounts/", "/v1/billing/creem/accounts/",
+                             "/v1/billing/waffo-pancake/accounts/"))
             and path.endswith("/webhook"))
         if path.startswith("/v1/") and not is_webhook:
             from app.modules.sites.service import resolve_public_site

@@ -37,7 +37,7 @@ def accounts(db, provider):
 
 def notify_url(provider, code):
     base = os.environ.get("PAYMENT_WEBHOOK_BASE_URL", "https://jjtv-api.8jj.net").rstrip("/")
-    return f"{base}/v1/billing/{provider}/accounts/{code}/webhook"
+    return f"{base}/v1/billing/{provider.replace('_', '-')}/accounts/{code}/webhook"
 
 
 def accepting_orders(mode):

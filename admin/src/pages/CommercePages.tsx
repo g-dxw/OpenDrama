@@ -10,6 +10,7 @@ import { usePermission } from '../me';
 import { ManagementPageHeader, ManagementMetrics, ManagementFormSection } from '../components/ManagementPage';
 import { EpayAccountsPanel } from './EpayAccounts';
 import { CreemAccountsPanel } from './CreemAccounts';
+import { PancakeAccountsPanel } from './PancakeAccounts';
 
 type Pack={code:string;name_en:string;name_zh:string;status:string;price_cents:number;currency:string;base_coins:number;bonus_coins:number;version:number;sort_order:number;badge:string};
 type Plan=Omit<Pack,'sort_order'|'badge'> & {duration_days?:number;days?:number;recurring_interval?:string;billing_mode?:string;benefits?:{items?:string[];best?:boolean;[key:string]:unknown}};
@@ -71,6 +72,7 @@ export function PaymentAccountsPage() {
    { key: 'stripe', label: 'Stripe', children: <StripeAccountsPage platform/> },
    { key: 'epay', label: 'Epay', children: <EpayAccountsPanel/> },
    { key: 'creem', label: 'Creem', children: <CreemAccountsPanel/> },
+   { key: 'waffo-pancake', label: 'Waffo Pancake', children: <PancakeAccountsPanel/> },
   ]}/>
  </Space>;
 }
@@ -155,7 +157,7 @@ type FinancePayload={items:FinanceOrder[];has_more:boolean;total:number;summary?
 type OrderDetail={membership_refund_resolution?:MembershipRefundResolution|null;order:FinanceOrder & {snapshot:any;source_drama_id?:number;version_id?:number;payment_intent_id?:string;invoice_id?:string;subscription_ref?:string};customer:{id:number;email:string;display_name:string;public_id:string};refund:{id:number;status:string;refund_id?:string;error?:string}|null;entitlement_sources:{coins:{original:number;remaining:number;reserved:number}|null;membership:{starts_at:string;ends_at:string;status:string;access_consumed:boolean}|null};refund_eligibility:{eligible:boolean;reason:string}};
 const refundNames:Record<string,string>={pending:'处理中',succeeded:'已确认完成',failed:'已确认失败',canceled:'已确认取消',manual_review:'待人工核对',review:'待人工核对',refunded:'已退款',refund_pending:'退款处理中',refund_review:'待人工核对'};
 const copy=(value:unknown)=>value?<Typography.Text copyable className="management-detail-value">{String(value)}</Typography.Text>:'—';
-const providerLabels: Record<string, string> = { stripe: 'Stripe', epay: 'Epay', creem: 'Creem' };
+const providerLabels: Record<string, string> = { stripe: 'Stripe', epay: 'Epay', creem: 'Creem', waffo_pancake: 'Waffo Pancake' };
 const providerLabel = (provider = 'stripe') => providerLabels[provider] || provider;
 function FinanceOrderDrawer({number,onClose,onChanged}:{number:string|null;onClose:()=>void;onChanged:()=>void}){
  const canRefund=usePermission('finance.refund');const [data,setData]=useState<OrderDetail|null>(null),[dataOwner,setDataOwner]=useState<string|null>(null),[loading,setLoading]=useState(false),[error,setError]=useState(''),[refundOpen,setRefundOpen]=useState(false),[reason,setReason]=useState(''),[refundError,setRefundError]=useState(''),[busy,setBusy]=useState(false),[outcome,setOutcome]=useState<{status:string;error?:string}|null>(null);const generation=useRef(0);const current=useRef(number);current.current=number;

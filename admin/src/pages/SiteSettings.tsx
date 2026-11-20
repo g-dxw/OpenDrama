@@ -27,8 +27,7 @@ import {
 import { api, errorText } from "../api";
 import { ManagementPageHeader } from "../components/ManagementPage";
 import { useLoad } from "../hooks";
-import type { CreemMode } from "./CreemAccounts";
-import { CreemProductBindings } from "./CreemProductBindings";
+import { GatewayProductBindings, type CatalogGateway } from "./GatewayProductBindings";
 import type { SiteBrand, SiteConfig } from "../../../shared/site";
 function useCopy() {
   const [lang, setLang] = useState(() =>
@@ -866,6 +865,7 @@ export function MerchantBindingPage() {
       {native && <>
         <GatewayBindingCard provider="epay" l={l} />
         <GatewayBindingCard provider="creem" l={l} />
+        <GatewayBindingCard provider="waffo-pancake" l={l} />
       </>}
     </Space>
   );
@@ -875,12 +875,14 @@ type GatewayBinding = {
   account_code: string | null;
   configured: boolean;
   currency: string;
-  available_accounts: { code: string; name: string; status: string; mode?: CreemMode }[];
+  available_accounts: { code: string; name: string; status: string; mode?: "test" | "production" }[];
 };
 
-function GatewayBindingCard({ provider, l }: { provider: "epay" | "creem"; l: ReturnType<typeof useCopy>["l"] }) {
+const merchantProviderNames = { epay: "Epay", creem: "Creem", "waffo-pancake": "Waffo Pancake" };
+
+function GatewayBindingCard({ provider, l }: { provider: "epay" | CatalogGateway; l: ReturnType<typeof useCopy>["l"] }) {
   const isEpay = provider === "epay";
-  const name = isEpay ? "Epay" : "Creem";
+  const name = merchantProviderNames[provider];
   const path = "/tenant/v1/" + provider + "/merchant-binding";
   const [form] = Form.useForm<{ account_code?: string }>();
   const state = useLoad<GatewayBinding | null>(path, null);
@@ -925,8 +927,8 @@ function GatewayBindingCard({ provider, l }: { provider: "epay" | "creem"; l: Re
           : isEpay
             ? l("Epay 使用人民币（CNY）收款", "Epay accepts payments in CNY")
             : binding.account_code
-              ? l("Creem 账号已绑定，渠道暂未启用", "Creem account bound, payments are currently disabled")
-              : l("选择本站的 Creem 账号", "Choose the site's Creem account")}
+              ? l(name + " 账号已绑定，渠道暂未启用", name + " account bound, payments are currently disabled")
+              : l("选择本站的 " + name + " 账号", "Choose the site's " + name + " account")}
         description={!isEpay
           ? l("测试账号可用于联调，只有启用测试收款的环境才会向观众展示。", "Use test accounts for integration. Viewers see them only where test payments are enabled.")
           : !eligible
@@ -958,9 +960,9 @@ function GatewayBindingCard({ provider, l }: { provider: "epay" | "creem"; l: Re
           {l("保存 " + name + " 绑定", "Save " + name + " binding")}
         </Button>
       </Form>
-      {provider === "creem" && binding?.account_code && <>
+      {!isEpay && binding?.account_code && <>
         <Divider/>
-        <CreemProductBindings key={binding.account_code} accountCode={binding.account_code} l={l} />
+        <GatewayProductBindings key={binding.account_code} provider={provider} accountCode={binding.account_code} l={l} />
       </>}
     </Card>
   );
