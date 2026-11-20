@@ -1,5 +1,7 @@
 """Merchant ownership and credentials for additional payment gateways."""
 
+import os
+
 from sqlalchemy import select, text
 
 from app.modules.billing.commerce_models import GatewayAccount, SiteGatewayBinding
@@ -33,7 +35,19 @@ def accounts(db, provider):
     return db.scalars(select(GatewayAccount).where(GatewayAccount.provider == provider).order_by(GatewayAccount.code))
 
 
-def bind(db, provider, code, actor, *, currency):
+def notify_url(provider, code):
+    base = os.environ.get("PAYMENT_WEBHOOK_BASE_URL", "https://jjtv-api.8jj.net").rstrip("/")
+    return f"{base}/v1/billing/{provider}/accounts/{code}/webhook"
+
+
+def accepting_orders(mode):
+    if mode == "production":
+        return True
+    return (mode == "test" and os.environ.get("PAYMENT_GATEWAY_TEST_MODE") == "1"
+            and os.environ.get("APP_ENV", "local").lower() not in {"prod", "production"})
+
+
+def bind(db, provider, code, actor, *, currency=None):
     from app.modules.billing.commerce import audit
     from app.modules.sites.service import lock_site_settings
 
@@ -45,7 +59,7 @@ def bind(db, provider, code, actor, *, currency):
         if row is not None:
             db.delete(row)
     else:
-        if settings.currency != currency:
+        if currency is not None and settings.currency != currency:
             raise BillingError(409, f'This payment gateway requires a {currency} site')
         account = db.get(GatewayAccount, (provider, code), populate_existing=True)
         if account is None or account.status != "active":

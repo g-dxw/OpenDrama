@@ -1,7 +1,6 @@
 """Epay V1 checkout and settlement backed by the existing commerce ledger."""
 
 import hashlib
-import os
 from datetime import timedelta
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -21,8 +20,7 @@ METHOD_LABELS = {"alipay": "Alipay", "wxpay": "WeChat Pay", "qqpay": "QQ Wallet"
 
 
 def notify_url(code):
-    base = os.environ.get("PAYMENT_WEBHOOK_BASE_URL", "https://jjtv-api.8jj.net").rstrip("/")
-    return f"{base}/v1/billing/epay/accounts/{code}/webhook"
+    return gateway_accounts.notify_url(PROVIDER, code)
 
 
 def account_public(row):

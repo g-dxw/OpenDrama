@@ -1,6 +1,8 @@
 import {RightsNotice} from "./rights-notice";
 import {
-  availablePaymentChannels,
+  checkoutReturnMarker,
+  paymentChannelOptions,
+  selectedPaymentChannel,
   paymentChannelFields,
   paymentChannelKey,
   recordCheckoutReturn,
@@ -38,6 +40,7 @@ interface CheckoutConflict {
   message: string;
   order_no: string;
   checkout_url?: string;
+  provider?: string;
   action: string;
 }
 interface PurchaseIntent {
@@ -79,6 +82,7 @@ function checkoutConflict(error: unknown): CheckoutConflict | null {
     order_no: typeof value.order_no === "string" ? value.order_no : "",
     checkout_url:
       typeof value.checkout_url === "string" ? value.checkout_url : undefined,
+    provider: typeof value.provider === "string" ? value.provider : undefined,
     action: typeof value.action === "string" ? value.action : "",
   };
 }
@@ -99,8 +103,7 @@ export function Store({
     [packs, setPacks] = useState<Pack[]>([]),
     [mode, setMode] = useState("one_time"),
     [channels, setChannels] = useState<PaymentChannel[]>([]),
-    [membershipChannelKey, setMembershipChannelKey] = useState(""),
-    [coinChannelKey, setCoinChannelKey] = useState(""),
+    [channelKeys, setChannelKeys] = useState<Record<string, string>>({}),
     [loading, setLoading] = useState(true),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(""),
@@ -174,12 +177,30 @@ export function Store({
         .getElementById("membership-plans")
         ?.scrollIntoView({ block: "start" });
   }
-  const planChannels = availablePaymentChannels(channels, mode);
-  const coinChannels = availablePaymentChannels(channels, "one_time");
-  const membershipChannel =
-    planChannels.find((channel) => paymentChannelKey(channel) === membershipChannelKey) ?? planChannels[0];
-  const coinChannel =
-    coinChannels.find((channel) => paymentChannelKey(channel) === coinChannelKey) ?? coinChannels[0];
+  const planChoices = paymentChannelOptions(channels, mode, "membership", plans);
+  const coinChoices = paymentChannelOptions(channels, "one_time", "coin_pack", packs);
+  function channelPreference(product: PurchaseIntent["product"], productCode: string) {
+    const choices = product === "membership" ? planChoices : coinChoices;
+    const key = product + ":" + (choices.common ? "" : productCode);
+    const options = choices.common ?? choices.byProduct.get(productCode) ?? [];
+    return {
+      options,
+      selected: selectedPaymentChannel(options, channelKeys[key]),
+      onSelect: (value: string) => setChannelKeys((previous) => ({...previous, [key]: value})),
+    };
+  }
+  function channelPicker(product: PurchaseIntent["product"], productCode = "") {
+    const {options, selected, onSelect} = channelPreference(product, productCode);
+    return (
+      <PaymentChannelSelect
+        channels={options}
+        selected={selected}
+        label={t("Payment option")}
+        disabled={!!busy || !!activeRecovery}
+        onSelect={onSelect}
+      />
+    );
+  }
 
   function newIntent(
     product: "membership" | "coin_pack",
@@ -222,9 +243,9 @@ export function Store({
     previous?: PurchaseIntent,
   ) {
     if (submitting.current) return;
-    const channel = product === "membership" ? membershipChannel : coinChannel;
-    if (!previous && !channel) return;
-    const intent = previous ?? newIntent(product, code, channel);
+    const {selected: channel} = channelPreference(product, code);
+    const intent = previous ?? (channel ? newIntent(product, code, channel) : null);
+    if (!intent) return;
     if (!isCurrentIntent(intent)) return;
     submitting.current = true;
     setBusy(product + ":" + code);
@@ -240,7 +261,7 @@ export function Store({
           idempotency_key: intent.key,
           success_url:
             window.location.origin + "/?checkout=success" +
-            (intent.channel.provider === "epay" ? "&payment_provider=epay" : "") +
+            checkoutReturnMarker(intent.channel.provider) +
             intent.returnHash,
           cancel_url:
             window.location.origin + "/?checkout=cancel" + intent.returnHash,
@@ -291,14 +312,15 @@ export function Store({
       recordCheckoutReturn(
         "jjtv_checkout_order",
         activeRecovery.conflict.order_no,
-        activeRecovery.intent.channel.provider,
+        activeRecovery.conflict.provider ??
+          (activeRecovery.conflict.action === "resume_only" ? "creem" : activeRecovery.intent.channel.provider),
       );
     window.location.assign(activeRecovery.conflict.checkout_url);
   }
   async function cancelPendingCheckout() {
     if (!activeRecovery || submitting.current) return;
     const { intent, conflict } = activeRecovery;
-    if (!conflict.order_no) return;
+    if (!conflict.order_no || conflict.action !== "resume_or_cancel") return;
     submitting.current = true;
     setBusy("cancel-checkout");
     setError("");
@@ -441,15 +463,17 @@ export function Store({
                   >
                     {t("Continue checkout")}</button>
                 )}
-                <button
-                  className="button secondary"
-                  disabled={!!busy || !activeRecovery.conflict.order_no}
-                  onClick={() => void cancelPendingCheckout()}
-                >
-                  {busy === "cancel-checkout"
-                    ? t("Cancelling…")
-                    : t("Cancel pending checkout")}
-                </button>
+                {activeRecovery.conflict.action === "resume_or_cancel" && (
+                  <button
+                    className="button secondary"
+                    disabled={!!busy || !activeRecovery.conflict.order_no}
+                    onClick={() => void cancelPendingCheckout()}
+                  >
+                    {busy === "cancel-checkout"
+                      ? t("Cancelling…")
+                      : t("Cancel pending checkout")}
+                  </button>
+                )}
               </>
             )}
             {activeRecovery.conflict.code === "checkout_in_progress" && (
@@ -514,14 +538,8 @@ export function Store({
                   : t("One payment for your selected access period.")}
               </p>
             </div>
-            <PaymentChannelSelect
-              channels={planChannels}
-              selected={membershipChannel}
-              label={t("Payment option")}
-              disabled={!!busy || !!activeRecovery}
-              onSelect={setMembershipChannelKey}
-            />
-            {plans.length > 0 && !membershipChannel && !!coinChannel && siteFeature("coins") && (
+            {planChoices.common && channelPicker("membership")}
+            {plans.length > 0 && !planChoices.available && coinChoices.available && siteFeature("coins") && (
               <p className="muted" role="status">{t("No payment option supports these membership plans right now.")}</p>
             )}
             <div className="membership-grid">
@@ -559,9 +577,10 @@ export function Store({
                       </li>
                     ))}
                   </ul>
+                  {!planChoices.common && channelPicker("membership", plan.code)}
                   <button
                     className={"button secondary full-width" + (plan.benefits?.best ? " plan-gold-button" : "")}
-                    disabled={!!busy || !!activeRecovery || !membershipChannel || !!(sourceDramaId&&!sourceRights)}
+                    disabled={!!busy || !!activeRecovery || !channelPreference("membership", plan.code).selected || !!(sourceDramaId&&!sourceRights)}
                     onClick={() =>
                       requireAuth(() => {
                         void purchase("membership", plan.code);
@@ -590,13 +609,7 @@ export function Store({
               <p className="muted">
                 {t("Choose your top-up. Episode prices are shown before you unlock.")}</p>
             </div>
-            <PaymentChannelSelect
-              channels={coinChannels}
-              selected={coinChannel}
-              label={t("Payment option")}
-              disabled={!!busy || !!activeRecovery}
-              onSelect={setCoinChannelKey}
-            />
+            {coinChoices.common && channelPicker("coin_pack")}
             <div className="coin-pack-grid">
               {packs.map((pack) => (
                 <article
@@ -624,11 +637,12 @@ export function Store({
                       ? t("{price} per 100 coins",{price:money((pack.price_cents/pack.coins)*100,pack.currency)})
                       : ""}
                   </p>
+                  {!coinChoices.common && channelPicker("coin_pack", pack.code)}
                   <div className="coin-pack-footer">
                     <strong>{money(pack.price_cents, pack.currency)}</strong>
                     <button
                       className="button secondary"
-                      disabled={!!busy || !!activeRecovery || !coinChannel || !!(sourceDramaId&&!sourceRights)}
+                      disabled={!!busy || !!activeRecovery || !channelPreference("coin_pack", pack.code).selected || !!(sourceDramaId&&!sourceRights)}
                       onClick={() =>
                         requireAuth(() => {
                           void purchase("coin_pack", pack.code);
@@ -654,7 +668,7 @@ export function Store({
               <span>{t("Go to Rewards →")}</span>
             </a>
           </section>}
-          {!(siteFeature("membership") && membershipChannel) && !(siteFeature("coins") && coinChannel) && (
+          {!(siteFeature("membership") && planChoices.available) && !(siteFeature("coins") && coinChoices.available) && (
             <div className="payment-unavailable" role="status">
               <Icon name="lock" size={18} />
               <span>
@@ -706,7 +720,11 @@ function PaymentChannelSelect({channels, selected, label, disabled, onSelect}: {
   disabled: boolean;
   onSelect: (key: string) => void;
 }) {
-  if (channels.length < 2) return null;
+  if (channels.length < 2) {
+    return selected?.provider === "creem"
+      ? <p className="muted payment-channel">{label} · {selected.name}</p>
+      : null;
+  }
   return (
     <label className="payment-channel">
       {label}

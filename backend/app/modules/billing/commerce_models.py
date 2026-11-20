@@ -166,3 +166,20 @@ class SiteGatewayBinding(Base):
         ForeignKeyConstraint(['provider', 'account_code'], ['gateway_accounts.provider', 'gateway_accounts.code'], ondelete='RESTRICT'),
         UniqueConstraint('provider', 'account_code', name='uq_site_gateway_merchant'),
     )
+
+
+class GatewayProductBinding(Base):
+    """An external catalog item bound to an exact local product version."""
+
+    __tablename__ = 'gateway_product_bindings'
+    tenant_id: Mapped[str] = mapped_column(ForeignKey('tenants.id', ondelete='RESTRICT'), primary_key=True)
+    provider: Mapped[str] = mapped_column(String(32), primary_key=True)
+    account_code: Mapped[str] = mapped_column(String(32), primary_key=True)
+    product_type: Mapped[str] = mapped_column(String(16), primary_key=True)
+    version_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    billing_mode: Mapped[str] = mapped_column(String(16), primary_key=True)
+    external_product_id: Mapped[str] = mapped_column(String(128), nullable=False)
+
+    __table_args__ = (
+        ForeignKeyConstraint(['provider', 'account_code'], ['gateway_accounts.provider', 'gateway_accounts.code'], ondelete='RESTRICT'),
+    )

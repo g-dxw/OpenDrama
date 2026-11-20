@@ -73,11 +73,12 @@ def purchase_account(db,requested=None):
     return get_account(db,code,True)
 
 def channels(db):
+    from app.modules.billing.creem_commerce import channels as creem_channels
     from app.modules.billing.epay_commerce import channels as epay_channels
 
     info=binding_info(db)
     stripe = [dict(code=x['code'],name=x['name'],provider='stripe',enabled=True) for x in info['available_accounts'] if x['code']==info['account_code'] and x['status']=='active']
-    return stripe + epay_channels(db)
+    return stripe + epay_channels(db) + creem_channels(db)
 
 def event_order(db,code,payload):
     obj=(payload.get('data') or {}).get('object') or {}

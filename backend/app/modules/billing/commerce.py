@@ -317,11 +317,12 @@ def ensure_price(db,account,snapshot):
 
 def checkout_conflict(order,code,message,action,include_url=False):
     detail=dict(code=code,message=message,order_no=order.order_no,action=action)
+    if order.provider != 'stripe':detail['provider']=order.provider
     if include_url and order.checkout_url:detail['checkout_url']=order.checkout_url
     return BillingError(409,detail)
 
 def _checkout_pending(db,order):
-    if order.billing_mode!='subscription' or order.product_type!='membership':return False
+    if order.provider!='stripe' or order.billing_mode!='subscription' or order.product_type!='membership':return False
     if order.status=='created':return True
     if order.status=='failed':return not (order.checkout_context or {}).get('session_expired')
     # A completed Checkout is not an entitlement. Keep its reservation until the
@@ -425,6 +426,13 @@ def checkout(db,*,user_id,email,product_type,code,idempotency_key,account_code=N
             account_code=account_code, payment_method=payment_method, success_url=success_url,
             cancel_url=cancel_url, source_drama_id=source_drama_id, attribution_pid=attribution_pid,
         )
+    if provider == 'creem':
+        from app.modules.billing import creem_commerce
+        return creem_commerce.checkout(
+            db, user_id=user_id, email=email, product_type=product_type, code=code,
+            idempotency_key=idempotency_key, account_code=account_code, success_url=success_url,
+            cancel_url=cancel_url, source_drama_id=source_drama_id, attribution_pid=attribution_pid,
+        )
     from app.modules.tenancy.consumer_scope import require_owned
     require_owned(db,User,user_id)
     success=return_url(success_url,'success',db);cancel=return_url(cancel_url,'cancel',db)
@@ -453,6 +461,8 @@ def checkout(db,*,user_id,email,product_type,code,idempotency_key,account_code=N
         from app.modules.billing.site_merchants import assert_site_currency
         assert_site_currency(db,snapshot['currency'])
         if snapshot['billing_mode']=='subscription':
+            from app.modules.billing import creem_commerce
+            creem_commerce.guard_other_recurring(db,user_id)
             # Persisted orders reserve the right to create ONE subscription even
             # while a remote response or its first invoice has not arrived.
             pending=list(db.scalars(select(Order).where(Order.user_id==user_id,Order.product_type=='membership',Order.billing_mode=='subscription',Order.status.in_(('created','paid','failed'))).order_by(Order.id)))
@@ -504,6 +514,14 @@ def cancel_checkout(db,user_id,order_no):
     wallet_lock(db,user_id)
     order=db.scalar(select(Order).where(Order.order_no==order_no,Order.user_id==user_id).with_for_update())
     if order is None:raise BillingError(404,'order not found')
+    if (order.provider=='creem' and order.billing_mode=='subscription' and order.status=='created'
+            and not order.checkout_url and not order.subscription_ref and not order.checkout_context.get('provider_checkout_id')):
+        order.status='failed'
+        order.checkout_context={**order.checkout_context,'checkout_expired':True}
+        db.commit()
+        return dict(order_no=order.order_no,status='failed',canceled=True)
+    if order.provider!='stripe':
+        raise checkout_conflict(order,'checkout_recovery_required','This payment gateway does not provide checkout cancellation.','contact_support')
     if order.billing_mode!='subscription' or order.product_type!='membership':raise BillingError(409,'Only unpaid subscription checkouts can be canceled')
     if order.status=='failed' and (order.checkout_context or {}).get('session_expired'):return dict(order_no=order.order_no,status='failed',canceled=True)
     if not _checkout_pending(db,order):raise checkout_conflict(order,'checkout_already_paid','This order is already settled and cannot be canceled.','view_orders')
@@ -532,7 +550,11 @@ def _administratively_revoked_membership(db,order,grant=None):
     source=dict(order_id=order.id)
     if grant is not None:source['grant_id']=grant.id
     matches=[AuditLog.payload['revoked_membership_sources'].contains([source])]
-    if order.billing_mode=='subscription' and order.subscription_ref:
+    if order.billing_mode=='subscription' and order.subscription_ref and order.provider=='creem':
+        matches.append(AuditLog.payload['revoked_creem_subscription_bindings'].contains([
+            dict(account_code=order.account_code,subscription_id=order.subscription_ref),
+        ]))
+    elif order.billing_mode=='subscription' and order.subscription_ref:
         matches.extend((
             (AuditLog.payload['account_code'].astext==order.account_code)&(AuditLog.payload['stripe_subscription_id'].astext==order.subscription_ref),
             AuditLog.payload['revoked_subscription_bindings'].contains([dict(account_code=order.account_code,stripe_subscription_id=order.subscription_ref)]),
@@ -798,6 +820,12 @@ def orders_for_payment_intent(db,code,payment_intent):
 def refund_payment_review_reason(db,order):
     if order.provider == 'epay':
         return 'Epay V1 订单需要通过收款商户人工核对退款'
+    if order.provider == 'creem':
+        if order.billing_mode != 'one_time':
+            return 'Creem 订阅退款需人工核对后续扣费和会员权益'
+        if not order.external_txn_id or not (order.checkout_context or {}).get('provider_trade_no'):
+            return 'Creem 订单缺少可验证的原始交易'
+        return None
     context=order.checkout_context or {}
     ids=context.get('invoice_payment_intent_ids') or []
     if context.get('invoice_payment_requires_manual_review') or len(set(ids))>1:
@@ -1017,6 +1045,29 @@ def resolve_membership_refund(db,order_no,actor_id,reason,idempotency_key,expect
     db.commit();return result
 
 
+def freeze_refund_sources(db, order, wallet, actor, reason):
+    source=db.scalar(select(CoinSource).where(CoinSource.order_id==order.id).with_for_update())
+    grant=db.scalar(select(MembershipGrant).where(MembershipGrant.order_id==order.id).with_for_update())
+    if source:
+        verify_source_proof(db,order,source)
+    if source and (source.remaining!=source.original or source.reserved):raise BillingError(409,'purchased coins have been consumed; manual review required')
+    if grant and (grant.access_consumed or grant.status!='active'):raise BillingError(409,'membership entitlement was consumed or changed; manual review required')
+    if grant and db.scalar(select(AuditLog.id).where(AuditLog.target_type=='user',AuditLog.target_id==order.user_id,AuditLog.action.in_(('membership_grant','membership_revoke')),AuditLog.created_at>=order.paid_at).limit(1)):
+        raise BillingError(409,'membership was manually adjusted after purchase; manual refund review required')
+    if not source and not grant:raise BillingError(409,'no provably unconsumed entitlement source')
+    refund=CommerceRefund(order_id=order.id,idempotency_key='refund:'+order.order_no,status='pending',reason=reason)
+    db.add(refund);db.flush()
+    if source:
+        if wallet.balance<source.original:raise BillingError(409,'wallet changed; manual review required')
+        source.reserved=source.remaining;source.remaining=0;wallet.balance-=source.reserved
+        db.add(CoinLedgerEntry(user_id=order.user_id,amount=-source.reserved,balance_after=wallet.balance,biz_type='refund_reserve',biz_key='refund_reserve:'+order.order_no,note=reason))
+    if grant:
+        _freeze_membership_refund(db,order,grant)
+        grant.status='refund_pending'
+    order.status='refund_pending';audit(db,actor,'commerce.refund.request',order.id,dict(reason=reason));db.commit()
+    return refund
+
+
 def request_refund(db,order_no,actor,reason,idempotency_key):
     order=db.scalar(select(Order).where(Order.order_no==order_no))
     if order is None:raise BillingError(404,'order not found')
@@ -1030,29 +1081,15 @@ def request_refund(db,order_no,actor,reason,idempotency_key):
         if existing and existing.status=='pending':
             existing.status='manual_review';existing.error=review_reason;order.status='refund_review';db.commit();return refund_out(existing)
         raise BillingError(409,review_reason)
+    if order.provider=='creem':
+        from app.modules.billing import creem_commerce
+        return creem_commerce.request_refund(db,order,wallet,existing,actor,reason)
     if existing:
         db.commit()
         return reconcile_refund(db,order,existing)
     else:
         if order.status!='paid' or not order.checkout_key and not order.invoice_id or not order.product_snapshot or not order.payment_intent_id:raise BillingError(409,'legacy or unverified payment requires manual refund review')
-        source=db.scalar(select(CoinSource).where(CoinSource.order_id==order.id).with_for_update())
-        grant=db.scalar(select(MembershipGrant).where(MembershipGrant.order_id==order.id).with_for_update())
-        if source:
-            verify_source_proof(db,order,source)
-        if source and (source.remaining!=source.original or source.reserved):raise BillingError(409,'purchased coins have been consumed; manual review required')
-        if grant and (grant.access_consumed or grant.status!='active'):raise BillingError(409,'membership entitlement was consumed or changed; manual review required')
-        if grant and db.scalar(select(AuditLog.id).where(AuditLog.target_type=='user',AuditLog.target_id==order.user_id,AuditLog.action.in_(('membership_grant','membership_revoke')),AuditLog.created_at>=order.paid_at).limit(1)):
-            raise BillingError(409,'membership was manually adjusted after purchase; manual refund review required')
-        if not source and not grant:raise BillingError(409,'no provably unconsumed entitlement source')
-        refund=CommerceRefund(order_id=order.id,idempotency_key='refund:'+order.order_no,status='pending',reason=reason);db.add(refund);db.flush()
-        if source:
-            if wallet.balance<source.original:raise BillingError(409,'wallet changed; manual review required')
-            source.reserved=source.remaining;source.remaining=0;wallet.balance-=source.reserved
-            db.add(CoinLedgerEntry(user_id=order.user_id,amount=-source.reserved,balance_after=wallet.balance,biz_type='refund_reserve',biz_key='refund_reserve:'+order.order_no,note=reason))
-        if grant:
-            _freeze_membership_refund(db,order,grant)
-            grant.status='refund_pending'
-        order.status='refund_pending';audit(db,actor,'commerce.refund.request',order.id,dict(reason=reason));db.commit()
+        refund=freeze_refund_sources(db,order,wallet,actor,reason)
     # A new POST rejection never establishes the outcome of an earlier refund
     # on this payment. Retries below only READ the original provider facts.
     data={'payment_intent':order.payment_intent_id,'amount':str(order.amount_cents),'metadata[commerce_order_no]':order.order_no,'metadata[commerce_refund_key]':refund.idempotency_key}
@@ -1094,7 +1131,8 @@ def _reconcile_failed_one_time_membership(db,order,refund,grant,status):
         case=dict(version=1,provider_status=status,provider_refund_id=refund.refund_id,conflicting_settlement_order_ids=newer,blockers_at_outcome=blockers,budget_error=budget_error)
         order.checkout_context={**context,'membership_refund_reconciliation':case}
         refund.status='manual_review';order.status='refund_review'
-        refund.error='Stripe退款已确认'+('失败' if status=='failed' else '取消')+'；会员来源需要按冻结剩余时长结案，原权益和金币继续冻结。'+(budget_error or ('存在冻结后结算的会员订单：'+','.join(map(str,newer)) if newer else '；'.join(reasons)))
+        provider_name = {'stripe': 'Stripe', 'creem': 'Creem'}.get(order.provider, order.provider)
+        refund.error=provider_name+'退款已确认'+('失败' if status=='failed' else '取消')+'；会员来源需要按冻结剩余时长结案，原权益和金币继续冻结。'+(budget_error or ('存在冻结后结算的会员订单：'+','.join(map(str,newer)) if newer else '；'.join(reasons)))
         db.add(AuditLog(actor_type='system',action='membership_source.reconciliation_required',target_type='order',target_id=order.id,created_at=now(),payload=dict(source_order_id=order.id,grant_id=grant.id,freeze=frozen,case=case)))
         db.flush();return True
     # With no conflicting rights, resume only the unelapsed frozen budget. Past
@@ -1136,8 +1174,9 @@ def order_out(db,row,include_customer=False):
     if include_customer:
         from app.modules.account.models import User
         user=db.get(User,row.user_id)
-        external_id=(row.checkout_context or {}).get('provider_trade_no') if row.provider=='epay' else row.external_txn_id
-        item.update(user_id=row.user_id,user=customer_out(user) if user else None,external_txn_id=external_id,provider=row.provider)
+        external_id=row.external_txn_id if row.provider=='stripe' else (row.checkout_context or {}).get('provider_trade_no')
+        item.update(user_id=row.user_id,user=customer_out(user) if user else None,external_txn_id=external_id,provider=row.provider,
+                    paid_amount_cents=(row.checkout_context or {}).get('provider_amount_paid', row.amount_cents))
     return item
 
 def list_orders(db,user_id=None,limit=50,offset=0):
@@ -1196,7 +1235,8 @@ def refund_eligibility(db,order):
         return dict(eligible=False,reason=existing.error or ('退款处理中，可重试现有申请' if existing.status=='pending' else '该订单已有退款记录：'+existing.status))
     review_reason=refund_payment_review_reason(db,order)
     if review_reason:return dict(eligible=False,reason=review_reason)
-    if order.status!='paid' or (not order.checkout_key and not order.invoice_id) or not order.product_snapshot or not order.payment_intent_id:return dict(eligible=False,reason='历史订单或支付来源不完整，需要人工核对')
+    if (order.status!='paid' or (not order.checkout_key and not order.invoice_id) or not order.product_snapshot
+            or (order.provider=='stripe' and not order.payment_intent_id)):return dict(eligible=False,reason='历史订单或支付来源不完整，需要人工核对')
     source=db.scalar(select(CoinSource).where(CoinSource.order_id==order.id))
     grant=db.scalar(select(MembershipGrant).where(MembershipGrant.order_id==order.id))
     if source:

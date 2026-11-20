@@ -6,6 +6,7 @@ import {
   Alert,
   Button,
   Card,
+  Divider,
   Checkbox,
   Col,
   Form,
@@ -26,6 +27,8 @@ import {
 import { api, errorText } from "../api";
 import { ManagementPageHeader } from "../components/ManagementPage";
 import { useLoad } from "../hooks";
+import type { CreemMode } from "./CreemAccounts";
+import { CreemProductBindings } from "./CreemProductBindings";
 import type { SiteBrand, SiteConfig } from "../../../shared/site";
 function useCopy() {
   const [lang, setLang] = useState(() =>
@@ -860,24 +863,29 @@ export function MerchantBindingPage() {
           </Button>
         </Form>
       </Card>
-      {native && <EpayBindingCard l={l} />}
+      {native && <>
+        <GatewayBindingCard provider="epay" l={l} />
+        <GatewayBindingCard provider="creem" l={l} />
+      </>}
     </Space>
   );
 }
 
-type EpayBinding = {
+type GatewayBinding = {
   account_code: string | null;
   configured: boolean;
   currency: string;
-  available_accounts: { code: string; name: string; status: string }[];
+  available_accounts: { code: string; name: string; status: string; mode?: CreemMode }[];
 };
 
-function EpayBindingCard({ l }: { l: ReturnType<typeof useCopy>["l"] }) {
-  const path = "/tenant/v1/epay/merchant-binding";
+function GatewayBindingCard({ provider, l }: { provider: "epay" | "creem"; l: ReturnType<typeof useCopy>["l"] }) {
+  const isEpay = provider === "epay";
+  const name = isEpay ? "Epay" : "Creem";
+  const path = "/tenant/v1/" + provider + "/merchant-binding";
   const [form] = Form.useForm<{ account_code?: string }>();
-  const state = useLoad<EpayBinding | null>(path, null);
+  const state = useLoad<GatewayBinding | null>(path, null);
   const binding = state.data;
-  const eligible = binding?.currency === "CNY";
+  const eligible = !isEpay || binding?.currency === "CNY";
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
 
@@ -892,7 +900,7 @@ function EpayBindingCard({ l }: { l: ReturnType<typeof useCopy>["l"] }) {
     try {
       await api(path, { method: "PUT", body: JSON.stringify({ account_code: account_code || null }) });
       await state.reload();
-      message.success(account_code ? l("Epay 账号已绑定", "Epay account bound") : l("Epay 账号已解除绑定", "Epay account unbound"));
+      message.success(account_code ? l(name + " 账号已绑定", name + " account bound") : l(name + " 账号已解除绑定", name + " account unbound"));
     } catch (cause) {
       setSaveError(errorText(cause));
     } finally {
@@ -901,7 +909,7 @@ function EpayBindingCard({ l }: { l: ReturnType<typeof useCopy>["l"] }) {
   }
 
   return (
-    <Card title="Epay" loading={state.loading && !binding}>
+    <Card title={name} loading={state.loading && !binding}>
       {(state.error || saveError) && <Alert
         type="error"
         showIcon
@@ -912,16 +920,24 @@ function EpayBindingCard({ l }: { l: ReturnType<typeof useCopy>["l"] }) {
       {binding && <Alert
         type={eligible && binding.configured ? "success" : "info"}
         showIcon
-        message={eligible && binding.configured ? l("本站已配置 Epay", "Epay account configured") : l("Epay 使用人民币（CNY）收款", "Epay accepts payments in CNY")}
-        description={!eligible
+        message={eligible && binding.configured
+          ? l("本站已配置 " + name, name + " account configured")
+          : isEpay
+            ? l("Epay 使用人民币（CNY）收款", "Epay accepts payments in CNY")
+            : binding.account_code
+              ? l("Creem 账号已绑定，渠道暂未启用", "Creem account bound, payments are currently disabled")
+              : l("选择本站的 Creem 账号", "Choose the site's Creem account")}
+        description={!isEpay
+          ? l("测试账号可用于联调，只有启用测试收款的环境才会向观众展示。", "Use test accounts for integration. Viewers see them only where test payments are enabled.")
+          : !eligible
           ? l(`本站币种为 ${binding.currency}。将本站币种设为 CNY 后可绑定 Epay。`, `This site uses ${binding.currency}. Set the site currency to CNY before binding Epay.`)
           : l("适用于金币包和一次性会员。", "Available for coin packs and one-time membership.")}
         style={{ marginBottom: 16 }}
       />}
-      <Form name="epay-binding" form={form} layout="vertical" onFinish={save}>
+      <Form name={provider + "-binding"} form={form} layout="vertical" onFinish={save}>
         <Form.Item
           name="account_code"
-          label={l("Epay 账号", "Epay account")}
+          label={l(name + " 账号", name + " account")}
           extra={l("清空选择并保存即可解除本站绑定。", "Clear the selection and save to remove the binding.")}
         >
           <Select
@@ -929,18 +945,23 @@ function EpayBindingCard({ l }: { l: ReturnType<typeof useCopy>["l"] }) {
             showSearch
             optionFilterProp="label"
             disabled={!binding || (!eligible && !binding.account_code) || saving}
-            placeholder={l("选择平台配置的 Epay 账号", "Choose a company Epay account")}
+            placeholder={l("选择平台配置的 " + name + " 账号", "Choose a company " + name + " account")}
             options={(binding?.available_accounts ?? []).map(account => ({
               value: account.code,
-              label: account.name + " · " + account.code,
+              label: account.name + " · " + account.code + (account.mode ? " · " +
+                (account.mode === "test" ? l("测试", "Test") : l("生产", "Production")) : ""),
               disabled: !eligible || account.status !== "active",
             }))}
           />
         </Form.Item>
         <Button type="primary" htmlType="submit" loading={saving} disabled={!binding || state.loading || (!eligible && !binding.account_code)}>
-          {l("保存 Epay 绑定", "Save Epay binding")}
+          {l("保存 " + name + " 绑定", "Save " + name + " binding")}
         </Button>
       </Form>
+      {provider === "creem" && binding?.account_code && <>
+        <Divider/>
+        <CreemProductBindings key={binding.account_code} accountCode={binding.account_code} l={l} />
+      </>}
     </Card>
   );
 }

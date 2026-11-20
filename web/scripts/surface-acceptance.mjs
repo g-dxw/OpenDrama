@@ -133,7 +133,8 @@ let activeMember = false,
   memberHold = null,
   memberProfileBarrier = null,
   orderHold = null,
-  epayAvailable = false;
+  epayAvailable = false,
+  creemAvailable = false;
 const recoveryReplies = [];
 const checkoutFacts = new Map();
 const pending = [],
@@ -560,7 +561,7 @@ page.on("request", async (req) => {
         await fulfillHeld(req, held, result);
         return;
       }
-    } else if (["EPAY-H5-ORDER", "EPAY-H5-SECOND"].some((id) => p === "/v1/commerce/orders/" + id + "/reconcile") && req.method() === "POST") {
+    } else if (["EPAY-H5-ORDER", "EPAY-H5-SECOND", "CREEM-H5-ORDER"].some((id) => p === "/v1/commerce/orders/" + id + "/reconcile") && req.method() === "POST") {
       const order = checkoutFacts.get(p.split("/")[4]);
       if (order) {
         order.status = "paid";
@@ -568,7 +569,17 @@ page.on("request", async (req) => {
       }
       result = { order, settled: order?.settled };
     } else if (p === "/v1/commerce/checkout") {
-      if (epayAvailable && body.provider === "epay") {
+      if (creemAvailable && body.provider === "creem") {
+        const order = {
+          order_no: "CREEM-H5-ORDER", product_type: "membership",
+          product_code: body.code, status: "created", settled: false,
+        };
+        checkoutFacts.set(order.order_no, order);
+        result = {
+          url: origin + "/?checkout=success&surface=h5&payment_provider=creem&order_no=CREEM-H5-ORDER&subscription_id=sub_fixture&product_id=prod_fixture&signature=fixture#account/orders",
+          order_no: order.order_no, session_id: "ch_fixture",
+        };
+      } else if (epayAvailable && body.provider === "epay") {
         const previous = checkoutFacts.get("EPAY-H5-ORDER");
         if (previous?.intent === body.idempotency_key && previous.status === "paid") {
           status = 409;
@@ -615,6 +626,8 @@ page.on("request", async (req) => {
           return;
         }
       }
+    } else if (p === "/v1/commerce/orders/CREEM-H5-LOCAL/cancel") {
+      result = {order_no: "CREEM-H5-LOCAL", status: "failed", canceled: true};
     } else if (p === "/v1/billing/cancel") {
       const held = cancelHold;
       cancelHold = null;
@@ -628,7 +641,7 @@ page.on("request", async (req) => {
       }
     } else if (p === "/v1/plans")
       result = {
-        billing_mode: "one_time",
+        billing_mode: creemAvailable ? "subscription" : "one_time",
         items: [
           {
             code: "weekly",
@@ -639,10 +652,15 @@ page.on("request", async (req) => {
             version: 1,
             version_id: 1,
             benefits: { items: ["Configured benefit"] },
-            duration_days: 7,
-            recurring_interval: null,
-            billing_mode: "one_time",
+            duration_days: creemAvailable ? null : 7,
+            recurring_interval: creemAvailable ? "week" : null,
+            billing_mode: creemAvailable ? "subscription" : "one_time",
           },
+          ...(creemAvailable ? [{
+            code: "monthly", name_en: "Monthly unmapped", name_zh: "月卡",
+            price_cents: 799, currency: "USD", version: 1, version_id: 2,
+            benefits: {}, recurring_interval: "month", billing_mode: "subscription",
+          }] : []),
         ],
       };
     else if (p === "/v1/coin-packs")
@@ -677,6 +695,11 @@ page.on("request", async (req) => {
             enabled: true,
             method: "alipay",
             billing_modes: ["one_time"],
+          }] : []),
+          ...(creemAvailable ? [{
+            code: "creem-fixture", name: "Creem fixture", provider: "creem", enabled: true,
+            billing_modes: ["subscription"],
+            products: [{product_type: "membership", product_code: "weekly", billing_mode: "subscription"}],
           }] : []),
         ],
       };
@@ -1230,7 +1253,66 @@ try {
   assert.notEqual(renewedEpay.idempotency_key, originalEpay.idempotency_key);
   epayAvailable = false;
   pass("H5 keeps the Epay intent through a paid return and only rotates it after explicit purchase");
+  creemAvailable = true;
   await goto("#price");
+  await surface("mobile");
+  const creemPicker = ".premium-plan:first-child .premium-payment-channel select";
+  await page.waitForSelector(creemPicker);
+  assert.equal(await page.$(".premium-plan:nth-child(2) select"), null);
+  const creemChoice = await page.$eval(creemPicker, (select) =>
+    [...select.options].find((item) => item.textContent === "Creem fixture").value,
+  );
+  await page.select(creemPicker, creemChoice);
+  const creemCalls = calls.length;
+  await page.locator('[data-testid="premium-buy-weekly"]').click();
+  await page.waitForFunction(() =>
+    document.querySelector(".checkout-return-notice p")?.textContent.includes("Payment confirmed."),
+  );
+  const creemRequests = calls.slice(creemCalls);
+  const creemCheckout = creemRequests.find((call) => call.path === "/v1/commerce/checkout")?.body;
+  assert.equal(creemCheckout.provider, "creem");
+  assert.equal(creemCheckout.code, "weekly");
+  assert.equal(creemCheckout.payment_method, undefined);
+  assert.equal(creemRequests.filter((call) => call.path === "/v1/commerce/orders/CREEM-H5-ORDER/reconcile" && call.method === "POST").length, 1);
+  assert.deepEqual([...new URL(page.url()).searchParams.keys()], ["surface"]);
+  pass("H5 uses the Creem subscription only when its specific plan and mode are both advertised");
+  await goto("#price");
+  await surface("mobile");
+  await page.waitForSelector('[data-testid="premium-buy-monthly"]');
+  recoveryReplies.push({status: 409, body: {detail: {
+    code: "pending_subscription_checkout", action: "resume_only", provider: "creem",
+    order_no: "CREEM-H5-ORDER", message: "Continue your existing Creem checkout.",
+    checkout_url: origin + "/?checkout=success&surface=h5&payment_provider=creem&order_no=CREEM-H5-ORDER#account/orders",
+  }}});
+  await page.locator('[data-testid="premium-buy-monthly"]').click();
+  await page.waitForSelector('[data-testid="premium-resume-checkout"]');
+  assert.equal(await page.$('[data-testid="premium-cancel-pending-checkout"]'), null);
+  assert.equal(await page.$('[data-testid="premium-start-new-checkout"]'), null);
+  const beforeResume = calls.filter((call) => call.path === "/v1/commerce/checkout").length;
+  await page.locator('[data-testid="premium-resume-checkout"]').click();
+  await page.waitForFunction(() =>
+    document.querySelector(".checkout-return-notice p")?.textContent.includes("Payment confirmed."),
+  );
+  assert.equal(calls.filter((call) => call.path === "/v1/commerce/checkout").length, beforeResume);
+  assert.equal(await page.evaluate(() => sessionStorage.getItem("jjtv_h5_checkout_order:reconcile")), "CREEM-H5-ORDER");
+  pass("H5 resumes a conflicting Creem checkout without offering cancellation or creating another order");
+  await goto("#price");
+  await surface("mobile");
+  await page.waitForSelector('[data-testid="premium-buy-monthly"]');
+  recoveryReplies.push({status: 409, body: {detail: {
+    code: "pending_subscription_checkout", action: "resume_or_cancel", provider: "creem",
+    order_no: "CREEM-H5-LOCAL", message: "Cancel locally before starting another checkout.",
+  }}});
+  await page.locator('[data-testid="premium-buy-monthly"]').click();
+  await page.waitForSelector('[data-testid="premium-cancel-pending-checkout"]');
+  assert.equal(await page.$('[data-testid="premium-resume-checkout"]'), null);
+  await page.locator('[data-testid="premium-cancel-pending-checkout"]').click();
+  await page.waitForSelector('[data-testid="premium-pending-checkout"]', {hidden: true});
+  assert(calls.some((call) => call.path === "/v1/commerce/orders/CREEM-H5-LOCAL/cancel" && call.method === "POST"));
+  creemAvailable = false;
+  pass("H5 cancels a Creem order only when the backend permits local cancellation");
+  await goto("#price");
+  await page.reload({waitUntil: "networkidle0"});
   await surface("mobile");
   await page.waitForSelector('[data-testid="premium-buy-weekly"]');
   const purchase = hold("checkout", "H5-PINNED-ORDER");

@@ -1,5 +1,7 @@
 import { siteStorageKey } from "../../shared/site";
 import {
+  checkoutReturnMarker,
+  isReconciledProvider,
   paymentChannelFields,
   paymentChannelKey,
   type CheckoutOrderStatus,
@@ -265,7 +267,7 @@ export function getPaymentChannels(): Promise<{items: PaymentChannel[]}> {
 
 const membershipIntentKey = (planCode: string, channel?: PaymentChannel) =>
   "jjtv_checkout_membership_" + planCode +
-  (channel?.provider === "epay" ? ":" + paymentChannelKey(channel) : "");
+  (channel && isReconciledProvider(channel.provider) ? ":" + paymentChannelKey(channel) : "");
 export function membershipCheckoutIntent(planCode: string, channel?: PaymentChannel): string {
   const key = membershipIntentKey(planCode, channel);
   let intent = sessionStorage.getItem(key);
@@ -308,6 +310,13 @@ export function getCheckoutOrder(
     "/v1/commerce/orders/" + encodeURIComponent(orderNo),
   );
 }
+export function cancelPendingMembershipOrder(orderNo: string) {
+  return postJson<{ order_no: string; canceled: boolean }>(
+    "/v1/commerce/orders/" + encodeURIComponent(orderNo) + "/cancel",
+    undefined,
+  );
+}
+
 export function reconcileReturnedCheckout(orderNo: string): Promise<CheckoutOrderStatus> {
   return postJson<CheckoutOrderStatus>(
     "/v1/commerce/orders/" + encodeURIComponent(orderNo) + "/reconcile",
@@ -333,7 +342,7 @@ export function startCheckout(
       success_url:
         window.location.origin +
         "/?checkout=success&surface=h5" +
-        (channel?.provider === "epay" ? "&payment_provider=epay" : "") +
+        checkoutReturnMarker(channel?.provider) +
         window.location.hash,
       cancel_url:
         window.location.origin +

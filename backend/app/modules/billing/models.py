@@ -86,11 +86,12 @@ class Subscription(Base):
     canceled_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     account_code: Mapped[str] = mapped_column(String(32), nullable=False, default="env", server_default="env")
     managed_commerce: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
-    # Persist before Stripe I/O; retries share a key until a proven later resume.
+    # Durable provider-specific cancellation evidence and replay information.
     cancellation_context: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
     stripe_customer_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     stripe_subscription_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     stripe_price_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    creem_subscription_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     billing_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="subscription")
     # End of one-time passes; independent from current_period_end so a renewal
     # never wipes access that was bought outright.
@@ -113,6 +114,13 @@ class Subscription(Base):
             "user_id",
             unique=True,
             postgresql_where=text("status = 'active'"),
+        ),
+        Index(
+            "uq_subscriptions_creem_account_id",
+            "account_code",
+            "creem_subscription_id",
+            unique=True,
+            postgresql_where=text("creem_subscription_id IS NOT NULL"),
         ),
     )
 

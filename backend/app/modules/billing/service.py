@@ -424,7 +424,7 @@ def _describe(sub: Subscription, plan: Plan) -> dict:
         "pass_end": sub.pass_end.isoformat() if sub.pass_end else None,
         "canceled_at": sub.canceled_at.isoformat() if sub.canceled_at else None,
         "billing_mode": sub.billing_mode,
-        "source": "subscription" if sub.stripe_subscription_id else "one_time",
+        "source": "subscription" if (sub.stripe_subscription_id or sub.creem_subscription_id) else "one_time",
     }
 
 
@@ -433,12 +433,14 @@ def membership_detail(session: Session, user_id: int) -> dict:
     membership = active_membership(session, user_id)
     row = active_subscription(session, user_id)
     plan = session.get(Plan, row.plan_id) if row is not None else session.scalar(select(Plan).where(Plan.code==membership.get("plan_code")))
-    membership["source"] = ("one_time" if membership.get("active") else None) if row is None else ("subscription" if row.stripe_subscription_id else "one_time")
+    recurring = row is not None and bool(row.stripe_subscription_id or row.creem_subscription_id)
+    membership["source"] = ("one_time" if membership.get("active") else None) if row is None else ("subscription" if recurring else "one_time")
     membership["plan_name"] = (plan.name_zh or plan.name_en) if plan is not None else None
     if membership.get("plan_code") is None and plan is not None:
         # Expired window: still useful for support to see the last plan bought.
         membership["plan_code"] = plan.code
     membership["has_stripe_subscription"] = bool(row is not None and row.stripe_subscription_id)
+    membership["has_renewing_subscription"] = recurring
 
     rows = session.execute(
         select(Subscription, Plan)
@@ -503,9 +505,8 @@ def grant_membership(
     wallet_lock(session, user_id)
     before_until = access_until(session, user_id)
     row = active_subscription(session, user_id, for_update=True)
-    if mode == "restart" and row is not None and row.stripe_subscription_id:
-        # We cannot move Stripe's billing period, so "restart" would silently
-        # leave the subscription window in place.
+    if mode == "restart" and row is not None and (row.stripe_subscription_id or row.creem_subscription_id):
+        # A local grant cannot rewrite a provider-managed billing period.
         raise BillingError(409, "该用户有自动续费订阅，请改用「顺延」")
     if mode == "restart":
         protected_source = session.scalar(
@@ -543,9 +544,8 @@ def grant_membership(
 
     base = max(_window_base(row), before_until or _now()) if mode == "extend" else _now()
     row.pass_end = base + timedelta(days=length)
-    if not row.stripe_subscription_id:
-        # Stripe-owned rows keep their plan: the webhook re-derives it from the
-        # price and would overwrite us on the next update anyway.
+    if not (row.stripe_subscription_id or row.creem_subscription_id):
+        # Provider-owned rows keep the plan associated with their paid order.
         row.plan_id = plan.id
         row.plan_version_id = version.id
 
@@ -1312,6 +1312,12 @@ def cancel_subscription(session:Session,user_id:int)->None:
     from app.modules.billing.commerce import wallet_lock
     wallet_lock(session,user_id)
     row=active_subscription(session,user_id,for_update=True)
+    if row is not None and row.creem_subscription_id:
+        from app.modules.billing.creem_subscriptions import cancel_renewal
+
+        cancel_renewal(session,row)
+        session.commit()
+        return
     if row is not None and row.managed_commerce and row.stripe_subscription_id:
         row=_prepare_managed_cancellation(session,row)
         _cancel_managed_renewal(session,row)
@@ -1324,7 +1330,7 @@ _legacy_revoke_membership = revoke_membership
 
 def _existing_managed_subscription_bindings(session:Session,user_id:int)->list[dict]:
     bindings=set(session.execute(select(Subscription.account_code,Subscription.stripe_subscription_id).where(Subscription.user_id==user_id,Subscription.managed_commerce.is_(True),Subscription.stripe_subscription_id.is_not(None))).all())
-    bindings.update(session.execute(select(Order.account_code,Order.subscription_ref).where(Order.user_id==user_id,Order.product_type=='membership',Order.billing_mode=='subscription',Order.checkout_key.is_not(None),Order.subscription_ref.is_not(None))).all())
+    bindings.update(session.execute(select(Order.account_code,Order.subscription_ref).where(Order.provider=='stripe',Order.user_id==user_id,Order.product_type=='membership',Order.billing_mode=='subscription',Order.checkout_key.is_not(None),Order.subscription_ref.is_not(None))).all())
     return [dict(account_code=account,stripe_subscription_id=subscription) for account,subscription in sorted(bindings)]
 
 
@@ -1335,7 +1341,7 @@ def _existing_membership_sources(session:Session,user_id:int)->list[dict]:
 
 
 def revoke_membership(session:Session,*,user_id:int,mode:str,reason:str,actor_id:int)->dict:
-    from app.modules.billing import commerce
+    from app.modules.billing import commerce, creem_subscriptions
     from app.modules.billing.commerce_models import MembershipGrant
     if mode not in REVOKE_MODES:raise BillingError(422,'unknown revoke mode')
     if not reason.strip():raise BillingError(422,'请填写取消原因')
@@ -1343,14 +1349,16 @@ def revoke_membership(session:Session,*,user_id:int,mode:str,reason:str,actor_id
     grants=list(session.scalars(select(MembershipGrant).where(MembershipGrant.user_id==user_id,MembershipGrant.status=='active',MembershipGrant.ends_at>_now()).with_for_update()))
     row=active_subscription(session,user_id,for_update=True)
     revoked_bindings=_existing_managed_subscription_bindings(session,user_id) if mode=='now' else []
+    revoked_creem=creem_subscriptions.existing_bindings(session,user_id) if mode=='now' else []
     revoked_sources=_existing_membership_sources(session,user_id) if mode=='now' else []
-    if not grants and (row is None or not row.managed_commerce) and not revoked_bindings and not revoked_sources:
+    if not grants and (row is None or not row.managed_commerce) and not revoked_bindings and not revoked_creem and not revoked_sources:
         with managed_stripe_runtime(session,row.account_code if row else "env"):
             return _legacy_revoke_membership(session,user_id=user_id,mode=mode,reason=reason,actor_id=actor_id)
     before=access_until(session,user_id)
     if before is None:raise BillingError(409,'该用户当前没有有效会员')
     stripe_id=row.stripe_subscription_id if row else None
-    if mode=='period_end' and not stripe_id:raise BillingError(409,'时长包没有续费概念，请选择「立即收回」')
+    creem_id=row.creem_subscription_id if row else None
+    if mode=='period_end' and not (stripe_id or creem_id):raise BillingError(409,'时长包没有续费概念，请选择「立即收回」')
     if stripe_id:
         if row.managed_commerce:
             if mode=='period_end':
@@ -1366,6 +1374,14 @@ def revoke_membership(session:Session,*,user_id:int,mode:str,reason:str,actor_id
         else:
             with managed_stripe_runtime(session,row.account_code):
                 _stripe_request('/subscriptions/'+stripe_id,{'cancel_at_period_end':'true'} if mode=='period_end' else None,method='POST' if mode=='period_end' else 'DELETE')
+    if mode=='period_end' and creem_id:
+        creem_subscriptions.cancel_renewal(session,row)
+    if mode=='now':
+        if creem_id:
+            binding = dict(account_code=row.account_code,subscription_id=creem_id)
+            if binding not in revoked_creem:
+                revoked_creem.append(binding)
+        creem_subscriptions.cancel_known_bindings(session,revoked_creem,row)
     moment=_now()
     if row:row.canceled_at=moment
     if mode=='now':
@@ -1376,9 +1392,14 @@ def revoke_membership(session:Session,*,user_id:int,mode:str,reason:str,actor_id
         # Freeze known bindings and sources without disturbing refund reservations.
         # Original managed orders retain historical identities if a row was replaced.
         payload.update(cutoff_at=moment.isoformat(),revoked_subscription_bindings=revoked_bindings,revoked_membership_sources=revoked_sources)
+        if revoked_creem:
+            payload['revoked_creem_subscription_bindings']=revoked_creem
     session.add(AuditLog(actor_type='admin',actor_id=actor_id,action='membership_revoke',target_type='user',target_id=user_id,payload=payload,created_at=_now()))
     session.commit()
-    return dict(mode=mode,before_until=before.isoformat(),after_until=before.isoformat() if mode=='period_end' else moment.isoformat(),stripe_canceled=bool(stripe_id))
+    result=dict(mode=mode,before_until=before.isoformat(),after_until=before.isoformat() if mode=='period_end' else moment.isoformat(),stripe_canceled=bool(stripe_id))
+    if creem_id or revoked_creem:
+        result['creem_canceled']=True
+    return result
 
 
 # Legacy admin callers must use the same site merchant and price bindings as

@@ -79,7 +79,7 @@ class CheckoutIn(BaseModel):
     product_type:str=Field(pattern='^(membership|coin_pack)$')
     code:str=Field(min_length=1,max_length=32)
     account_code:str|None=None
-    provider:Literal['stripe','epay']='stripe'
+    provider:Literal['stripe','epay','creem']='stripe'
     payment_method:str|None=Field(default=None,pattern='^[a-z0-9_]{1,64}$')
     idempotency_key:str=Field(min_length=8,max_length=100)
     success_url:str|None=Field(default=None,max_length=2000)
@@ -128,6 +128,10 @@ def _consumer_order_detail(order_no,response,user,db,*,reconcile=False):
     if reconcile and row.provider=='epay':
         from app.modules.billing import epay_commerce
         call(db,epay_commerce.reconcile,db,row)
+        db.refresh(row)
+    elif reconcile and row.provider=='creem':
+        from app.modules.billing import creem_commerce
+        call(db,creem_commerce.reconcile,db,row)
         db.refresh(row)
     snapshot=row.product_snapshot if isinstance(row.product_snapshot,dict) else {}
     code=snapshot.get('code')
@@ -181,6 +185,20 @@ async def webhook(code:str,request:Request,stripe_signature:str=Header(default='
     if code=='env':return call(db,apply_stripe_event,db,body=body,signature=stripe_signature,payload=payload)
     from app.modules.billing.site_merchants import receive
     return call(db,receive,db,code,body,stripe_signature,payload)
+
+
+@public_router.post('/billing/creem/accounts/{code}/webhook', include_in_schema=False)
+async def creem_webhook(code: str, request: Request, signature: str = Header(default='', alias='creem-signature'),
+                        db: Session = Depends(get_db)):
+    from fastapi.concurrency import run_in_threadpool
+    from app.modules.billing import creem_commerce
+
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > 1024 * 1024:
+            raise HTTPException(413, 'Creem notification is too large')
+        body.extend(chunk)
+    return await run_in_threadpool(call, db, creem_commerce.receive, db, code, bytes(body), signature)
 
 @admin_router.get('/coin-packs')
 def admin_packs(user=Depends(require_admin),db:Session=Depends(get_db)):return {'items':service.list_packs(db,True)}
@@ -373,13 +391,15 @@ class EpayAccountPatch(BaseModel):
     secret_key: SecretStr | None = None
 
 
-def _epay_settings(body):
-    values = body.model_dump(exclude={'code', 'secret_key'}, exclude_none=True)
-    if body.secret_key is not None:
-        secret = body.secret_key.get_secret_value().strip()
-        if len(secret) > 512:
-            raise HTTPException(422, 'Epay secret is too long')
-        values['secret_key'] = secret
+def _gateway_settings(body, fields):
+    values = body.model_dump(exclude={'code', *fields}, exclude_none=True)
+    for field in fields:
+        secret = getattr(body, field)
+        if secret is not None:
+            value = secret.get_secret_value().strip()
+            if len(value) > 512:
+                raise HTTPException(422, 'Payment credential is too long')
+            values[field] = value
     return values
 
 
@@ -394,14 +414,14 @@ def epay_accounts(db: Session = Depends(get_db), user=Depends(require_platform_a
 def epay_create_account(body: EpayAccountIn, db: Session = Depends(get_db), user=Depends(require_platform_admin)):
     from app.modules.billing import epay_commerce
 
-    return call(db, epay_commerce.save_account, db, body.code, _epay_settings(body), user.id, create=True)
+    return call(db, epay_commerce.save_account, db, body.code, _gateway_settings(body, ('secret_key',)), user.id, create=True)
 
 
 @platform_router.patch('/epay/accounts/{code}')
 def epay_update_account(code: GatewayCode, body: EpayAccountPatch, db: Session = Depends(get_db), user=Depends(require_platform_admin)):
     from app.modules.billing import epay_commerce
 
-    return call(db, epay_commerce.save_account, db, code, _epay_settings(body), user.id)
+    return call(db, epay_commerce.save_account, db, code, _gateway_settings(body, ('secret_key',)), user.id)
 
 
 @platform_router.post('/epay/accounts/{code}/test')
@@ -411,7 +431,7 @@ def epay_test_account(code: GatewayCode, db: Session = Depends(get_db), user=Dep
     return call(db, epay_commerce.test_account, db, code)
 
 
-class EpayBindingIn(BaseModel):
+class GatewayBindingIn(BaseModel):
     account_code: GatewayCode | None
 
 
@@ -423,7 +443,92 @@ def epay_read_binding(db: Session = Depends(get_db), user=Depends(require_tenant
 
 
 @tenant_router.put('/epay/merchant-binding')
-def epay_set_binding(body: EpayBindingIn, db: Session = Depends(get_db), user=Depends(require_tenant_admin)):
+def epay_set_binding(body: GatewayBindingIn, db: Session = Depends(get_db), user=Depends(require_tenant_admin)):
     from app.modules.billing import epay_commerce
 
     return call(db, epay_commerce.bind, db, body.account_code, user.id)
+
+
+GatewayMode = Literal['test', 'production']
+CREEM_SECRETS = ('api_key', 'webhook_secret')
+
+
+class CreemAccountIn(BaseModel):
+    code: GatewayCode
+    name: str = Field(min_length=1, max_length=100)
+    status: GatewayStatus = 'draft'
+    mode: GatewayMode
+    api_key: SecretStr | None = None
+    webhook_secret: SecretStr | None = None
+
+
+class CreemAccountPatch(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    status: GatewayStatus | None = None
+    mode: GatewayMode | None = None
+    api_key: SecretStr | None = None
+    webhook_secret: SecretStr | None = None
+
+
+class CreemProductBindingIn(BaseModel):
+    account_code: GatewayCode
+    product_type: Literal['coin_pack', 'membership']
+    version_id: int = Field(ge=1)
+    billing_mode: Literal['one_time', 'subscription']
+    external_product_id: Annotated[str, StringConstraints(pattern=r'^prod_[a-zA-Z0-9_-]{1,122}$')] | None
+
+
+@platform_router.get('/creem/accounts')
+def creem_account_list(db: Session = Depends(get_db), user=Depends(require_platform_admin)):
+    from app.modules.billing import creem_accounts, gateway_accounts
+
+    return {'items': [creem_accounts.account_public(row) for row in gateway_accounts.accounts(db, 'creem')]}
+
+
+@platform_router.post('/creem/accounts')
+def creem_create_account(body: CreemAccountIn, db: Session = Depends(get_db), user=Depends(require_platform_admin)):
+    from app.modules.billing import creem_accounts
+
+    return call(db, creem_accounts.save_account, db, body.code, _gateway_settings(body, CREEM_SECRETS), user.id, create=True)
+
+
+@platform_router.patch('/creem/accounts/{code}')
+def creem_update_account(code: GatewayCode, body: CreemAccountPatch, db: Session = Depends(get_db), user=Depends(require_platform_admin)):
+    from app.modules.billing import creem_accounts
+
+    return call(db, creem_accounts.save_account, db, code, _gateway_settings(body, CREEM_SECRETS), user.id)
+
+
+@platform_router.post('/creem/accounts/{code}/test')
+def creem_test_account(code: GatewayCode, db: Session = Depends(get_db), user=Depends(require_platform_admin)):
+    from app.modules.billing import creem_accounts
+
+    return call(db, creem_accounts.test_account, db, code)
+
+
+@tenant_router.get('/creem/merchant-binding')
+def creem_read_binding(db: Session = Depends(get_db), user=Depends(require_tenant_admin)):
+    from app.modules.billing import creem_accounts
+
+    return call(db, creem_accounts.binding_info, db)
+
+
+@tenant_router.put('/creem/merchant-binding')
+def creem_set_binding(body: GatewayBindingIn, db: Session = Depends(get_db), user=Depends(require_tenant_admin)):
+    from app.modules.billing import creem_accounts
+
+    return call(db, creem_accounts.bind, db, body.account_code, user.id)
+
+
+@tenant_router.get('/creem/product-bindings')
+def creem_product_bindings(db: Session = Depends(get_db), user=Depends(require_tenant_admin)):
+    from app.modules.billing import creem_accounts
+
+    return call(db, creem_accounts.bindings_info, db)
+
+
+@tenant_router.put('/creem/product-bindings')
+def creem_save_product(body: CreemProductBindingIn, db: Session = Depends(get_db), user=Depends(require_tenant_admin)):
+    from app.modules.billing import creem_accounts
+
+    return call(db, creem_accounts.save_binding, db, body.model_dump(), user.id)
