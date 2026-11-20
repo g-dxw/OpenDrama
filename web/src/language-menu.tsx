@@ -17,7 +17,19 @@ export function LanguageMenu() {
     return () => { document.removeEventListener("pointerdown", outside); document.removeEventListener("keydown", escape); };
   }, [open]);
   return <div className="language-menu" ref={ref}>
-    <button ref={trigger} className="header-language" title={selected.label} aria-label={t("Choose language")} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(!open)}>{locale.toUpperCase()}<span aria-hidden="true">⌄</span></button>
+    <button
+      ref={trigger}
+      type="button"
+      className="header-language"
+      title={selected.label}
+      aria-label={t("Choose language")}
+      aria-haspopup="menu"
+      aria-expanded={open}
+      onClick={() => setOpen(!open)}
+    >
+      {locale.toUpperCase()}
+      <Icon name="arrow" size={16} />
+    </button>
     {open && <div className="language-popover" role="menu" aria-label={t("Language")} onKeyDown={(event) => {
       if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
       event.preventDefault(); const options = Array.from(ref.current?.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]') || []);
