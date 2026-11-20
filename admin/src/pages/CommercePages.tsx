@@ -8,6 +8,7 @@ import './commerce-plans.css';
 import { useLoad } from '../hooks';
 import { usePermission } from '../me';
 import { ManagementPageHeader, ManagementMetrics, ManagementFormSection } from '../components/ManagementPage';
+import { EpayAccountsPanel } from './EpayAccounts';
 
 type Pack={code:string;name_en:string;name_zh:string;status:string;price_cents:number;currency:string;base_coins:number;bonus_coins:number;version:number;sort_order:number;badge:string};
 type Plan=Omit<Pack,'sort_order'|'badge'> & {duration_days?:number;days?:number;recurring_interval?:string;billing_mode?:string;benefits?:{items?:string[];best?:boolean;[key:string]:unknown}};
@@ -62,6 +63,16 @@ export function CoinPacksPage(){
  </Space>;
 }
 
+export function PaymentAccountsPage() {
+ return <Space direction="vertical" size={20} className="management-page">
+  <ManagementPageHeader title="公司收款账号" description="配置网关账号后，在本站收款账号中绑定到对应站点。"/>
+  <Tabs items={[
+   { key: 'stripe', label: 'Stripe', children: <StripeAccountsPage platform/> },
+   { key: 'epay', label: 'Epay', children: <EpayAccountsPanel/> },
+  ]}/>
+ </Space>;
+}
+
 export function StripeAccountsPage({platform=false}:{platform?:boolean}){
  const stripeBase=platform?'/platform/v1/stripe':'/admin/v1/stripe';
  const state=useLoad<{items:Account[]}>(stripeBase+'/accounts',{items:[]}),prices=useLoad<{items:any[]}>(stripeBase+'/prices',{items:[]},{enabled:!platform});const permission=usePermission('stripe.manage');const canManage=platform||permission;
@@ -73,7 +84,7 @@ export function StripeAccountsPage({platform=false}:{platform?:boolean}){
  const provision=()=>Modal.confirm({title:'补齐当前产品的 Stripe 价格？',content:'将为所有启用账号补建缺失的会员和金币包价格。已有价格和历史订单保持原值。',okText:'补齐缺失价格',cancelText:'取消',onOk:async()=>{setProvisioning(true);try{const response=await api<{items:any[]}>(stripeBase+'/prices/provision',{method:'POST'});setResult(response.items);await prices.reload();}catch(e){message.error(errorText(e));}finally{setProvisioning(false);}}});
  const active=state.data.items.filter(a=>a.status==='active'),defaultAccount=state.data.items.find(a=>a.is_default);
  return <Space direction="vertical" size={20} className="management-page">
-  <ManagementPageHeader title="支付通道" description="管理 Stripe 账号与产品价格映射。订单、订阅与退款固定原支付账号。" extra={<Button icon={<ReloadOutlined/>} onClick={reload} loading={state.loading||prices.loading}>刷新</Button>}/>
+  <ManagementPageHeader title={platform?'Stripe 收款账号':'支付通道'} description="管理 Stripe 账号与产品价格映射。订单、订阅与退款固定原支付账号。" extra={<Button icon={<ReloadOutlined/>} onClick={reload} loading={state.loading||prices.loading}>刷新</Button>}/>
   <ErrorBanner error={state.error||prices.error} retry={reload}/>
   <ManagementMetrics items={[{title:'Stripe 账号',value:state.data.items.length,hint:'当前接入的支付账号'},{title:'启用账号',value:active.length,hint:'可接收后续新购买'},{title:'默认账号',value:defaultAccount?.name||'未指定',hint:defaultAccount?.code||'按可用账号选择'},{title:'已映射价格',value:prices.data.items.length,hint:'按账号、版本及计费模式区分'}]}/>
   <Tabs activeKey={tab} onChange={setTab} items={[{key:'accounts',label:'账号列表',children:<Card title="Stripe 账号" size="small" extra={canManage&&<Button type="primary" icon={<PlusOutlined/>} onClick={()=>open(null)}>新增账号</Button>}>
@@ -136,12 +147,14 @@ export function CoinLedgerPage(){
  </Space>;
 }
 
-type FinanceOrder={order_no:string;product_type:string;product_code:string;product_name:string;plan_name_zh?:string;plan_name_en?:string;amount_cents:number;currency:string;status:string;billing_mode:string;account_code:string;paid_at:string|null;created_at:string;coins:number;user_id:number;user?:{id:number;email:string;display_name:string;public_id:string};external_txn_id?:string};
+type FinanceOrder={order_no:string;product_type:string;product_code:string;product_name:string;plan_name_zh?:string;plan_name_en?:string;amount_cents:number;currency:string;status:string;billing_mode:string;account_code:string;provider?:string;paid_at:string|null;created_at:string;coins:number;user_id:number;user?:{id:number;email:string;display_name:string;public_id:string};external_txn_id?:string};
 type FinanceSummary={orders:number;paid_orders:number;gross_cents:number;refunded_orders:number;refunded_cents:number;net_cents:number;pending_orders:number;pending_cents:number;pending_refund_orders:number;review_orders:number;currency:string;currencies?:any[]};
 type FinancePayload={items:FinanceOrder[];has_more:boolean;total:number;summary?:FinanceSummary};
 type OrderDetail={membership_refund_resolution?:MembershipRefundResolution|null;order:FinanceOrder & {snapshot:any;source_drama_id?:number;version_id?:number;payment_intent_id?:string;invoice_id?:string;subscription_ref?:string};customer:{id:number;email:string;display_name:string;public_id:string};refund:{id:number;status:string;refund_id?:string;error?:string}|null;entitlement_sources:{coins:{original:number;remaining:number;reserved:number}|null;membership:{starts_at:string;ends_at:string;status:string;access_consumed:boolean}|null};refund_eligibility:{eligible:boolean;reason:string}};
 const refundNames:Record<string,string>={pending:'处理中',succeeded:'已确认完成',failed:'已确认失败',canceled:'已确认取消',manual_review:'待人工核对',review:'待人工核对',refunded:'已退款',refund_pending:'退款处理中',refund_review:'待人工核对'};
 const copy=(value:unknown)=>value?<Typography.Text copyable className="management-detail-value">{String(value)}</Typography.Text>:'—';
+const providerLabels: Record<string, string> = { stripe: 'Stripe', epay: 'Epay' };
+const providerLabel = (provider = 'stripe') => providerLabels[provider] || provider;
 function FinanceOrderDrawer({number,onClose,onChanged}:{number:string|null;onClose:()=>void;onChanged:()=>void}){
  const canRefund=usePermission('finance.refund');const [data,setData]=useState<OrderDetail|null>(null),[dataOwner,setDataOwner]=useState<string|null>(null),[loading,setLoading]=useState(false),[error,setError]=useState(''),[refundOpen,setRefundOpen]=useState(false),[reason,setReason]=useState(''),[refundError,setRefundError]=useState(''),[busy,setBusy]=useState(false),[outcome,setOutcome]=useState<{status:string;error?:string}|null>(null);const generation=useRef(0);const current=useRef(number);current.current=number;
  const load=useCallback(async()=>{if(!number)return false;const id=++generation.current,owner=getToken();setLoading(true);setError('');try{const value=await api<OrderDetail>('/admin/v1/commerce/orders/'+encodeURIComponent(number));if(id===generation.current&&owner===getToken()){setData(value);setDataOwner(owner);return true;}}catch(e){if(id===generation.current&&owner===getToken())setError(errorText(e));}finally{if(id===generation.current)setLoading(false);}return false;},[number]);
@@ -153,7 +166,19 @@ function FinanceOrderDrawer({number,onClose,onChanged}:{number:string|null;onClo
   {loading&&!data?<Spin/>:order&&data&&<Space direction="vertical" size={20} style={{width:'100%'}}>
    <div><Space wrap>{status(order.status)}<Tag>{order.product_type==='coin_pack'?'金币包':'会员套餐'}</Tag><Tag>{order.billing_mode==='subscription'?'自动续订':'单次付费'}</Tag></Space><Typography.Title level={4} style={{margin:'12px 0 4px'}}>{order.plan_name_zh||order.product_name||order.product_code}</Typography.Title><Typography.Text type="secondary">{order.order_no}</Typography.Text></div>
    {outcome&&<Alert showIcon type={outcome.status==='manual_review'||outcome.status==='review'?'warning':'info'} message={'本次退款状态：'+(refundNames[outcome.status]||outcome.status)} description={outcome.error||(outcome.status==='pending'?'退款结果尚未确认，对应权益继续冻结。':undefined)}/>}
-   <Card title="订单信息" size="small"><Descriptions column={2} size="small" items={[{key:'number',label:'订单号',span:2,children:copy(order.order_no)},{key:'amount',label:'实付金额',children:<Typography.Text strong>{money(order.amount_cents,order.currency)}</Typography.Text>},{key:'created',label:'下单时间（美西）',children:time(order.created_at)},{key:'paid',label:'支付时间（美西）',children:time(order.paid_at)},{key:'account',label:'支付账号',children:order.account_code||'历史账号'},{key:'txn',label:'渠道流水',span:2,children:copy(order.external_txn_id)},{key:'payment',label:'PaymentIntent',span:2,children:copy(order.payment_intent_id)},{key:'invoice',label:'Invoice',span:2,children:copy(order.invoice_id)},{key:'sub',label:'Subscription',span:2,children:copy(order.subscription_ref)}]}/></Card>
+   <Card title="订单信息" size="small"><Descriptions column={2} size="small" items={[
+    {key:'number',label:'订单号',span:2,children:copy(order.order_no)},
+    {key:'amount',label:'实付金额',children:<Typography.Text strong>{money(order.amount_cents,order.currency)}</Typography.Text>},
+    {key:'created',label:'下单时间（美西）',children:time(order.created_at)},
+    {key:'paid',label:'支付时间（美西）',children:time(order.paid_at)},
+    {key:'account',label:'支付账号',children:<Space wrap><Tag>{providerLabel(order.provider)}</Tag>{order.account_code||'历史账号'}</Space>},
+    {key:'txn',label:'渠道流水',span:2,children:copy(order.external_txn_id)},
+    ...((order.provider ?? 'stripe') === 'stripe' ? [
+     {key:'payment',label:'PaymentIntent',span:2,children:copy(order.payment_intent_id)},
+     {key:'invoice',label:'Invoice',span:2,children:copy(order.invoice_id)},
+     {key:'sub',label:'Subscription',span:2,children:copy(order.subscription_ref)},
+    ] : []),
+   ]}/></Card>
    <Card title="客户" size="small"><Descriptions column={2} size="small" items={[{key:'name',label:'昵称',children:data.customer?.display_name||'—'},{key:'id',label:'用户 ID',children:data.customer?.id},{key:'email',label:'邮箱',span:2,children:copy(data.customer?.email)},{key:'public',label:'公开 ID',children:data.customer?.public_id||'—'}]}/></Card>
    <Card title="购买时商品与权益快照" size="small"><Descriptions column={2} size="small" items={[{key:'code',label:'商品编码',children:order.product_code||'—'},{key:'version',label:'版本 ID',children:order.version_id||'历史版本'},{key:'price',label:'商品标价',children:order.snapshot?.price_cents!=null?money(order.snapshot.price_cents,order.snapshot.currency||order.currency):'历史来源未记录'},{key:'days',label:'会员时长',children:order.snapshot?.days?order.snapshot.days+' 天':'—'},{key:'base',label:'基础金币',children:count(order.snapshot?.base_coins)},{key:'bonus',label:'赠送金币',children:count(order.snapshot?.bonus_coins)},{key:'drama',label:'来源剧集 ID',children:order.source_drama_id||'无'}]}/>{!!order.snapshot?.benefits?.items?.length&&<ul style={{marginBottom:0}}>{order.snapshot.benefits.items.map((text:string,index:number)=><li key={index}>{text}</li>)}</ul>}</Card>
    <Card title="本订单权益来源" size="small">{coins&&<Descriptions column={3} size="small" items={[{key:'original',label:'发放金币',children:count(coins.original)},{key:'remaining',label:'剩余金币',children:count(coins.remaining)},{key:'reserved',label:'冻结金币',children:count(coins.reserved)}]}/>} {member&&<Descriptions column={1} size="small" items={[{key:'period',label:'会员区间（美西）',children:time(member.starts_at)+' — '+time(member.ends_at)},{key:'used',label:'用于观看',children:member.access_consumed?<Tag color="orange">已消费</Tag>:<Tag color="green">未消费</Tag>},{key:'grant',label:'来源状态',children:member.status}]}/>} {!coins&&!member&&<Typography.Text type="secondary">没有可完整追溯的本订单权益来源记录。</Typography.Text>}</Card>
@@ -176,24 +201,26 @@ export function CommerceFinancePage({legacyMerchantOwner}:{legacyMerchantOwner:b
  const load=useCallback(async()=>{const id=++generation.current;setLoading(true);setError('');try{const result=await api<FinancePayload>('/admin/v1/commerce/orders?'+query);if(id===generation.current)setData(result);}catch(e){if(id===generation.current)setError(errorText(e));}finally{if(id===generation.current)setLoading(false);}},[query]);
  useEffect(()=>{void load();return()=>{generation.current++;};},[load]);
  const reset=()=>{setKeyword('');setQ('');setFilterStatus('');setProduct('');setMode('');setAccount('');setFrom('');setTo('');setRangeKey(n=>n+1);setPage(1);};const summary=data.summary;
+ const summaryCurrency=summary?.currency||'USD';
+ const showCurrencyBreakdown=summary?.currencies?.some(bucket=>bucket.currency!==summaryCurrency);
  return <Space direction="vertical" size={20} className="management-page"><ManagementPageHeader title="财务订单" description="跨全部订单查询支付、商品快照和退款来源；日期筛选按美西业务日计算。" extra={<Button icon={<ReloadOutlined/>} onClick={()=>void load()} loading={loading}>刷新</Button>}/><ErrorBanner error={error} retry={()=>void load()}/>
-  <ManagementMetrics items={[{title:'净收入（USD）',value:money(summary?.net_cents||0),hint:'已发生支付减去确认退款'},{title:'已支付订单',value:summary?.paid_orders??'—',hint:'包括后续进入退款处理的订单'},{title:'确认退款（USD）',value:money(summary?.refunded_cents||0),hint:count(summary?.refunded_orders)+' 笔已退款订单'},{title:'退款处理中 / 待核对',value:count(summary?.pending_refund_orders)+' / '+count(summary?.review_orders),hint:'与已确认退款分别列示'}]}/>
-  {summary&&!!summary.currencies&&summary.currencies.length>1&&<Alert type="info" showIcon message="存在多个币种" description="上方金额汇总仅为 USD，其他币种在下方分组列示，不跨币种累加。"/>}
+  <ManagementMetrics items={[{title:'净收入（'+summaryCurrency+'）',value:money(summary?.net_cents||0,summaryCurrency),hint:'已发生支付减去确认退款'},{title:'已支付订单',value:summary?.paid_orders??'—',hint:'包括后续进入退款处理的订单'},{title:'确认退款（'+summaryCurrency+'）',value:money(summary?.refunded_cents||0,summaryCurrency),hint:count(summary?.refunded_orders)+' 笔已退款订单'},{title:'退款处理中 / 待核对',value:count(summary?.pending_refund_orders)+' / '+count(summary?.review_orders),hint:'与已确认退款分别列示'}]}/>
+  {showCurrencyBreakdown&&<Alert type="info" showIcon message="订单金额按币种汇总" description={'上方汇总金额为 '+summaryCurrency+'。各币种金额见下方明细。'}/>}
   <Card size="small" title="订单明细" className="management-table">
    <div className="management-filter-bar"><Input.Search aria-label="搜索财务订单" allowClear placeholder="订单号 / 邮箱 / 昵称 / 用户 ID" style={{width:300}} value={keyword} onChange={e=>setKeyword(e.target.value)} onSearch={value=>{setQ(value.trim());setPage(1);}}/><Select aria-label="订单状态" value={filterStatus} options={[{value:'',label:'全部状态'},...['created','paid','failed','refund_pending','refunded','refund_review'].map(value=>({value,label:names[value]}))]} style={{width:160}} onChange={value=>{setFilterStatus(value);setPage(1);}}/><Select aria-label="商品类型" value={product} options={[{value:'',label:'全部商品'},{value:'membership',label:'会员套餐'},{value:'coin_pack',label:'金币包'}]} style={{width:140}} onChange={value=>{setProduct(value);setPage(1);}}/><Select aria-label="订单计费模式" value={mode} options={[{value:'',label:'全部计费'},{value:'one_time',label:'单次付费'},{value:'subscription',label:'自动续订'}]} style={{width:140}} onChange={value=>{setMode(value);setPage(1);}}/>
     {canStripe?<Select allowClear aria-label="支付账号筛选" value={account||undefined} placeholder="全部支付账号" options={accounts.data.items.map(a=>({value:a.code,label:a.name}))} style={{width:200}} onChange={value=>{setAccount(value||'');setPage(1);}}/>:<Input aria-label="支付账号编码筛选" placeholder="支付账号编码" style={{width:160}} value={account} onChange={e=>{setAccount(e.target.value);setPage(1);}}/>}<DatePicker.RangePicker key={rangeKey} aria-label="订单日期范围" placeholder={['开始日期（美西）','结束日期（美西）']} onChange={(_,values)=>{setFrom(values[0]);setTo(values[1]);setPage(1);}}/><Button onClick={reset}>重置筛选</Button></div>
-   <div className="management-filter-summary"><Typography.Text type="secondary">共 {data.total} 笔 · 统计范围与筛选一致</Typography.Text><Space wrap><Typography.Text type="secondary">原始支付：{money(summary?.gross_cents||0)} USD</Typography.Text><Typography.Text type="secondary">待支付：{count(summary?.pending_orders)} 笔 / {money(summary?.pending_cents||0)} USD</Typography.Text></Space></div>
+   <div className="management-filter-summary"><Typography.Text type="secondary">共 {data.total} 笔 · 统计范围与筛选一致</Typography.Text><Space wrap><Typography.Text type="secondary">原始支付：{money(summary?.gross_cents||0,summaryCurrency)} {summaryCurrency}</Typography.Text><Typography.Text type="secondary">待支付：{count(summary?.pending_orders)} 笔 / {money(summary?.pending_cents||0,summaryCurrency)} {summaryCurrency}</Typography.Text></Space></div>
    <Table<FinanceOrder> rowKey="order_no" loading={loading} dataSource={data.items} size="middle" scroll={{x:1450}} locale={{emptyText:empty}} pagination={{current:page,pageSize,total:data.total,showSizeChanger:true,pageSizeOptions:[10,20,50,100],showTotal:total=>'共 '+total+' 笔订单',onChange:(value,size)=>{setPage(size!==pageSize?1:value);setPageSize(size);}}} columns={[
     {title:'订单号',width:240,render:(_,order)=><><Typography.Text copyable style={{fontFamily:'monospace',fontSize:12}}>{order.order_no}</Typography.Text><span className="management-row-secondary">{order.external_txn_id?'流水 '+order.external_txn_id:'暂无渠道流水'}</span></>},
     {title:'用户',width:220,render:(_,order)=><><Typography.Text strong>{order.user?.display_name||'用户 #'+order.user_id}</Typography.Text><span className="management-row-secondary">{order.user?.email||'未提供邮箱'} · ID {order.user?.public_id||order.user_id}</span></>},
     {title:'商品',width:220,render:(_,order)=><>{order.plan_name_zh||order.product_name||order.product_code}<span className="management-row-secondary">{order.plan_name_zh&&order.product_name?order.product_name+' · ':''}{order.product_type==='coin_pack'?'金币包':'会员套餐'} · {order.billing_mode==='subscription'?'自动续订':'单次付费'}{order.coins?' · '+count(order.coins)+' 币':''}</span></>},
     {title:'实付金额',width:125,align:'right',render:(_,order)=><Typography.Text strong delete={order.status==='refunded'} type={order.status==='refunded'?'secondary':undefined}>{money(order.amount_cents,order.currency)}</Typography.Text>},
-    {title:'状态',dataIndex:'status',render:status,width:140},{title:'支付账号',dataIndex:'account_code',width:140,render:value=>value||'历史账号'},
+    {title:'状态',dataIndex:'status',render:status,width:140},{title:'支付账号',width:140,render:(_,order)=><><Tag>{providerLabel(order.provider)}</Tag><span className="management-row-secondary">{order.account_code||'历史账号'}</span></>},
     {title:'下单 / 支付（美西）',width:210,render:(_,order)=><>{time(order.created_at)}<span className="management-row-secondary">{order.paid_at?'支付 '+time(order.paid_at):'未支付'}</span></>},
     {title:'操作',fixed:'right',width:105,render:(_,order)=><Button type="link" onClick={()=>setNumber(order.order_no)}>详情 / 退款</Button>}
    ]}/>
   </Card>
-  {summary?.currencies&&summary.currencies.length>1&&<Card title="按币种汇总" size="small"><Table rowKey="currency" pagination={false} dataSource={summary.currencies} columns={[{title:'币种',dataIndex:'currency'},{title:'原始支付',render:(_,r)=>money(r.gross_cents||0,r.currency)},{title:'确认退款',render:(_,r)=>money(r.refunded_cents||0,r.currency)},{title:'净收入',render:(_,r)=>money(r.net_cents||0,r.currency)}]}/></Card>}
+  {showCurrencyBreakdown&&<Card title="按币种汇总" size="small"><Table rowKey="currency" pagination={false} dataSource={summary?.currencies} columns={[{title:'币种',dataIndex:'currency'},{title:'原始支付',render:(_,r)=>money(r.gross_cents||0,r.currency)},{title:'确认退款',render:(_,r)=>money(r.refunded_cents||0,r.currency)},{title:'净收入',render:(_,r)=>money(r.net_cents||0,r.currency)}]}/></Card>}
   <FinanceOrderDrawer number={number} onClose={()=>setNumber(null)} onChanged={()=>void load()}/>
  </Space>;
 }

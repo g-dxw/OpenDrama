@@ -1880,6 +1880,36 @@ img { display: block; max-width: 100%; }
   color: var(--muted, #a79ca1);
   line-height: 1.55;
 }
+.premium-payment-channel {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 12px;
+  font-size: 14px;
+}
+.premium-payment-channel select {
+  min-height: 44px;
+  width: 100%;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: inherit;
+  font: inherit;
+}
+.checkout-return-notice {
+  padding: 12px 16px 4px;
+  border-bottom: 1px solid var(--line);
+  font-size: 14px;
+}
+.checkout-return-notice p { margin: 0 0 4px; }
+.checkout-return-actions { display: flex; flex-wrap: wrap; gap: 12px; }
+.checkout-return-actions :is(button, a) {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  color: inherit;
+  text-decoration: underline;
+}
 .premium-plans { display: flex; flex-direction: column; gap: 12px; }
 .premium-plan {
   position: relative;

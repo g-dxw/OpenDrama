@@ -132,7 +132,8 @@ let activeMember = false,
   memberAccess = false,
   memberHold = null,
   memberProfileBarrier = null,
-  orderHold = null;
+  orderHold = null,
+  epayAvailable = false;
 const recoveryReplies = [];
 const checkoutFacts = new Map();
 const pending = [],
@@ -559,8 +560,35 @@ page.on("request", async (req) => {
         await fulfillHeld(req, held, result);
         return;
       }
+    } else if (["EPAY-H5-ORDER", "EPAY-H5-SECOND"].some((id) => p === "/v1/commerce/orders/" + id + "/reconcile") && req.method() === "POST") {
+      const order = checkoutFacts.get(p.split("/")[4]);
+      if (order) {
+        order.status = "paid";
+        order.settled = true;
+      }
+      result = { order, settled: order?.settled };
     } else if (p === "/v1/commerce/checkout") {
-      if (recoveryReplies.length) {
+      if (epayAvailable && body.provider === "epay") {
+        const previous = checkoutFacts.get("EPAY-H5-ORDER");
+        if (previous?.intent === body.idempotency_key && previous.status === "paid") {
+          status = 409;
+          result = { detail: {
+            code: "checkout_already_paid", action: "view_orders",
+            order_no: previous.order_no, message: "This order has already been paid.",
+          } };
+        } else {
+          const order = {
+            order_no: previous ? "EPAY-H5-SECOND" : "EPAY-H5-ORDER",
+            product_type: "membership", product_code: body.code,
+            status: "created", settled: false, intent: body.idempotency_key,
+          };
+          checkoutFacts.set(order.order_no, order);
+          result = {
+            url: origin + "/?checkout=success&surface=h5&payment_provider=epay&order_no=" + order.order_no + "#account/orders",
+            order_no: order.order_no, session_id: "",
+          };
+        }
+      } else if (recoveryReplies.length) {
         const reply = recoveryReplies.shift();
         status = reply.status;
         result = reply.body;
@@ -642,6 +670,14 @@ page.on("request", async (req) => {
             provider: "stripe",
             enabled: true,
           },
+          ...(epayAvailable ? [{
+            code: "epay-fixture",
+            name: "Epay Alipay",
+            provider: "epay",
+            enabled: true,
+            method: "alipay",
+            billing_modes: ["one_time"],
+          }] : []),
         ],
       };
     else if (p === "/v1/attr/visit") result = { pid: body.pid, active: false };
@@ -1155,6 +1191,46 @@ try {
   await resize(390);
   await goto("#price");
   await page.reload({ waitUntil: "networkidle0" });
+  await surface("mobile");
+  await page.waitForSelector('[data-testid="premium-buy-weekly"]');
+  epayAvailable = true;
+  await page.reload({ waitUntil: "networkidle0" });
+  await surface("mobile");
+  const h5PaymentSelector = ".premium-payment-channel select";
+  await page.waitForSelector(h5PaymentSelector);
+  const epayOption = await page.$eval(h5PaymentSelector, (select) =>
+    [...select.options].find((item) => item.textContent === "Epay Alipay").value,
+  );
+  await page.select(h5PaymentSelector, epayOption);
+  const epayCalls = calls.length;
+  await page.locator('[data-testid="premium-buy-weekly"]').click();
+  await page.waitForFunction(() =>
+    document.querySelector(".checkout-return-notice p")?.textContent.includes("Payment confirmed."),
+  );
+  const epayRequests = calls.slice(epayCalls);
+  assert.equal(epayRequests.find((call) => call.path === "/v1/commerce/checkout")?.body.payment_method, "alipay");
+  assert.equal(epayRequests.filter((call) => call.path === "/v1/commerce/orders/EPAY-H5-ORDER/reconcile" && call.method === "POST").length, 1);
+  assert.equal(new URL(page.url()).searchParams.has("order_no"), false);
+  assert.equal(new URL(page.url()).searchParams.has("payment_provider"), false);
+  pass("the H5 one-time membership selects Epay and shows its server-confirmed return");
+  await goto("#price");
+  await surface("mobile");
+  await page.waitForSelector(h5PaymentSelector);
+  await page.select(h5PaymentSelector, epayOption);
+  await page.locator('[data-testid="premium-buy-weekly"]').click();
+  await page.waitForSelector('[data-testid="premium-paid-checkout"]');
+  const originalEpay = epayRequests.find((call) => call.path === "/v1/commerce/checkout").body;
+  assert.equal(calls.filter((call) => call.path === "/v1/commerce/checkout").at(-1).body.idempotency_key, originalEpay.idempotency_key);
+  await page.locator('[data-testid="premium-paid-start-new-checkout"]').click();
+  await page.waitForFunction(() =>
+    document.querySelector(".checkout-return-notice p")?.textContent.includes("Payment confirmed."),
+  );
+  const renewedEpay = calls.filter((call) => call.path === "/v1/commerce/checkout").at(-1).body;
+  assert.equal(renewedEpay.payment_method, originalEpay.payment_method);
+  assert.notEqual(renewedEpay.idempotency_key, originalEpay.idempotency_key);
+  epayAvailable = false;
+  pass("H5 keeps the Epay intent through a paid return and only rotates it after explicit purchase");
+  await goto("#price");
   await surface("mobile");
   await page.waitForSelector('[data-testid="premium-buy-weekly"]');
   const purchase = hold("checkout", "H5-PINNED-ORDER");

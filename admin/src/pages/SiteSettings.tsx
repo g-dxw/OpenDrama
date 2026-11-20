@@ -25,6 +25,7 @@ import {
 } from "antd";
 import { api, errorText } from "../api";
 import { ManagementPageHeader } from "../components/ManagementPage";
+import { useLoad } from "../hooks";
 import type { SiteBrand, SiteConfig } from "../../../shared/site";
 function useCopy() {
   const [lang, setLang] = useState(() =>
@@ -755,6 +756,8 @@ export function BrandPage() {
 }
 export function MerchantBindingPage() {
   const { l, select } = useCopy();
+  const identity = useIdentity();
+  const native = identity?.tenant?.kind === "native";
   const [form] = Form.useForm();
   const [state, setState] = useState<any>(null),
     [busy, setBusy] = useState(false),
@@ -796,10 +799,7 @@ export function MerchantBindingPage() {
     <Space direction="vertical" style={{ width: "100%" }} size="large">
       <ManagementPageHeader
         title={l("本站收款账号", "Site merchant account")}
-        description={l(
-          "新订单固定使用本站绑定的 Stripe 账号；历史订单继续使用原账号。",
-          "New orders use the Stripe account bound to this site. Existing orders retain their original account.",
-        )}
+        description={l("为本站选择可用的收款账号。", "Choose merchant accounts for this site.")}
         extra={select}
       />
       {error && (
@@ -812,16 +812,16 @@ export function MerchantBindingPage() {
           }
         />
       )}
-      <Card loading={!state && !error}>
+      <Card title="Stripe" loading={!state && !error}>
         <Alert
           showIcon
           type={state?.configured ? "success" : "warning"}
           message={
             state?.configured
-              ? l("本站已配置收款账号", "Merchant account configured")
+              ? l("本站已配置 Stripe", "Stripe account configured")
               : l(
-                  "尚未绑定，购买入口不可收款",
-                  "Bind an account before accepting payments",
+                  "绑定账号后即可使用 Stripe 收款",
+                  "Bind an account to accept payments with Stripe",
                 )
           }
           style={{ marginBottom: 24 }}
@@ -834,6 +834,7 @@ export function MerchantBindingPage() {
           >
             <Select
               showSearch
+              optionFilterProp="label"
               options={(state?.available_accounts || []).map((a: any) => ({
                 value: a.code,
                 label: a.name + " · " + a.code,
@@ -859,6 +860,87 @@ export function MerchantBindingPage() {
           </Button>
         </Form>
       </Card>
+      {native && <EpayBindingCard l={l} />}
     </Space>
+  );
+}
+
+type EpayBinding = {
+  account_code: string | null;
+  configured: boolean;
+  currency: string;
+  available_accounts: { code: string; name: string; status: string }[];
+};
+
+function EpayBindingCard({ l }: { l: ReturnType<typeof useCopy>["l"] }) {
+  const path = "/tenant/v1/epay/merchant-binding";
+  const [form] = Form.useForm<{ account_code?: string }>();
+  const state = useLoad<EpayBinding | null>(path, null);
+  const binding = state.data;
+  const eligible = binding?.currency === "CNY";
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
+
+  useEffect(() => {
+    form.setFieldValue("account_code", binding?.account_code ?? undefined);
+  }, [binding, form]);
+
+  async function save({ account_code }: { account_code?: string }) {
+    if (!binding || (account_code && !eligible)) return;
+    setSaving(true);
+    setSaveError("");
+    try {
+      await api(path, { method: "PUT", body: JSON.stringify({ account_code: account_code || null }) });
+      await state.reload();
+      message.success(account_code ? l("Epay 账号已绑定", "Epay account bound") : l("Epay 账号已解除绑定", "Epay account unbound"));
+    } catch (cause) {
+      setSaveError(errorText(cause));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Card title="Epay" loading={state.loading && !binding}>
+      {(state.error || saveError) && <Alert
+        type="error"
+        showIcon
+        message={state.error || saveError}
+        action={state.error ? <Button onClick={() => void state.reload()}>{l("重试", "Retry")}</Button> : undefined}
+        style={{ marginBottom: 16 }}
+      />}
+      {binding && <Alert
+        type={eligible && binding.configured ? "success" : "info"}
+        showIcon
+        message={eligible && binding.configured ? l("本站已配置 Epay", "Epay account configured") : l("Epay 使用人民币（CNY）收款", "Epay accepts payments in CNY")}
+        description={!eligible
+          ? l(`本站币种为 ${binding.currency}。将本站币种设为 CNY 后可绑定 Epay。`, `This site uses ${binding.currency}. Set the site currency to CNY before binding Epay.`)
+          : l("适用于金币包和一次性会员。", "Available for coin packs and one-time membership.")}
+        style={{ marginBottom: 16 }}
+      />}
+      <Form name="epay-binding" form={form} layout="vertical" onFinish={save}>
+        <Form.Item
+          name="account_code"
+          label={l("Epay 账号", "Epay account")}
+          extra={l("清空选择并保存即可解除本站绑定。", "Clear the selection and save to remove the binding.")}
+        >
+          <Select
+            allowClear
+            showSearch
+            optionFilterProp="label"
+            disabled={!binding || (!eligible && !binding.account_code) || saving}
+            placeholder={l("选择平台配置的 Epay 账号", "Choose a company Epay account")}
+            options={(binding?.available_accounts ?? []).map(account => ({
+              value: account.code,
+              label: account.name + " · " + account.code,
+              disabled: !eligible || account.status !== "active",
+            }))}
+          />
+        </Form.Item>
+        <Button type="primary" htmlType="submit" loading={saving} disabled={!binding || state.loading || (!eligible && !binding.account_code)}>
+          {l("保存 Epay 绑定", "Save Epay binding")}
+        </Button>
+      </Form>
+    </Card>
   );
 }

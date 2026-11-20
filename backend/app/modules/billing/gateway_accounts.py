@@ -1,0 +1,65 @@
+"""Merchant ownership and credentials for additional payment gateways."""
+
+from sqlalchemy import select, text
+
+from app.modules.billing.commerce_models import GatewayAccount, SiteGatewayBinding
+from app.modules.billing.service import BillingError
+from app.modules.tenancy.consumer_scope import current_site
+from app.modules.tenancy.models import Tenant
+
+
+def lock_gateways(db, provider):
+    db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:provider))"), {"provider": "gateway_accounts:" + provider})
+
+
+def native_site(db):
+    site = current_site(db)
+    tenant = db.get(Tenant, site)
+    if tenant is None or tenant.kind != "native" or tenant.status != "active":
+        raise BillingError(404, "Payment configuration is available on active native sites")
+    return site
+
+
+def site_binding(db, provider):
+    return db.get(SiteGatewayBinding, (current_site(db), provider))
+
+
+def bound_account(db, provider):
+    binding = site_binding(db, provider)
+    return db.get(GatewayAccount, (provider, binding.account_code)) if binding else None
+
+
+def accounts(db, provider):
+    return db.scalars(select(GatewayAccount).where(GatewayAccount.provider == provider).order_by(GatewayAccount.code))
+
+
+def bind(db, provider, code, actor, *, currency):
+    from app.modules.billing.commerce import audit
+    from app.modules.sites.service import lock_site_settings
+
+    site = native_site(db)
+    settings = lock_site_settings(db, site)
+    lock_gateways(db, provider)
+    row = site_binding(db, provider)
+    if code is None:
+        if row is not None:
+            db.delete(row)
+    else:
+        if settings.currency != currency:
+            raise BillingError(409, f'This payment gateway requires a {currency} site')
+        account = db.get(GatewayAccount, (provider, code), populate_existing=True)
+        if account is None or account.status != "active":
+            raise BillingError(409, "Select an active payment merchant")
+        other = db.scalar(select(SiteGatewayBinding).where(
+            SiteGatewayBinding.provider == provider,
+            SiteGatewayBinding.account_code == code,
+            SiteGatewayBinding.tenant_id != site,
+        ))
+        if other is not None:
+            raise BillingError(409, "This payment merchant is already assigned to another site")
+        if row is None:
+            row = SiteGatewayBinding(tenant_id=site, provider=provider)
+            db.add(row)
+        row.account_code = code
+    audit(db, actor, "site.gateway.bind", payload={"tenant_id": site, "provider": provider, "account_code": code})
+    db.commit()

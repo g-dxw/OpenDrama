@@ -73,8 +73,11 @@ def purchase_account(db,requested=None):
     return get_account(db,code,True)
 
 def channels(db):
+    from app.modules.billing.epay_commerce import channels as epay_channels
+
     info=binding_info(db)
-    return [dict(code=x['code'],name=x['name'],provider='stripe',enabled=True) for x in info['available_accounts'] if x['code']==info['account_code'] and x['status']=='active']
+    stripe = [dict(code=x['code'],name=x['name'],provider='stripe',enabled=True) for x in info['available_accounts'] if x['code']==info['account_code'] and x['status']=='active']
+    return stripe + epay_channels(db)
 
 def event_order(db,code,payload):
     obj=(payload.get('data') or {}).get('object') or {}
@@ -86,7 +89,7 @@ def event_order(db,code,payload):
     number=meta.get('commerce_order_no') or details_meta.get('commerce_order_no')
     conditions=[]
     if number:
-        identified=db.scalar(select(Order).where(Order.order_no==number).execution_options(include_all_tenants=True))
+        identified=db.scalar(select(Order).where(Order.order_no==number,Order.provider=='stripe').execution_options(include_all_tenants=True))
         if identified is not None and identified.account_code!=code:raise BillingError(401,'Payment merchant does not match the stored order')
         conditions.append(Order.order_no==number)
     identifier=obj.get('id')
@@ -101,7 +104,7 @@ def event_order(db,code,payload):
     if payment:conditions.append(Order.payment_intent_id==payment)
     if not conditions:return None
     # Host and payload tenant IDs are never used to choose the receiving site.
-    rows=list(db.scalars(select(Order).where(Order.account_code==code,or_(*conditions)).order_by(Order.id).execution_options(include_all_tenants=True)))
+    rows=list(db.scalars(select(Order).where(Order.account_code==code,Order.provider=='stripe',or_(*conditions)).order_by(Order.id).execution_options(include_all_tenants=True)))
     sites={x.tenant_id for x in rows}
     if len(sites)>1:raise BillingError(409,'Payment object has conflicting site ownership')
     return rows[0] if rows else None

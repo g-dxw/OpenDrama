@@ -1,4 +1,10 @@
 import { siteStorageKey } from "../../shared/site";
+import {
+  paymentChannelFields,
+  paymentChannelKey,
+  type CheckoutOrderStatus,
+  type PaymentChannel,
+} from "../../shared/consumer/payment-channels";
 import type {
   CommentCreateResult,
   CommentsPayload,
@@ -253,10 +259,15 @@ export function getPlans(): Promise<PlansPayload> {
   return getJson<PlansPayload>("/v1/plans");
 }
 
-const membershipIntentKey = (planCode: string) =>
-  "jjtv_checkout_membership_" + planCode;
-export function membershipCheckoutIntent(planCode: string): string {
-  const key = membershipIntentKey(planCode);
+export function getPaymentChannels(): Promise<{items: PaymentChannel[]}> {
+  return getJson<{items: PaymentChannel[]}>("/v1/billing/channels");
+}
+
+const membershipIntentKey = (planCode: string, channel?: PaymentChannel) =>
+  "jjtv_checkout_membership_" + planCode +
+  (channel?.provider === "epay" ? ":" + paymentChannelKey(channel) : "");
+export function membershipCheckoutIntent(planCode: string, channel?: PaymentChannel): string {
+  const key = membershipIntentKey(planCode, channel);
   let intent = sessionStorage.getItem(key);
   if (!intent) {
     intent = crypto.randomUUID();
@@ -268,10 +279,11 @@ export function matchesMembershipCheckoutIntent(
   planCode: string,
   expectedIntent: string,
   ownerToken: string,
+  channel?: PaymentChannel,
 ): boolean {
   return (
     authToken() === ownerToken &&
-    sessionStorage.getItem(membershipIntentKey(planCode)) === expectedIntent
+    sessionStorage.getItem(membershipIntentKey(planCode, channel)) === expectedIntent
   );
 }
 /** Rotate only a terminal intent explicitly confirmed by the user, preserving newer attempts. */
@@ -279,24 +291,16 @@ export function replaceExpiredMembershipIntent(
   planCode: string,
   expectedIntent: string,
   ownerToken: string,
+  channel?: PaymentChannel,
 ): boolean {
-  const key = membershipIntentKey(planCode);
-  if (!matchesMembershipCheckoutIntent(planCode, expectedIntent, ownerToken))
+  const key = membershipIntentKey(planCode, channel);
+  if (!matchesMembershipCheckoutIntent(planCode, expectedIntent, ownerToken, channel))
     return false;
   sessionStorage.setItem(key, crypto.randomUUID());
   return true;
 }
 /** The caller confirmed this exact order settled and paid or fully refunded before its explicit action. */
 export const replacePaidMembershipIntent = replaceExpiredMembershipIntent;
-export interface CheckoutOrderStatus {
-  order: {
-    order_no: string;
-    product_type: string;
-    product_code: string;
-    status: string;
-  };
-  settled: boolean;
-}
 export function getCheckoutOrder(
   orderNo: string,
 ): Promise<CheckoutOrderStatus> {
@@ -304,22 +308,32 @@ export function getCheckoutOrder(
     "/v1/commerce/orders/" + encodeURIComponent(orderNo),
   );
 }
+export function reconcileReturnedCheckout(orderNo: string): Promise<CheckoutOrderStatus> {
+  return postJson<CheckoutOrderStatus>(
+    "/v1/commerce/orders/" + encodeURIComponent(orderNo) + "/reconcile",
+    undefined,
+  );
+}
+
 /** Uncertain retries keep the exact same payment intent. */
 export function startCheckout(
   planCode: string,
-  intent = membershipCheckoutIntent(planCode),
+  intent: string,
+  channel?: PaymentChannel,
 ): Promise<CheckoutResult> {
   return postJson<CheckoutResult>(
     "/v1/commerce/checkout",
     {
       product_type: "membership",
       code: planCode,
+      ...paymentChannelFields(channel),
       idempotency_key: intent,
       attribution_pid:
         localStorage.getItem(siteStorageKey("jjtv_attribution_pid")) || undefined,
       success_url:
         window.location.origin +
         "/?checkout=success&surface=h5" +
+        (channel?.provider === "epay" ? "&payment_provider=epay" : "") +
         window.location.hash,
       cancel_url:
         window.location.origin +

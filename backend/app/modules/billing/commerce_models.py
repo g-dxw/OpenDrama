@@ -1,7 +1,7 @@
 """Immutable commercial snapshots and source-tracked refundable entitlements."""
 from __future__ import annotations
 from datetime import datetime
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey, ForeignKeyConstraint, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy import String, ForeignKey
@@ -136,3 +136,33 @@ class StripeWebhookReceipt(Base):
     payload_hash: Mapped[str]=mapped_column(String(64),nullable=False)
     processed: Mapped[bool]=mapped_column(Boolean,nullable=False,default=False,server_default='false')
     created_at: Mapped[datetime]=mapped_column(DateTime(timezone=True),nullable=False,server_default=func.now())
+
+
+class GatewayAccount(Base):
+    """Instance-managed merchant with provider-specific configuration."""
+
+    __tablename__ = 'gateway_accounts'
+    provider: Mapped[str] = mapped_column(String(32), primary_key=True)
+    code: Mapped[str] = mapped_column(String(32), primary_key=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    identity: Mapped[str] = mapped_column(String(64), nullable=False)
+    config: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    credentials: Mapped[dict] = mapped_column(JSONB, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('provider', 'identity', name='uq_gateway_provider_identity'),
+        CheckConstraint("status IN ('draft', 'active', 'disabled')", name='ck_gateway_account_status'),
+    )
+
+
+class SiteGatewayBinding(Base):
+    __tablename__ = 'site_gateway_bindings'
+    tenant_id: Mapped[str] = mapped_column(ForeignKey('tenants.id', ondelete='RESTRICT'), primary_key=True)
+    provider: Mapped[str] = mapped_column(String(32), primary_key=True)
+    account_code: Mapped[str] = mapped_column(String(32), nullable=False)
+
+    __table_args__ = (
+        ForeignKeyConstraint(['provider', 'account_code'], ['gateway_accounts.provider', 'gateway_accounts.code'], ondelete='RESTRICT'),
+        UniqueConstraint('provider', 'account_code', name='uq_site_gateway_merchant'),
+    )

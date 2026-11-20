@@ -188,7 +188,12 @@ def _account_lock(db,code):
     db.execute(text('SELECT pg_advisory_xact_lock(:key)'),{'key':key})
 
 def _account_has_history(db,code):
-    return any(db.scalar(select(model).where(field==code).limit(1).execution_options(include_all_tenants=True)) is not None for model,field in ((Order,Order.account_code),(Subscription,Subscription.account_code),(StripePriceBinding,StripePriceBinding.account_code)))
+    candidates = (
+        select(Order.id).where(Order.account_code == code, Order.provider == 'stripe'),
+        select(Subscription.id).where(Subscription.account_code == code),
+        select(StripePriceBinding.id).where(StripePriceBinding.account_code == code),
+    )
+    return any(db.scalar(stmt.limit(1).execution_options(include_all_tenants=True)) is not None for stmt in candidates)
 
 def _identity_conflict():
     return BillingError(409,dict(code='stripe_merchant_mismatch',message='This channel is bound to a different Stripe merchant or mode. Create a new channel instead.'))
@@ -350,6 +355,23 @@ def _checkout_remote_state(db,order):
 def _checkout_result(order,reused=False):
     return dict(url=order.checkout_url,session_id=order.external_txn_id,order_no=order.order_no,reused=reused)
 
+
+def checkout_key(user_id, idempotency_key):
+    return 'checkout:' + str(user_id) + ':' + hashlib.sha256(idempotency_key.encode()).hexdigest()
+
+
+def validate_checkout_source(db, source_drama_id):
+    if source_drama_id is None:
+        return
+    from app.modules.content.models import Drama
+    from app.modules.library.service import assert_distribution_allowed
+    from app.modules.tenancy.consumer_scope import current_site
+
+    drama = db.get(Drama, source_drama_id)
+    if drama is None or drama.tenant_id != current_site(db) or drama.status != 'published':
+        raise BillingError(404, 'source drama not found')
+    assert_distribution_allowed(db, drama, purpose='sale', country=db.info.get('viewer_country'))
+
 def assert_no_renewing_subscription(db,user_id):
     # Event.created has only second precision. A same-second cancel/resume or
     # delayed lifecycle event is not proof that an old subscription stopped
@@ -395,16 +417,23 @@ def require_new_sale(db,product_type):
         raise BillingError(403,'New '+('membership' if product_type=='membership' else 'coin pack')+' purchases are disabled for this site')
 
 
-def checkout(db,*,user_id,email,product_type,code,idempotency_key,account_code=None,success_url=None,cancel_url=None,source_drama_id=None,attribution_pid=None):
-    from app.modules.tenancy.consumer_scope import require_owned,current_site
+def checkout(db,*,user_id,email,product_type,code,idempotency_key,account_code=None,success_url=None,cancel_url=None,source_drama_id=None,attribution_pid=None,provider='stripe',payment_method=None):
+    if provider == 'epay':
+        from app.modules.billing import epay_commerce
+        return epay_commerce.checkout(
+            db, user_id=user_id, product_type=product_type, code=code, idempotency_key=idempotency_key,
+            account_code=account_code, payment_method=payment_method, success_url=success_url,
+            cancel_url=cancel_url, source_drama_id=source_drama_id, attribution_pid=attribution_pid,
+        )
+    from app.modules.tenancy.consumer_scope import require_owned
     require_owned(db,User,user_id)
     success=return_url(success_url,'success',db);cancel=return_url(cancel_url,'cancel',db)
-    key='checkout:'+str(user_id)+':'+hashlib.sha256(idempotency_key.encode()).hexdigest()
+    key=checkout_key(user_id,idempotency_key)
     wallet_lock(db,user_id)
     order=db.scalar(select(Order).where(Order.checkout_key==key))
     reused=order is not None
     if order:
-        if order.product_type!=product_type or order.product_snapshot.get('code')!=code:raise BillingError(409,'idempotency key was used for another product')
+        if order.provider!='stripe' or order.product_type!=product_type or order.product_snapshot.get('code')!=code:raise BillingError(409,'idempotency key was used for another product')
         if account_code and order.account_code!=account_code:raise BillingError(409,'idempotency key was used for another payment channel')
         if product_type=='membership' and order.status in {'created','failed'}:_membership_refund_checkout_guard(db,user_id)
         if order.status=='failed' and (order.checkout_context or {}).get('session_expired'):raise checkout_conflict(order,'checkout_expired','This checkout has expired. Start a new purchase.','new_purchase')
@@ -441,12 +470,7 @@ def checkout(db,*,user_id,email,product_type,code,idempotency_key,account_code=N
         if order is None:
             account=select_account(db,user_id,account_code)
             if snapshot['currency']=='USD' and snapshot['price_cents']<50:raise BillingError(422,'Stripe price must be at least USD 0.50')
-            if source_drama_id is not None:
-                from app.modules.content.models import Drama
-                drama=db.get(Drama,source_drama_id)
-                if drama is None or drama.tenant_id!=current_site(db) or drama.status!='published':raise BillingError(404,'source drama not found')
-                from app.modules.library.service import assert_distribution_allowed
-                assert_distribution_allowed(db,drama,purpose='sale',country=db.info.get('viewer_country'))
+            validate_checkout_source(db,source_drama_id)
             order=Order(order_no=secrets.token_hex(12),user_id=user_id,plan_version_id=snapshot['version_id'] if product_type=='membership' else None,product_type=product_type,product_snapshot=snapshot,amount_cents=snapshot['price_cents'],currency=snapshot['currency'],billing_mode=snapshot['billing_mode'],status='created',account_code=account['code'],checkout_key=key,source_drama_id=source_drama_id,attribution_pid=attribution_pid,checkout_context={'request':dict(success_url=success,cancel_url=cancel,email=email)})
             db.add(order);db.commit()
     price=ensure_price(db,account['code'],snapshot)
@@ -596,9 +620,9 @@ def record_subscription_lifecycle(db,code,payload,obj,order):
 def process_event(db,code,payload):
     kind=payload.get('type','');obj=(payload.get('data') or {}).get('object') or {}
     metadata=obj.get('metadata') or {};number=metadata.get('commerce_order_no')
-    order=db.scalar(select(Order).where(Order.order_no==number,Order.account_code==code)) if number else None
+    order=db.scalar(select(Order).where(Order.order_no==number,Order.account_code==code,Order.provider=='stripe')) if number else None
     if kind.startswith('checkout.session.'):
-        order=order or db.scalar(select(Order).where(Order.external_txn_id==obj.get('id'),Order.account_code==code,Order.checkout_key.is_not(None)))
+        order=order or db.scalar(select(Order).where(Order.external_txn_id==obj.get('id'),Order.account_code==code,Order.checkout_key.is_not(None),Order.provider=='stripe'))
         if order is None:return None
         wallet_lock(db,order.user_id)
         order=db.get(Order,order.id,with_for_update=True,populate_existing=True)
@@ -635,7 +659,7 @@ def process_event(db,code,payload):
         initial=db.scalar(select(Order).where(Order.subscription_ref==subscription,Order.account_code==code,Order.checkout_key.is_not(None)).order_by(Order.id))
         if initial is None:
             parent_meta=((obj.get('parent') or {}).get('subscription_details') or {}).get('metadata') or obj.get('subscription_details',{}).get('metadata',{})
-            initial=db.scalar(select(Order).where(Order.order_no==parent_meta.get('commerce_order_no'),Order.account_code==code))
+            initial=db.scalar(select(Order).where(Order.order_no==parent_meta.get('commerce_order_no'),Order.account_code==code,Order.provider=='stripe'))
         if initial is None:return None
         wallet_lock(db,initial.user_id)
         initial=db.get(Order,initial.id,populate_existing=True)
@@ -769,9 +793,11 @@ def verify_source_proof(db,order,source):
 
 def orders_for_payment_intent(db,code,payment_intent):
     if not isinstance(payment_intent,str) or not payment_intent:return []
-    return list(db.scalars(select(Order).where(Order.account_code==code,or_(Order.payment_intent_id==payment_intent,Order.checkout_context['invoice_payment_intent_ids'].contains([payment_intent]))).order_by(Order.id)))
+    return list(db.scalars(select(Order).where(Order.account_code==code,Order.provider=='stripe',or_(Order.payment_intent_id==payment_intent,Order.checkout_context['invoice_payment_intent_ids'].contains([payment_intent]))).order_by(Order.id)))
 
 def refund_payment_review_reason(db,order):
+    if order.provider == 'epay':
+        return 'Epay V1 订单需要通过收款商户人工核对退款'
     context=order.checkout_context or {}
     ids=context.get('invoice_payment_intent_ids') or []
     if context.get('invoice_payment_requires_manual_review') or len(set(ids))>1:
@@ -1110,7 +1136,8 @@ def order_out(db,row,include_customer=False):
     if include_customer:
         from app.modules.account.models import User
         user=db.get(User,row.user_id)
-        item.update(user_id=row.user_id,user=customer_out(user) if user else None,external_txn_id=row.external_txn_id)
+        external_id=(row.checkout_context or {}).get('provider_trade_no') if row.provider=='epay' else row.external_txn_id
+        item.update(user_id=row.user_id,user=customer_out(user) if user else None,external_txn_id=external_id,provider=row.provider)
     return item
 
 def list_orders(db,user_id=None,limit=50,offset=0):

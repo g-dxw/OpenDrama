@@ -2,9 +2,11 @@
 from __future__ import annotations
 import csv
 import io
+from typing import Annotated, Literal
+from urllib.parse import parse_qsl
 from datetime import date
 from fastapi import APIRouter,Depends,HTTPException,Header,Request,Query,Response
-from pydantic import BaseModel,Field
+from pydantic import BaseModel,Field,SecretStr,StringConstraints
 from sqlalchemy import select,func
 from sqlalchemy.orm import Session
 from app.db import get_db
@@ -77,6 +79,8 @@ class CheckoutIn(BaseModel):
     product_type:str=Field(pattern='^(membership|coin_pack)$')
     code:str=Field(min_length=1,max_length=32)
     account_code:str|None=None
+    provider:Literal['stripe','epay']='stripe'
+    payment_method:str|None=Field(default=None,pattern='^[a-z0-9_]{1,64}$')
     idempotency_key:str=Field(min_length=8,max_length=100)
     success_url:str|None=Field(default=None,max_length=2000)
     cancel_url:str|None=Field(default=None,max_length=2000)
@@ -115,8 +119,16 @@ def orders(limit:int=Query(30,ge=1,le=100),offset:int=Query(0,ge=0),user=Depends
     return service.list_orders(db,user.id,limit,offset)
 @public_router.get('/commerce/orders/{order_no}')
 def consumer_order_detail(order_no:str,response:Response,user=Depends(require_user),db:Session=Depends(get_db)):
+    return _consumer_order_detail(order_no,response,user,db)
+
+
+def _consumer_order_detail(order_no,response,user,db,*,reconcile=False):
     row=db.scalar(select(Order).where(Order.order_no==order_no,Order.user_id==user.id))
     if row is None:raise HTTPException(404,'order not found',headers={'Cache-Control':'private, no-store','Vary':'Authorization'})
+    if reconcile and row.provider=='epay':
+        from app.modules.billing import epay_commerce
+        call(db,epay_commerce.reconcile,db,row)
+        db.refresh(row)
     snapshot=row.product_snapshot if isinstance(row.product_snapshot,dict) else {}
     code=snapshot.get('code')
     if not isinstance(code,str):code=''
@@ -128,6 +140,39 @@ def consumer_order_detail(order_no:str,response:Response,user=Depends(require_us
     response.headers['Cache-Control']='private, no-store'
     response.headers['Vary']='Authorization'
     return {'order':dict(order_no=row.order_no,product_type=row.product_type,product_code=code,status=row.status),'settled':settled}
+
+
+@public_router.post('/commerce/orders/{order_no}/reconcile')
+def reconcile_order(order_no:str,response:Response,user=Depends(require_user),db:Session=Depends(get_db)):
+    return _consumer_order_detail(order_no,response,user,db,reconcile=True)
+
+
+@public_router.api_route('/billing/epay/accounts/{code}/webhook', methods=['GET','POST'], include_in_schema=False)
+async def epay_webhook(code:str,request:Request,db:Session=Depends(get_db)):
+    from fastapi.concurrency import run_in_threadpool
+    from app.modules.billing import epay_commerce
+
+    raw = request.scope['query_string']
+    if request.method == 'POST':
+        if raw or request.headers.get('content-type','').split(';',1)[0].strip().lower() != 'application/x-www-form-urlencoded':
+            raise HTTPException(400, 'Expected an Epay form notification')
+        chunks = bytearray()
+        async for chunk in request.stream():
+            if len(chunks) + len(chunk) > 8192:
+                raise HTTPException(413, 'Epay notification is too large')
+            chunks.extend(chunk)
+        raw = bytes(chunks)
+    if len(raw) > 8192:
+        raise HTTPException(413, 'Epay notification is too large')
+    try:
+        pairs = parse_qsl(raw.decode('utf-8'), keep_blank_values=True, strict_parsing=True, errors='strict', max_num_fields=32)
+    except ValueError:
+        raise HTTPException(400, 'Malformed Epay notification') from None
+    params = dict(pairs)
+    if len(params) != len(pairs):
+        raise HTTPException(400, 'Duplicate Epay notification parameters')
+    await run_in_threadpool(call,db,epay_commerce.receive,db,code,params)
+    return Response('success', media_type='text/plain', headers={'Cache-Control':'no-store'})
 @public_router.post('/billing/stripe/accounts/{code}/webhook')
 async def webhook(code:str,request:Request,stripe_signature:str=Header(default='',alias='Stripe-Signature'),db:Session=Depends(get_db)):
     body=await request.body()
@@ -301,3 +346,84 @@ def instance_update_account(code:str,body:AccountPatch,db:Session=Depends(get_db
 @platform_router.post('/stripe/accounts/{code}/test')
 def instance_test_account(code:str,db:Session=Depends(get_db),user=Depends(require_platform_admin)):
     return call(db,service.test_account,db,code)
+
+
+EpayMethod = Annotated[str, StringConstraints(pattern=r'^[a-z0-9_]{1,64}$')]
+EpayMerchant = Annotated[str, StringConstraints(pattern=r'^[A-Za-z0-9_.:-]{1,128}$')]
+GatewayCode = Annotated[str, StringConstraints(pattern=r'^[a-z0-9_]{2,32}$')]
+GatewayStatus = Literal['draft', 'active', 'disabled']
+
+
+class EpayAccountIn(BaseModel):
+    code: GatewayCode
+    name: str = Field(min_length=1, max_length=100)
+    status: GatewayStatus = 'draft'
+    endpoint: str = Field(min_length=1, max_length=500)
+    merchant_id: EpayMerchant
+    payment_methods: list[EpayMethod] = Field(max_length=20)
+    secret_key: SecretStr | None = None
+
+
+class EpayAccountPatch(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    status: GatewayStatus | None = None
+    endpoint: str | None = Field(default=None, min_length=1, max_length=500)
+    merchant_id: EpayMerchant | None = None
+    payment_methods: list[EpayMethod] | None = Field(default=None, max_length=20)
+    secret_key: SecretStr | None = None
+
+
+def _epay_settings(body):
+    values = body.model_dump(exclude={'code', 'secret_key'}, exclude_none=True)
+    if body.secret_key is not None:
+        secret = body.secret_key.get_secret_value().strip()
+        if len(secret) > 512:
+            raise HTTPException(422, 'Epay secret is too long')
+        values['secret_key'] = secret
+    return values
+
+
+@platform_router.get('/epay/accounts')
+def epay_accounts(db: Session = Depends(get_db), user=Depends(require_platform_admin)):
+    from app.modules.billing import epay_commerce, gateway_accounts
+
+    return {'items': [epay_commerce.account_public(row) for row in gateway_accounts.accounts(db, 'epay')]}
+
+
+@platform_router.post('/epay/accounts')
+def epay_create_account(body: EpayAccountIn, db: Session = Depends(get_db), user=Depends(require_platform_admin)):
+    from app.modules.billing import epay_commerce
+
+    return call(db, epay_commerce.save_account, db, body.code, _epay_settings(body), user.id, create=True)
+
+
+@platform_router.patch('/epay/accounts/{code}')
+def epay_update_account(code: GatewayCode, body: EpayAccountPatch, db: Session = Depends(get_db), user=Depends(require_platform_admin)):
+    from app.modules.billing import epay_commerce
+
+    return call(db, epay_commerce.save_account, db, code, _epay_settings(body), user.id)
+
+
+@platform_router.post('/epay/accounts/{code}/test')
+def epay_test_account(code: GatewayCode, db: Session = Depends(get_db), user=Depends(require_platform_admin)):
+    from app.modules.billing import epay_commerce
+
+    return call(db, epay_commerce.test_account, db, code)
+
+
+class EpayBindingIn(BaseModel):
+    account_code: GatewayCode | None
+
+
+@tenant_router.get('/epay/merchant-binding')
+def epay_read_binding(db: Session = Depends(get_db), user=Depends(require_tenant_admin)):
+    from app.modules.billing import epay_commerce
+
+    return call(db, epay_commerce.binding_info, db)
+
+
+@tenant_router.put('/epay/merchant-binding')
+def epay_set_binding(body: EpayBindingIn, db: Session = Depends(get_db), user=Depends(require_tenant_admin)):
+    from app.modules.billing import epay_commerce
+
+    return call(db, epay_commerce.bind, db, body.account_code, user.id)

@@ -67,7 +67,8 @@ let privateComments = false,
   oldCommentsStarted;
 let checkoutConflictCode = null,
   cancelConflictCode = null,
-  checkoutConflictSequence = [];
+  checkoutConflictSequence = [],
+  epayAvailable = false;
 const conflictMessages = {
   pending_subscription_checkout: "Resume or cancel your existing checkout.",
   checkout_payment_pending:
@@ -484,7 +485,7 @@ page.on("request", async (req) => {
       } else result = { items: [], total: 0, next_cursor: null };
     } else if (p === "/v1/plans")
       result = {
-        billing_mode: "one_time",
+        billing_mode: epayAvailable ? "subscription" : "one_time",
         items: [
           {
             code: "weekly",
@@ -535,6 +536,14 @@ page.on("request", async (req) => {
             provider: "stripe",
             enabled: true,
           },
+          ...(epayAvailable ? ["alipay", "wxpay"].map((method) => ({
+            code: "epay-fixture",
+            name: "Epay " + method,
+            provider: "epay",
+            enabled: true,
+            method,
+            billing_modes: ["one_time"],
+          })) : []),
         ],
       };
     else if (p === "/v1/commerce/checkout") {
@@ -547,12 +556,23 @@ page.on("request", async (req) => {
       } else if (code) {
         status = 409;
         result = fixtureConflict(code);
+      } else if (body.provider === "epay") {
+        result = {
+          url: origin + "/?checkout=success&payment_provider=epay&order_no=EPAY-PC-RETURN&pid=merchant-id&out_trade_no=IGNORED#account/orders",
+          session_id: "",
+          order_no: "EPAY-PC-ORIGINAL",
+        };
       } else
         result = {
           url: origin + "/?checkout=success#account/orders",
           session_id: "fixture-session",
           order_no: "ORDER-FIXTURE",
         };
+    } else if (p === "/v1/commerce/orders/EPAY-PC-RETURN" || p === "/v1/commerce/orders/EPAY-PC-RETURN/reconcile") {
+      result = {
+        order: { order_no: "EPAY-PC-RETURN", product_type: "coin_pack", product_code: "starter", status: "paid" },
+        settled: req.method() === "GET",
+      };
     } else if (p === "/v1/commerce/orders/ORDER-FIXTURE/cancel") {
       if (cancelConflictCode) {
         status = 409;
@@ -1863,6 +1883,31 @@ try {
   pass(
     "manual recovery and already-paid conflicts expose order and support links without another purchase",
   );
+  epayAvailable = true;
+  await openPrice();
+  assert.equal(await page.$("#membership-plans .payment-channel"), null);
+  const coinPaymentSelector = "#coin-packs .payment-channel select";
+  await page.waitForSelector(coinPaymentSelector);
+  const epayChoices = await page.$eval(coinPaymentSelector, (select) =>
+    [...select.options].filter((item) => item.textContent.startsWith("Epay ")).map((item) => item.value),
+  );
+  assert.equal(new Set(epayChoices).size, 2);
+  await page.select(coinPaymentSelector, epayChoices[1]);
+  const epayReturnRequests = requests.length;
+  await clickText("Buy coins");
+  await text("Waiting for payment confirmation");
+  assert.equal(await page.$(".checkout-confirmed"), null);
+  await text("Payment confirmed.");
+  assert.equal(lastCheckout().body.provider, "epay");
+  assert.equal(lastCheckout().body.account_code, "epay-fixture");
+  assert.equal(lastCheckout().body.payment_method, "wxpay");
+  const epayRequests = requests.slice(epayReturnRequests);
+  assert.equal(epayRequests.filter((entry) => entry.path === "/v1/commerce/orders/EPAY-PC-RETURN/reconcile" && entry.method === "POST").length, 1);
+  assert(epayRequests.some((entry) => entry.path === "/v1/commerce/orders/EPAY-PC-RETURN" && entry.method === "GET"));
+  assert(!epayRequests.some((entry) => entry.path === "/v1/attr/visit" && entry.body.pid === "merchant-id"));
+  assert.equal(new URL(page.url()).search, "");
+  epayAvailable = false;
+  pass("Epay is omitted for subscriptions and reconciles the exact coin order after its return");
   await go("#support?ticket=T-1");
   await text("An episode needs help.");
   await page.evaluate(() => {

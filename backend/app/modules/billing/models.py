@@ -125,6 +125,7 @@ class Order(Base):
     order_no: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     product_type: Mapped[str] = mapped_column(String(16), nullable=False, default="membership", server_default="membership")
     product_snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
+    provider: Mapped[str] = mapped_column(String(32), nullable=False, default="stripe", server_default="stripe")
     account_code: Mapped[str] = mapped_column(String(32), nullable=False, default="env", server_default="env")
     checkout_context: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default='{}')
     checkout_url: Mapped[str | None] = mapped_column(String(2000), nullable=True)

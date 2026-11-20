@@ -1,4 +1,5 @@
 import { resolveStoreRoute } from "./store-route";
+import { cleanupCheckoutReturn, readCheckoutReturn } from "../../shared/consumer/payment-channels";
 import { getSite, siteName, siteLink, siteFeature, siteStorageKey } from "../../shared/site";
 import { LocaleProvider, useLocale } from "./locale";
 import { LanguageMenu } from "./language-menu";
@@ -26,9 +27,7 @@ function Shell() {
   const { user, status, loginOpen, openLogin, authError, refresh } = useAuth();
   const [hash, setHash] = useState(window.location.hash.slice(1) || "home"),
     [menu, setMenu] = useState(false);
-  const [checkout, setCheckout] = useState<string | null>(() =>
-    new URLSearchParams(window.location.search).get("checkout"),
-  );
+  const [checkout, setCheckout] = useState(() => readCheckoutReturn("jjtv_checkout_order"));
   useEffect(() => {
     const update = () => {
       setHash(window.location.hash.slice(1) || "home");
@@ -42,6 +41,8 @@ function Shell() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const hashQuery = new URLSearchParams(hash.split("?")[1] || "");
+    const paymentReturn = params.has("checkout");
+    if (paymentReturn) cleanupCheckoutReturn(params);
     const pid = params.get("pid") || hashQuery.get("pid");
     if (siteFeature("attribution") && pid && /^[A-Za-z0-9_-]{1,128}$/.test(pid)) {
       localStorage.setItem(siteStorageKey("jjtv_attribution_pid"), pid);
@@ -52,8 +53,7 @@ function Shell() {
         ttclid: params.get("ttclid") || undefined,
       }).catch(() => undefined);
     }
-    if (params.has("checkout")) {
-      params.delete("checkout");
+    if (paymentReturn) {
       const query = params.toString();
       history.replaceState(
         {},
@@ -199,7 +199,7 @@ function Shell() {
         )}
         {checkout && (
           <CheckoutReturn
-            result={checkout}
+            reference={checkout}
             onDismiss={() => setCheckout(null)}
           />
         )}
