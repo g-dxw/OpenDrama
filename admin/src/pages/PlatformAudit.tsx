@@ -55,7 +55,7 @@ export default function PlatformAudit() {
         expandedRowRender: row => <Card size="small" title={'审计记录 #' + (row.id ?? '—')}>
           {requestSummary(row) && <Typography.Paragraph code style={{ marginBottom: 12, overflowWrap: 'anywhere' }}>{requestSummary(row)}</Typography.Paragraph>}
           <pre aria-label="审计详情 JSON" style={{ margin: 0, maxHeight: 360, overflow: 'auto', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: 12, lineHeight: 1.6 }}>{JSON.stringify({
-            actor_scope: row.actor_scope ?? 'legacy', actor_id: row.actor_id ?? null,
+            actor_scope: row.actor_scope ?? 'tenant', actor_id: row.actor_id ?? null,
             target_type: row.target_type ?? null, target_id: row.target_id ?? null, payload: row.payload ?? {},
           }, null, 2)}</pre>
         </Card>,

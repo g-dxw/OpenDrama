@@ -31,7 +31,7 @@ export type PermissionSection = {
   modules: { key: string; title: string; entries: PermissionEntry[] }[];
 };
 
-export function permissionSections(catalog: PermissionEntry[], india: boolean): PermissionSection[] {
+export function permissionSections(catalog: PermissionEntry[]): PermissionSection[] {
   const entries = new Map(catalog.map(entry => [entry.key, entry]));
   const routes: Record<string, string> = {
     dashboard: "/dashboard", dramas: "/dramas", episodes: "/dramas", reviews: "/reviews",
@@ -50,7 +50,7 @@ export function permissionSections(catalog: PermissionEntry[], india: boolean): 
       if (inherited) return inherited;
     }
     const prefix = key.split(".")[0];
-    return india && ["dramas", "reviews", "episodes"].includes(prefix) ? "/india-content" : routes[prefix];
+    return routes[prefix];
   };
   const result = new Map<string, PermissionSection>();
   for (const entry of catalog) {
@@ -60,13 +60,11 @@ export function permissionSections(catalog: PermissionEntry[], india: boolean): 
     const sectionTitle = location?.parent?.label ?? location?.leaf.label ?? "其它权限";
     let section = result.get(sectionKey);
     if (!section) { section = { key: sectionKey, title: sectionTitle, modules: [] }; result.set(sectionKey, section); }
-    // India has two independent permission modules for one content menu.
-    // Keeping catalog.group in the key preserves both modules and unknown entries.
     const moduleKey = (route ?? "unmapped") + ":" + (entry.group || "未分类");
     let module = section.modules.find(item => item.key === moduleKey);
     if (!module) {
       const title = location?.leaf.label
-        ? location.leaf.key === "/india-content" ? location.leaf.label + " · " + (entry.group || "未分类") : location.leaf.label
+        ? location.leaf.label
         : entry.group || "未分类权限";
       module = { key: moduleKey, title, entries: [] }; section.modules.push(module);
     }

@@ -22,10 +22,6 @@ _NATIVE_CONTENT = frozenset({
     "dramas.pricing", "episodes.delete", "reviews.view", "reviews.decide",
     "tags.view", "tags.manage", "groups.view", "groups.manage",
 })
-_INDIA_CONTENT = frozenset({
-    "dramas.view", "dramas.edit", "dramas.upload", "dramas.publish", "dramas.pricing",
-    "reviews.view", "reviews.decide",
-})
 _GLOBAL = frozenset({
     "dashboard.view", "users.view", "users.manage", "home_ops.view", "home_ops.manage",
     "rewards.view", "rewards.manage", "comments.view", "comments.manage",
@@ -51,9 +47,9 @@ def _preset_id(tenant_id: str, builtin_key: str) -> str:
 
 
 def _preset_permissions(tenant_id: str, kind: str, builtin_key: str) -> list[str]:
-    if kind not in {"native", "india_legacy"} or builtin_key not in _ROLE_NAMES:
+    if kind != "native" or builtin_key not in _ROLE_NAMES:
         raise RuntimeError("Cannot represent an unknown tenant kind or built-in role")
-    content = _INDIA_CONTENT if kind == "india_legacy" else _NATIVE_CONTENT
+    content = _NATIVE_CONTENT
     if builtin_key == "admin":
         permissions = set(content)
     elif builtin_key == "ops":

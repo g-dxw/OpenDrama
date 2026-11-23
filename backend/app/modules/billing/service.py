@@ -310,52 +310,6 @@ def change_price(session: Session, *, code: str, price_cents: int, benefits: dic
     return version
 
 
-def apply_webhook(session: Session, *, body: bytes, signature: str, payload: dict) -> dict:
-    expected = sign_webhook(body)
-    if not hmac.compare_digest(expected, signature or ""):
-        raise BillingError(401, "bad signature")
-    txn = payload["txn_id"]
-    existing = session.scalar(select(Order).where(Order.external_txn_id == txn))
-    if existing is not None:
-        return {"order_no": existing.order_no, "replayed": True, "status": existing.status}
-    plan = session.scalar(select(Plan).where(Plan.code == payload["plan_code"]))
-    if plan is None:
-        raise BillingError(404, "plan not found")
-    version = session.scalar(
-        select(PlanVersion).where(PlanVersion.plan_id == plan.id).order_by(PlanVersion.version.desc())
-    )
-    now = datetime.now(timezone.utc)
-    days = {"weekly": 7, "monthly": 30, "yearly": 365}.get(plan.code, 30)
-    order = Order(
-        order_no=secrets.token_hex(8),
-        user_id=payload["user_id"],
-        plan_version_id=version.id,
-        amount_cents=version.price_cents,
-        status="paid",
-        external_txn_id=txn,
-        paid_at=now,
-    )
-    session.add(order)
-    current = session.scalar(
-        select(Subscription).where(Subscription.user_id == payload["user_id"], Subscription.status == "active")
-    )
-    if current is not None:
-        current.status = "canceled"
-        current.canceled_at = now
-    session.add(
-        Subscription(
-            user_id=payload["user_id"],
-            plan_id=plan.id,
-            plan_version_id=version.id,
-            status="active",
-            current_period_start=now,
-            current_period_end=now + timedelta(days=days),
-        )
-    )
-    session.commit()
-    return {"order_no": order.order_no, "replayed": False, "status": "paid", "plan_version_id": version.id}
-
-
 def cancel_subscription(session: Session, user_id: int) -> None:
     """Stop renewing. With Stripe the access runs until the paid period ends."""
     current = session.scalar(
@@ -1381,9 +1335,7 @@ def revoke_membership(session:Session,*,user_id:int,mode:str,reason:str,actor_id
     return dict(mode=mode,before_until=before.isoformat(),after_until=before.isoformat() if mode=='period_end' else moment.isoformat(),stripe_canceled=bool(stripe_id))
 
 
-# Legacy admin callers must use the same site merchant and price bindings as
 # checkout. Only the original site's original merchant may use global price IDs.
-_legacy_ensure_stripe_price = ensure_stripe_price
 
 def ensure_stripe_price(session:Session,plan:Plan,version:PlanVersion,mode:str="subscription")->str:
     from app.modules.billing.commerce import ensure_price
@@ -1396,29 +1348,11 @@ def ensure_stripe_price(session:Session,plan:Plan,version:PlanVersion,mode:str="
     if mode not in BILLING_MODES:
         raise BillingError(400, "unknown billing mode")
     account = purchase_account(session)
-    if current_site(session) == 'jjtv' and account['code'] == 'env':
-        with managed_stripe_runtime(session, account['code']):
-            return _legacy_ensure_stripe_price(session, plan, version, mode)
     return ensure_price(session, account['code'], dict(
         product_type='membership', code=plan.code, name=plan.name_en,
         version_id=version.id, price_cents=version.price_cents,
         currency=version.currency, billing_mode=mode,
     ))
-
-
-_original_fake_webhook=apply_webhook
-
-def apply_webhook(session:Session,*,body:bytes,signature:str,payload:dict)->dict:
-    """The pre-Stripe testing protocol is a JJTV-only compatibility endpoint."""
-    from app.modules.account.models import User
-    if os.environ.get('APP_ENV','local').lower() in {'production','prod'}:
-        configured=os.environ.get('PAY_WEBHOOK_SECRET','').strip()
-        if os.environ.get('ENABLE_LEGACY_PAY_WEBHOOK','0')!='1' or not configured or configured=='local-pay-webhook':raise BillingError(403,'Legacy payment protocol is disabled')
-    if current_site(session)!='jjtv':raise BillingError(403,'Legacy payment protocol is not enabled for this site')
-    with site_context(session,'jjtv'):
-        if not hmac.compare_digest(sign_webhook(body),signature or ''):raise BillingError(401,'bad signature')
-        require_owned(session,User,payload.get('user_id'))
-        return _original_fake_webhook(session,body=body,signature=signature,payload=payload)
 
 
 def provision_site_billing(db,tenant_id):

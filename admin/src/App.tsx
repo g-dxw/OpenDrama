@@ -21,7 +21,6 @@ import Tenants from './pages/Tenants';
 import PlatformAudit from './pages/PlatformAudit';
 import TenantStaff from './pages/TenantStaff';
 import TenantRolesPage from './pages/TenantRolesPage';
-import IndiaContent from './pages/IndiaContent';
 import Dramas from './pages/Dramas';
 import DramaEdit from './pages/DramaEdit';
 import Reviews from './pages/Reviews';
@@ -102,11 +101,8 @@ function TenantApplication({ identity, refresh, onLogout, loggingOut, onPassword
     if (!support) return; const expires = supportSession()?.expires_at; if (!expires) return; const remaining = new Date(expires).getTime() - Date.now();
     if (!Number.isFinite(remaining)) return; const timer = window.setTimeout(() => forceReauth('support_expired'), Math.max(0, remaining)); return () => window.clearTimeout(timer);
   }, [support]);
-  const legacyMerchantOwner = tenant.id === 'jjtv';
-  const menuKeys = legacyMerchantOwner ? identity.menu_keys : identity.menu_keys.filter(key => key !== '/stripe-accounts');
-  const items = visibleNavigation({ menuKeys, platformAdmin: false, partner, india: tenant.kind === 'india_legacy', tenantAdmin: systemAdmin });
+  const items = visibleNavigation({ menuKeys: identity.menu_keys, platformAdmin: false, partner, tenantAdmin: systemAdmin });
   const leaves = navigationLeaves(items); const first = leaves[0]?.key; const requested = [...leaves].sort((a, b) => b.key.length - a.key.length).find(item => location.pathname === item.key || location.pathname.startsWith(item.key + '/'));
-  const merchantBindingRedirect = !legacyMerchantOwner && tenant.kind === 'native' && systemAdmin && location.pathname === '/stripe-accounts';
   const reviewDetail = tenant.kind === 'native' && /^\/dramas\/[^/]+$/.test(location.pathname) && identity.permissions.includes('reviews.view');
   const contentKey = tenant.id + ':' + identity.permissions.slice().sort().join(',') + ':' + identity.menu_keys.slice().sort().join(',') + ':' + systemAdmin + ':' + identity.enabled_modules.slice().sort().join(',');
   const session = supportSession();
@@ -116,20 +112,19 @@ function TenantApplication({ identity, refresh, onLogout, loggingOut, onPassword
   return <TenantContext.Provider value={{ current, items: [current], refresh, select: () => {} }}><BackOfficeShell brand={tenant.name + ' 后台'} items={items} route={location.pathname} scope={tenant.id} onNavigate={key => navigate(key)} accountName={identity.user.display_name || identity.user.username}
     accountLabel={support ? '平台支持访问' : identity.is_tenant_admin ? '租户管理员' : identity.role_name} onLogout={onLogout} loadingLogout={loggingOut} onPassword={onPassword} contentKey={contentKey} banner={banner}
     headerExtra={<Space size={4}><TenantStorefrontLink tenant={tenant} /><Button type="text" aria-label="刷新当前租户权限" icon={<ReloadOutlined aria-hidden />} loading={refreshing} onClick={() => void refreshPermissions()} /></Space>}>
-    {error ? <Alert type="error" showIcon message={error} action={<Button onClick={() => void refreshPermissions()}>重试</Button>} /> : tenant.status !== 'active' ? <Alert type="warning" showIcon message="此租户已暂停" description="请联系平台管理员重新启用。" /> : !first ? <Alert type="info" showIcon message="当前账号没有已开放的菜单" description="请联系本租户管理员分配权限。" /> : merchantBindingRedirect ? <Navigate to="/merchant-binding" replace /> : !requested && !reviewDetail && location.pathname !== '/' ? <Navigate to={first} replace /> : <BusinessRoutes first={first} systemAdmin={systemAdmin} legacyMerchantOwner={legacyMerchantOwner} />}
+    {error ? <Alert type="error" showIcon message={error} action={<Button onClick={() => void refreshPermissions()}>重试</Button>} /> : tenant.status !== 'active' ? <Alert type="warning" showIcon message="此租户已暂停" description="请联系平台管理员重新启用。" /> : !first ? <Alert type="info" showIcon message="当前账号没有已开放的菜单" description="请联系本租户管理员分配权限。" /> : !requested && !reviewDetail && location.pathname !== '/' ? <Navigate to={first} replace /> : <BusinessRoutes first={first} systemAdmin={systemAdmin} />}
   </BackOfficeShell></TenantContext.Provider>;
 }
-function BusinessRoutes({ first, systemAdmin, legacyMerchantOwner }: { first: string; systemAdmin: boolean; legacyMerchantOwner: boolean }) {
+function BusinessRoutes({ first, systemAdmin }: { first: string; systemAdmin: boolean }) {
   return <Routes>
     <Route path="/" element={<Navigate to={first} replace />} />
     <Route path="/site-settings" element={systemAdmin ? <SiteSettingsPage /> : <Navigate to={first} replace />} /><Route path="/brand" element={systemAdmin ? <BrandPage /> : <Navigate to={first} replace />} /><Route path="/merchant-binding" element={systemAdmin ? <MerchantBindingPage /> : <Navigate to={first} replace />} /><Route path="/library" element={<LibraryPage />} /><Route path="/login-settings" element={<LoginSettings/>}/>
-    {legacyMerchantOwner && <Route path="/stripe-accounts" element={<StripeAccountsPage />} />}
+    {systemAdmin && <Route path="/stripe-accounts" element={<StripeAccountsPage />} />}
     <Route path="/coin-packs" element={<CoinPacksPage/>}/><Route path="/coin-ledger" element={<CoinLedgerPage/>}/><Route path="/attribution" element={<AttributionPage/>}/><Route path="/support/workbench" element={<SupportWorkbenchPage/>}/><Route path="/support/queue" element={<SupportQueuePage/>}/><Route path="/support/reports" element={<SupportReportsPage/>}/><Route path="/support/settings" element={<SupportSettingsPage/>}/><Route path="/dashboard" element={<DashboardPage />} /><Route path="/dramas" element={<Dramas />} /><Route path="/dramas/:id" element={<DramaEdit />} /><Route path="/reviews" element={<Reviews />} />
     <Route path="/groups" element={<GroupsPage />} /><Route path="/groups/:id" element={<GroupDetailPage />} /><Route path="/home-ops" element={<HomeOpsPage />} /><Route path="/tags" element={<Tags />} />
     <Route path="/users" element={<UsersPage />} /><Route path="/rewards" element={<Rewards />} /><Route path="/comments" element={<CommentsPage />} /><Route path="/moderation" element={<Moderation />} />
-    <Route path="/plans" element={<CommercePlansPage />} /><Route path="/finance" element={<CommerceFinancePage legacyMerchantOwner={legacyMerchantOwner} />} /><Route path="/suppliers" element={<Suppliers />} /><Route path="/settlements" element={<Settlements />} />
+    <Route path="/plans" element={<CommercePlansPage />} /><Route path="/finance" element={<CommerceFinancePage />} /><Route path="/suppliers" element={<Suppliers />} /><Route path="/settlements" element={<Settlements />} />
     <Route path="/staff" element={systemAdmin ? <TenantStaff /> : <Navigate to={first} replace />} /><Route path="/roles" element={systemAdmin ? <TenantRolesPage /> : <Navigate to={first} replace />} /><Route path="/api-keys" element={systemAdmin ? <ApiKeys /> : <Navigate to={first} replace />} />
-    <Route path="/india-content" element={<IndiaContent />} />
     <Route path="/partner/dramas" element={<PartnerDramas />} /><Route path="/partner/dramas/:id" element={<PartnerDramaEdit />} /><Route path="/partner/stats" element={<PartnerStats />} /><Route path="/partner/settlements" element={<PartnerSettlements />} /><Route path="/partner/api-keys" element={<PartnerApiKeys />} />
     <Route path="*" element={<Navigate to={first} replace />} />
   </Routes>;

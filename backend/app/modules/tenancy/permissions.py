@@ -8,9 +8,9 @@ import hashlib
 import re
 from fastapi import HTTPException
 from sqlalchemy import select
-from app.modules.tenancy.models import DEFAULT_TENANT, INDIA_TENANT, TenantRole, TenantMember, TenantModule
+from app.modules.tenancy.models import TenantRole, TenantMember, TenantModule
 from app.modules.tenancy import modules as business_modules
-from app.modules.tenancy.modules import seed_modules, seed_legacy_bindings, SYSTEM_PERMISSIONS, SYSTEM_MENUS
+from app.modules.tenancy.modules import seed_modules, SYSTEM_PERMISSIONS, SYSTEM_MENUS
 
 CATALOG = []
 def define(key, label, group, *, requires=(), menu_key=None):
@@ -46,12 +46,11 @@ define('support.settings','工单设置','客服',requires=['support.view'],menu
 define('support.manage','回复、指派和处理工单','客服',requires=['support.view'])
 ALL_KEYS = {item['key'] for item in CATALOG}
 STAFF_READ_KEYS = {item['key'] for item in CATALOG if item['key'].endswith('.view')} - CONTENT_KEYS - {'staff.view','api_keys.view','settlements.view'}
-INDIA_KEYS = {'dramas.view','dramas.edit','dramas.upload','dramas.publish','dramas.pricing','reviews.view','reviews.decide'}
 OPS_GLOBAL = {'dashboard.view','home_ops.view','home_ops.manage','rewards.view','rewards.manage','comments.view','comments.manage','moderation.view'}
 FINANCE_GLOBAL = {'dashboard.view','users.view','finance.view','settlements.view','settlements.manage','plans.view'}
 
 def capability_keys(tenant, db=None, *, enabled_only=True):
-    if db is None: return set(INDIA_KEYS if tenant.kind=='india_legacy' else CONTENT_KEYS)
+    if db is None: return set(ALL_KEYS)
     return business_modules.capability_keys(db,tenant,enabled_only=enabled_only)
 
 def permission_catalog(tenant, db=None):
@@ -60,7 +59,6 @@ def permission_catalog(tenant, db=None):
     for item in CATALOG:
         if item['key'] not in supported or item['key'] in SYSTEM_PERMISSIONS: continue
         value=dict(item,enabled=item['key'] in enabled)
-        if tenant.kind=='india_legacy' and value.get('menu_key'): value['menu_key']='/india-content'
         result.append(value)
     return result
 
@@ -71,12 +69,7 @@ def preset_permissions(tenant,key,db=None):
     available=capability_keys(tenant,db)
     if key=='tenant_admin': return sorted(available|SYSTEM_PERMISSIONS)
     # Newly adapted HomeOps is assigned deliberately by the tenant administrator;
-    # preserve the original self-operation preset for the explicit legacy owner.
-    if db is not None:
-        from app.modules.tenancy.models import LegacyBusinessBinding
-        binding=db.get(LegacyBusinessBinding,'home_ops')
-        if binding is None or binding.tenant_id!=tenant.id:
-            available-= {'home_ops.view','home_ops.manage'}
+    # Home operations permissions are assigned per tenant.
     if key=='admin': return sorted(available)
     if key=='finance': return sorted(available & ({'dramas.view'}|FINANCE_GLOBAL))
     return sorted(available & ((CONTENT_KEYS-{'dramas.delete'})|OPS_GLOBAL))
@@ -123,8 +116,7 @@ def effective_grants(db,user,tenant,principal=None):
     return dict(role_id=role.id,role_name=role.name,own_role='tenant_admin' if administrator else role.builtin_key or 'custom',permissions=sorted(keys),menu_keys=menus_for(tenant,keys,administrator),is_tenant_admin=administrator,platform_admin=False)
 
 def menus_for(tenant,keys,administrator=False):
-    if tenant.kind=='india_legacy': menus=['/india-content'] if keys & {'dramas.view','reviews.view'} else []
-    else: menus=[item['menu_key'] for item in CATALOG if item['key'] in keys and item.get('menu_key') and item['key'] not in SYSTEM_PERMISSIONS]
+    menus=[item['menu_key'] for item in CATALOG if item['key'] in keys and item.get('menu_key') and item['key'] not in SYSTEM_PERMISSIONS]
     return menus+(SYSTEM_MENUS if administrator else [])
 
 def deny(required):
@@ -216,11 +208,6 @@ def authorize_native_request(request,tenant,grants):
             return
     for pattern,module in GLOBAL_PREFIXES:
         if re.fullmatch(pattern,path):
-            if module=='home_ops' and not re.fullmatch(r'(?:tabs|banners)(?:/[0-9]+)?',path):
-                from app.modules.tenancy.models import LegacyBusinessBinding
-                binding=request.state.db_for_tenant.get(LegacyBusinessBinding,'home_ops')
-                if binding is None or binding.tenant_id!=tenant.id:
-                    deny(('adapted_home_ops_action',))
             if module not in {'staff','api_keys','roles'} and module not in business_modules.enabled_modules(request.state.db_for_tenant,tenant): deny((module+'.view',))
             read=request.method in ('GET','HEAD','OPTIONS')
             special = None

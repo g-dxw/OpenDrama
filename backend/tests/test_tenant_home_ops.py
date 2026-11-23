@@ -129,11 +129,11 @@ def test_public_home_config_stays_on_jjtv_and_discover_sorts_first(home_context)
     tabs=c.get('/admin/v1/tabs',headers=ctx['jh']).json()['items']
     assert [row['id'] for row in tabs]==[discover['id'],manual['id']]
     assert all(row['position']==0 for row in tabs)
-    public=c.get('/v1/config',headers={'X-JJTV-Tenant':ctx['a'].id}).json()['tabs']
+    public=c.get('/v1/config',headers={'X-OpenDrama-Tenant':ctx['a'].id}).json()['tabs']
     assert [row['code'] for row in public]==['discover','manual-zero']
     assert all(row['group_id']!=ctx['ag'].id for row in public)
     assert foreign['id'] not in {row['id'] for row in tabs}
-    home=c.get('/v1/home/groups',headers={'X-JJTV-Tenant':ctx['a'].id}).json()
+    home=c.get('/v1/home/groups',headers={'X-OpenDrama-Tenant':ctx['a'].id}).json()
     assert [row['drama_id'] for row in home['banners']]==[ctx['jd'].id]
     assert {row['id'] for row in home['groups']}=={ctx['jg'].id}
 

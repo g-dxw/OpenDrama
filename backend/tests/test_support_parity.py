@@ -118,7 +118,7 @@ def test_support_rejects_disabled_module_and_cross_tenant(session,make,client):
     assert denied.status_code==403,denied.text
     _,admin=staff_headers(client,make)
     # A foreign tenant selector cannot change the authenticated tenant.
-    assert client.get("/admin/v1/support/tickets",headers={**admin,"X-JJTV-Tenant":"india-short-drama"}).status_code==403
+    assert client.get("/admin/v1/support/tickets",headers={**admin,"X-OpenDrama-Tenant":"india-short-drama"}).status_code==403
 
 def test_public_rejects_blank_and_foreign_orders(session,make,client):
     user=make.user()

@@ -1,6 +1,6 @@
 """Exercise a disposable installation through its real reverse proxy and API.
 
-Requires MINITV_VERIFY_PASSWORD. Refuses production instances and prints no
+Requires OPENDRAMA_VERIFY_PASSWORD. Refuses production instances and prints no
 credentials. It intentionally creates two new test sites on every execution.
 """
 from __future__ import annotations
@@ -31,8 +31,8 @@ def verify(base_url, username, password):
         token = call("POST", "/platform/v1/auth/login", json=dict(username=username, password=password)).json()["token"]
         platform = {"Authorization": "Bearer " + token}
         before = call("GET", "/platform/v1/tenants", headers=platform).json()
-        assert not any(row["id"] in {"jjtv", "india-short-drama"} for row in before)
-        checks.append("fresh console excludes unused compatibility realms")
+        assert not any(row["id"] == "india-short-drama" for row in before)
+        checks.append("fresh console excludes retired connectors")
         suffix = uuid4().hex[:8]
         for code, locale, currency, zone in (("en-" + suffix, "en", "USD", "America/New_York"), ("zh-" + suffix, "zh", "EUR", "Asia/Shanghai")):
             created = call("POST", "/platform/v1/tenants", expected=201, headers=platform,
@@ -75,7 +75,7 @@ def verify(base_url, username, password):
         call("POST", "/tenant/v1/brand/rollback", headers=owner, json={"version": 1})
         assert call("GET", "/v1/site/bootstrap", headers=public).json()["brand"]["name"] == original["published"]["name"]
         checks.extend(["draft isolation", "authorized preview and cross-site refusal", "publish and rollback through reverse proxy"])
-        for path in ("/", "/admin/", "/cli/install.sh", "/cli/minitv"):
+        for path in ("/", "/admin/", "/cli/install.sh", "/cli/opendrama"):
             assert call("GET", path).content
         call("GET", "/admin/v1/auth/me", expected=401)
         call("POST", "/v1/billing/webhook", expected=404)
@@ -89,8 +89,8 @@ def main():
     parser.add_argument("--username", default="verifier")
     parser.add_argument("--report", type=Path)
     args = parser.parse_args()
-    password = os.environ.get("MINITV_VERIFY_PASSWORD")
-    if not password: raise SystemExit("Set MINITV_VERIFY_PASSWORD for the disposable installation")
+    password = os.environ.get("OPENDRAMA_VERIFY_PASSWORD")
+    if not password: raise SystemExit("Set OPENDRAMA_VERIFY_PASSWORD for the disposable installation")
     report = verify(args.base_url, args.username, password)
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)

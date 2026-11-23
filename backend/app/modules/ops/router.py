@@ -342,9 +342,6 @@ def change_own_password(
     user.password_hash = ops_service.hash_password(body.new_password)
     user.auth_version += 1
     user.must_change_password = False
-    from app.modules.tenancy.models import IndiaConnection
-    from sqlalchemy import delete
-    db.execute(delete(IndiaConnection).where(IndiaConnection.user_id==user.id))
     db.add(
         AuditLog(
             actor_type="admin",

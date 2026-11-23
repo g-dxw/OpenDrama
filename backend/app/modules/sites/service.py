@@ -104,11 +104,6 @@ def hostname_site(db, hostname):
     binding = db.scalar(select(TenantDomain).where(func.lower(TenantDomain.hostname) == hostname,
                          TenantDomain.kind == "site", TenantDomain.status == "active", TenantDomain.verified_at.is_not(None)))
     tenant = db.get(Tenant, binding.tenant_id) if binding else None
-    if tenant is None:
-        # Compatibility is an explicit host allowlist, never an unknown-host fallback.
-        legacy = os.environ.get("SITE_LEGACY_HOSTS", "jjtv.8jj.net,jjtv-h5.8jj.net,jjtv-api.8jj.net")
-        if hostname in {x.strip().lower() for x in legacy.split(",") if x.strip()}:
-            tenant = db.get(Tenant, os.environ.get("SITE_LEGACY_TENANT", "jjtv"))
     if tenant and (tenant.status != "active" or tenant.kind != "native"):
         return None
     return tenant
@@ -116,7 +111,7 @@ def hostname_site(db, hostname):
 
 def resolve_public_site(db, request: Request):
     host = (request.url.hostname or "").lower().rstrip(".")
-    api_hosts = {x.strip().lower() for x in os.environ.get("SITE_API_HOSTS", "jjtv-api.8jj.net").split(",") if x.strip()}
+    api_hosts = {x.strip().lower() for x in os.environ.get("SITE_API_HOSTS", "").split(",") if x.strip()}
     if host in api_hosts and request.headers.get("origin"):
         try: origin = urlsplit(request.headers["origin"])
         except ValueError: raise HTTPException(404, detail={"code": "site_not_found"}) from None

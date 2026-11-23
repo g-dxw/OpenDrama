@@ -1,30 +1,43 @@
 # OpenDrama
 
-开源、可自行部署的多站点短剧运营平台。一家公司使用同一套服务，面向不同国家或品牌创建独立站点，由各自团队管理内容、品牌、观众和商业化。
+OpenDrama is a self-hosted, multi-site short-drama operations platform. One installation can run independent branded sites with separate staff, viewers, content, memberships, wallets, orders, and site settings.
 
-## 多站点 V1
+## Included platform
 
-- 独立域名、站点配置、中英文界面与后续语言资源扩展。
-- 各站独立员工账号、观众账号、会员、钱包、订单和经营数据。
-- 固定模板与品牌配置，支持草稿、受控预览、发布和回退。
-- 公司内容母版、字幕与共享媒体资源，经授权生成各站独立草稿；新版需显式采用。
-- Bunny 视频服务、Stripe 商户绑定和站点订单隔离。
-- FastAPI / PostgreSQL / Redis，React 管理后台、桌面 Web 和移动 H5。
+- Independent site domains, branding, locales, currencies, and time zones.
+- Platform administration plus tenant-owned staff accounts, roles, and permissions.
+- Draft, preview, publish, and rollback workflows for dramas and episodes.
+- Shared company library with explicit site authorization.
+- Bunny video and media integration, Stripe merchant binding, memberships, wallets, and orders.
+- FastAPI / PostgreSQL / Redis backend with React admin, desktop web, and mobile H5 clients.
+- Docker self-host deployment under `deploy/selfhost`.
 
-## 部署
+The standalone snapshot is based on the published platform commit `3e3956b` (release `v2026.11.20.1`). It contains only the new multi-site runtime and deployment path. The retired India connector, old tenant compatibility routes, JJTV-specific video deployment, legacy CLI surface, and historical compatibility documentation are excluded.
 
-完整安装和备份恢复步骤见 [自行部署说明](docs/self-hosting.md)。通用 Docker 包位于 deploy/selfhost，不依赖现有 JJTV 服务或 India 旧系统凭据。
+## Quick start
 
-外部视频、邮件和支付使用部署者自己的账户；未配置时不提供相应生产能力。原生 App 多品牌打包、外部内容供应商交易市场为后续扩展。
+1. Copy `.env.example` to `.env` and set local PostgreSQL, Redis, media, email, and payment values.
+2. Start local services with `docker compose up -d`.
+3. Run backend migrations from `backend/` and start the API.
+4. Build the web clients with the project scripts.
 
-## 开发与兼容
+For a production installation, read [self-hosting](docs/self-hosting.md) and run:
 
-平台品牌统一为 OpenDrama，各站使用自己的品牌配置。为兼容已有安装，CLI 命令 `minitv`、`MINITV_*` 环境变量及现有存储、数据库和域名验证标识继续沿用。
+```sh
+cd deploy/selfhost
+python3 init_env.py
+docker compose up -d
+```
 
-[多站点开发说明](docs/multisite-v1.md) 记录接口、模型和迁移边界。原 JJTV 部署说明保留于 [历史文档](docs/legacy/jjtv-readme.md)，现网发布纪律仍以 AGENTS.md 和 docs/release-process.md 为准。
+The self-host package uses the deployer's own media, email, and payment accounts. Empty provider settings leave those optional capabilities disabled.
 
-历史 JJTV 数据通过前向迁移保留原用户、订单、余额、剧目和分集 ID；旧内容默认私有，不自动进入公司内容库。
+## Development
 
-## 许可
+- Backend tests live in `backend/tests`.
+- Admin, desktop, H5, and mobile clients keep their own package manifests and checks.
+- The API exposes platform routes under `/platform/v1` and tenant routes under `/tenant/v1`.
+- Tenant requests use the `X-OpenDrama-Tenant` header when an explicit tenant scope is required.
 
-代码沿用 MIT，见 [LICENSE](LICENSE)。品牌、视频、海报和第三方目录不因代码开源而获得分发授权。源码归档通过 .gitattributes 排除运营数据和第三方目录样本。
+## License
+
+MIT. Brand assets, video, artwork, and third-party catalog samples remain subject to their own rights.

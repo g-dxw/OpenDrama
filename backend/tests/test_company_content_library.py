@@ -385,9 +385,6 @@ def test_public_details_preview_catalog_feed_and_playback_disclose_dates(library
     assert locked['allowed'] is False
     assert datetime.fromisoformat(locked['watch_until']) == watches
     private = env['make'].drama(title='Private without library term', status='published')
-    monkeypatch.setenv('SITE_LEGACY_HOSTS', 'legacy.example.test')
-    private_out = ok(client.get('/v1/dramas/' + str(private.id), headers={'Host':'legacy.example.test'}))
-    assert private_out['watch_until'] is None and private_out['sales_until'] is None
 
 
 def test_coin_purchase_audits_disclosed_dates_once_without_rewriting_membership(library_env):

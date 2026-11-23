@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""minitv - OpenDrama 剧集管理命令行。
+"""opendrama - OpenDrama 剧集管理命令行。
 
 单文件、零第三方依赖（Python >= 3.8）。设计见 docs/cli-execution-plan.md：
 - help 由 SPEC 同源生成，`--help` / `help --json` / `guide` 三处永远一致；
 - 所有命令在 TTY 下打表格，非 TTY 或 --json 时输出 {"ok":true,"data":...}；
 - 密钥只从环境变量或 0600 凭据文件读，命令行参数传 key 会被拒绝。
 
-给 Agent：先跑 `minitv guide` 取完整手册，按每条命令 help 里的「相关命令」串流程。
+给 Agent：先跑 `opendrama guide` 取完整手册，按每条命令 help 里的「相关命令」串流程。
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ from pathlib import Path
 VERSION = "0.4.0"
 DEFAULT_BASE = ""
 # Cloudflare blocks urllib's default UA, so every request carries this one.
-UA = f"minitv/{VERSION} (self-hosted)"
+UA = f"opendrama/{VERSION} (self-hosted)"
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -77,7 +77,7 @@ def usage_error(message, hint=None):
 
 
 def config_dir() -> Path:
-    return Path(os.environ.get("MINITV_CONFIG_DIR") or (Path.home() / ".config" / "minitv"))
+    return Path(os.environ.get("OPENDRAMA_CONFIG_DIR") or (Path.home() / ".config" / "opendrama"))
 
 
 def config_path() -> Path:
@@ -107,7 +107,7 @@ def load_config() -> dict:
         raise CliError(
             f"配置文件无法读取：{path}（{exc}）",
             code="config_invalid",
-            hint="删掉该文件后重跑 minitv config init",
+            hint="删掉该文件后重跑 opendrama config init",
         )
     data.setdefault("profiles", {})
     data.setdefault("default_profile", "prod")
@@ -167,20 +167,20 @@ def resolve_settings(args, *, require_key=True) -> Settings:
     cfg = load_config()
     profile = getattr(args, "profile", None) or cfg.get("default_profile") or "prod"
     prof = cfg["profiles"].get(profile, {})
-    base = (getattr(args, "base_url", None) or os.environ.get("MINITV_API_BASE") or prof.get("base_url") or DEFAULT_BASE).rstrip("/")
+    base = (getattr(args, "base_url", None) or os.environ.get("OPENDRAMA_API_BASE") or prof.get("base_url") or DEFAULT_BASE).rstrip("/")
     if not base:
-        raise CliError("请配置本实例 API 地址", code="instance_required", exit_code=EXIT_USAGE, hint="使用 --base-url URL 或 MINITV_API_BASE，不会自动连接其他实例")
+        raise CliError("请配置本实例 API 地址", code="instance_required", exit_code=EXIT_USAGE, hint="使用 --base-url URL 或 OPENDRAMA_API_BASE，不会自动连接其他实例")
     parsed_base = urllib.parse.urlsplit(base)
     if parsed_base.scheme not in {"http", "https"} or not parsed_base.hostname or parsed_base.username or parsed_base.password:
         raise usage_error("API 地址必须是无内嵌凭据的 http(s) URL")
-    key = os.environ.get("MINITV_API_KEY", "").strip() or load_credentials().get(profile, "")
+    key = os.environ.get("OPENDRAMA_API_KEY", "").strip() or load_credentials().get(profile, "")
     timeout = getattr(args, "timeout", None) or 20
     if require_key and not key:
         raise CliError(
             f"profile '{profile}' 还没有 API Key",
             code="missing_credential",
             exit_code=EXIT_AUTH,
-            hint="运行 minitv config set-key 写入，或设置环境变量 MINITV_API_KEY",
+            hint="运行 opendrama config set-key 写入，或设置环境变量 OPENDRAMA_API_KEY",
         )
     return Settings(profile, base, key, timeout)
 
@@ -461,9 +461,9 @@ def _message(payload):
 
 def _hint(code):
     return {
-        "missing_credential": "先运行 minitv config set-key，或设置 MINITV_API_KEY",
+        "missing_credential": "先运行 opendrama config set-key，或设置 OPENDRAMA_API_KEY",
         "invalid_key": "密钥可能有误；到后台「API 密钥」页核对前缀",
-        "key_expired": "运行 minitv key rotate 或让管理员重新签发",
+        "key_expired": "运行 opendrama key rotate 或让管理员重新签发",
         "key_revoked": "该密钥已被撤销，请重新签发",
         "account_disabled": "密钥绑定的账号已被禁用，联系管理员",
         "scope_denied": "当前密钥缺少该操作的 scope",
@@ -638,78 +638,78 @@ def _build_spec():
                 cmd(
                     "init",
                     "首次初始化：创建配置目录并写入 API Key",
-                    "minitv config init [--profile P] [--base-url URL] [--stdin]",
+                    "opendrama config init [--profile P] [--base-url URL] [--stdin]",
                     cmd_config_init,
                     args=[arg(["--stdin"], "从标准输入读取 key（管道用）", kind="bool")],
-                    examples=["minitv config init", 'echo "$KEY" | minitv config init --stdin'],
+                    examples=["opendrama config init", 'echo "$KEY" | opendrama config init --stdin'],
                     outputs="配置目录、profile、校验结果",
                     exits=GLOBAL_EXITS,
                     errors=[("config_invalid", "配置文件损坏，删掉后重跑 init")],
-                    next_steps=["minitv doctor"],
+                    next_steps=["opendrama doctor"],
                 ),
                 cmd(
                     "set-key",
                     "设置或替换当前 profile 的 API Key（先校验再落盘）",
-                    "minitv config set-key [--profile P] [--stdin]",
+                    "opendrama config set-key [--profile P] [--stdin]",
                     cmd_config_set_key,
                     args=[arg(["--stdin"], "从标准输入读取 key（管道用）", kind="bool")],
                     examples=[
-                        "minitv config set-key",
-                        "echo \"$KEY\" | minitv config set-key --stdin",
+                        "opendrama config set-key",
+                        "echo \"$KEY\" | opendrama config set-key --stdin",
                     ],
-                    outputs="校验得到的身份、权限、到期时间；写入 ~/.config/minitv/credentials",
+                    outputs="校验得到的身份、权限、到期时间；写入 ~/.config/opendrama/credentials",
                     exits=GLOBAL_EXITS,
                     errors=[
                         ("invalid_key", "key 无效，不会覆盖磁盘上已有的密钥"),
                         ("missing_credential", "没有读到 key（stdin 为空）"),
                     ],
-                    next_steps=["minitv doctor"],
+                    next_steps=["opendrama doctor"],
                 ),
                 cmd(
                     "show",
                     "查看当前配置（永不打印明文密钥）",
-                    "minitv config show",
+                    "opendrama config show",
                     cmd_config_show,
-                    examples=["minitv config show"],
+                    examples=["opendrama config show"],
                     outputs="profile、base_url、key 前缀与长度、文件路径",
                     exits="0 成功",
-                    next_steps=["minitv config test  在线校验身份与到期"],
+                    next_steps=["opendrama config test  在线校验身份与到期"],
                 ),
                 cmd(
                     "test",
                     "在线校验密钥：身份、权限、到期",
-                    "minitv config test",
+                    "opendrama config test",
                     cmd_config_test,
-                    examples=["minitv config test", "minitv config test --json"],
+                    examples=["opendrama config test", "opendrama config test --json"],
                     outputs="username、role、scopes、expires_at",
                     exits=GLOBAL_EXITS,
-                    next_steps=["minitv doctor  同时检查网络与服务端"],
+                    next_steps=["opendrama doctor  同时检查网络与服务端"],
                 ),
                 cmd(
                     "use",
                     "切换默认 profile",
-                    "minitv config use <profile>",
+                    "opendrama config use <profile>",
                     cmd_config_use,
                     args=[pos("profile_name", "要切换到的 profile")],
-                    examples=["minitv config use local"],
+                    examples=["opendrama config use local"],
                     outputs="新的默认 profile",
                     exits="0 成功 · 2 用法（profile 不存在）",
                 ),
                 cmd(
                     "path",
                     "打印配置文件与凭据文件的路径",
-                    "minitv config path",
+                    "opendrama config path",
                     cmd_config_path,
-                    examples=["minitv config path"],
+                    examples=["opendrama config path"],
                     outputs="两行路径",
                     exits="0 成功",
                 ),
                 cmd(
                     "rm-key",
                     "删除某个 profile 的密钥（保留其余配置）",
-                    "minitv config rm-key [--profile P]",
+                    "opendrama config rm-key [--profile P]",
                     cmd_config_rm_key,
-                    examples=["minitv config rm-key"],
+                    examples=["opendrama config rm-key"],
                     outputs="被删除的 profile",
                     exits="0 成功",
                 ),
@@ -725,9 +725,9 @@ def _build_spec():
                 cmd(
                     "whoami",
                     "打印当前密钥绑定的账号与权限",
-                    "minitv auth whoami",
+                    "opendrama auth whoami",
                     cmd_auth_whoami,
-                    examples=["minitv auth whoami"],
+                    examples=["opendrama auth whoami"],
                     outputs="username、role、scopes、expires_at",
                     exits=GLOBAL_EXITS,
                 ),
@@ -743,7 +743,7 @@ def _build_spec():
                 cmd(
                     "list",
                     "列出剧集（按更新时间倒序）",
-                    "minitv drama list [--status S] [--q 关键字] [--tag ID] [--page N] [--page-size N]",
+                    "opendrama drama list [--status S] [--q 关键字] [--tag ID] [--page N] [--page-size N]",
                     cmd_drama_list,
                     args=[
                         arg(["--status"], "按状态筛选", kind="choice",
@@ -754,36 +754,36 @@ def _build_spec():
                         arg(["--page-size"], "每页条数（最大 100）", kind="int", default=20, metavar="N"),
                     ],
                     examples=[
-                        "minitv drama list --status draft",
-                        "minitv drama list --json --fields id,title,status",
+                        "opendrama drama list --status draft",
+                        "opendrama drama list --json --fields id,title,status",
                     ],
                     outputs="id、标题、状态、集数、更新时间；最后一行为全库状态计数",
                     exits=GLOBAL_EXITS,
-                    next_steps=["minitv drama get <id>"],
+                    next_steps=["opendrama drama get <id>"],
                 ),
                 cmd(
                     "get",
                     "查看单部剧的详情（含标签、集数、播放量）",
-                    "minitv drama get <id>",
+                    "opendrama drama get <id>",
                     cmd_drama_get,
                     args=[pos("id", "剧集 id")],
-                    examples=["minitv drama get 184", "minitv drama get 184 --json"],
+                    examples=["opendrama drama get 184", "opendrama drama get 184 --json"],
                     outputs="剧的全部元数据字段 + tags",
                     exits=GLOBAL_EXITS,
-                    next_steps=["minitv episode list --drama <id>"],
+                    next_steps=["opendrama episode list --drama <id>"],
                 ),
                 cmd(
                     "create",
                     "新建一部剧（默认 draft），标题全局唯一",
-                    "minitv drama create --title <T> [--upsert]",
+                    "opendrama drama create --title <T> [--upsert]",
                     cmd_drama_create,
                     args=[
                         arg(["--title"], "剧名，1–200 字，全局唯一", required=True, metavar="T"),
                         arg(["--upsert"], "同名已存在时复用并返回已有 id", kind="bool"),
                     ],
                     examples=[
-                        'minitv drama create --title "Love in the Dark"',
-                        'minitv drama create --title "Love in the Dark" --upsert --json',
+                        'opendrama drama create --title "Love in the Dark"',
+                        'opendrama drama create --title "Love in the Dark" --upsert --json',
                     ],
                     outputs="id · title · status=draft；--upsert 命中时多一个 upserted=true",
                     exits=GLOBAL_EXITS,
@@ -791,12 +791,12 @@ def _build_spec():
                         ("title_exists", "同名剧已存在 → 加 --upsert 或改用 drama update"),
                         ("scope_denied", "密钥缺 write 权限"),
                     ],
-                    next_steps=["minitv drama update <id> --synopsis ... --tags 1,2", "minitv drama publish <id>"],
+                    next_steps=["opendrama drama update <id> --synopsis ... --tags 1,2", "opendrama drama publish <id>"],
                 ),
                 cmd(
                     "update",
                     "修改剧集元数据（只传要改的字段）",
-                    "minitv drama update <id> [--title T] [--synopsis S] [--cover-url U] [--free N] [--coin N] [--tags 1,2]",
+                    "opendrama drama update <id> [--title T] [--synopsis S] [--cover-url U] [--free N] [--coin N] [--tags 1,2]",
                     cmd_drama_update,
                     args=[
                         pos("id", "剧集 id"),
@@ -808,73 +808,73 @@ def _build_spec():
                         arg(["--tags"], "标签 id 列表，逗号分隔；传空串清空", metavar="IDS"),
                     ],
                     examples=[
-                        "minitv drama update 184 --synopsis '一句话简介' --free 3 --coin 60",
-                        "minitv drama update 184 --tags 1,15,17",
+                        "opendrama drama update 184 --synopsis '一句话简介' --free 3 --coin 60",
+                        "opendrama drama update 184 --tags 1,15,17",
                     ],
                     outputs="更新后的剧集对象",
                     exits=GLOBAL_EXITS,
                     errors=[("title_exists", "改名撞车"), ("not_found", "剧不存在")],
-                    next_steps=["minitv drama get <id>"],
+                    next_steps=["opendrama drama get <id>"],
                 ),
                 cmd(
                     "status",
                     "单步切换剧集状态（不走自动补跳）",
-                    "minitv drama status <id> --to draft|in_review|published|unpublished",
+                    "opendrama drama status <id> --to draft|in_review|published|unpublished",
                     cmd_drama_status,
                     args=[
                         pos("id", "剧集 id"),
                         arg(["--to"], "目标状态", kind="choice", required=True,
                             choices=["draft", "in_review", "published", "unpublished"], metavar="S"),
                     ],
-                    examples=["minitv drama status 184 --to in_review"],
+                    examples=["opendrama drama status 184 --to in_review"],
                     outputs="id · status",
                     exits=GLOBAL_EXITS,
                     errors=[("conflict", "状态机不允许该迁移")],
-                    next_steps=["minitv drama publish <id>  需要自动补跳时用这个"],
+                    next_steps=["opendrama drama publish <id>  需要自动补跳时用这个"],
                 ),
                 cmd(
                     "publish",
                     "上线：按状态机自动补跳直到 published",
-                    "minitv drama publish <id>",
+                    "opendrama drama publish <id>",
                     cmd_drama_publish,
                     args=[pos("id", "剧集 id")],
-                    examples=["minitv drama publish 184", "minitv drama publish 184 --dry-run"],
+                    examples=["opendrama drama publish 184", "opendrama drama publish 184 --dry-run"],
                     outputs="id · status=published · hops（走过的迁移）",
                     exits=GLOBAL_EXITS,
                     errors=[("conflict", "当前状态无法上线")],
-                    next_steps=["minitv drama get <id> --fields id,status"],
+                    next_steps=["opendrama drama get <id> --fields id,status"],
                 ),
                 cmd(
                     "unpublish",
                     "下架剧集（同时作废已签发的播放地址）",
-                    "minitv drama unpublish <id>",
+                    "opendrama drama unpublish <id>",
                     cmd_drama_unpublish,
                     args=[pos("id", "剧集 id")],
-                    examples=["minitv drama unpublish 184"],
+                    examples=["opendrama drama unpublish 184"],
                     outputs="id · status=unpublished",
                     exits=GLOBAL_EXITS,
-                    next_steps=["minitv drama publish <id>  重新上线"],
+                    next_steps=["opendrama drama publish <id>  重新上线"],
                 ),
                 cmd(
                     "tag",
                     "覆盖设置剧集的标签（全量替换）",
-                    "minitv drama tag <id> <tag_ids>",
+                    "opendrama drama tag <id> <tag_ids>",
                     cmd_drama_tag,
                     args=[pos("id", "剧集 id"), pos("tags", "逗号分隔的标签 id，如 1,15,17")],
-                    examples=["minitv drama tag 184 1,15,17"],
+                    examples=["opendrama drama tag 184 1,15,17"],
                     outputs="id · tags",
                     exits=GLOBAL_EXITS,
                     errors=[("validation_error", "标签 id 不存在")],
-                    next_steps=["minitv tag list  查可用标签"],
+                    next_steps=["opendrama tag list  查可用标签"],
                 ),
                 cmd(
                     "delete",
                     "删除剧集（不可恢复；会连带删除分集与用户权益）",
-                    "minitv drama delete <id> --confirm <id>",
+                    "opendrama drama delete <id> --confirm <id>",
                     cmd_drama_delete,
                     args=[pos("id", "剧集 id"), arg(["--confirm"], "必须等于剧集 id", required=True, metavar="ID")],
-                    examples=["minitv drama delete 184 --confirm 184 --dry-run",
-                              "minitv drama delete 184 --confirm 184"],
+                    examples=["opendrama drama delete 184 --confirm 184 --dry-run",
+                              "opendrama drama delete 184 --confirm 184"],
                     outputs="deleted · impact",
                     exits=GLOBAL_EXITS + " · 权限不足(3) · 参数不符(2)",
                     errors=[("not_found", "剧不存在")],
@@ -883,10 +883,10 @@ def _build_spec():
                 cmd(
                     "cover-set",
                     "上传封面（JPG/PNG/WebP，≤5MB）",
-                    "minitv drama cover-set <id> <file>",
+                    "opendrama drama cover-set <id> <file>",
                     cmd_drama_cover_set,
                     args=[pos("id", "剧集 id"), pos("file", "本地图片")],
-                    examples=["minitv drama cover-set 184 ./cover.jpg"],
+                    examples=["opendrama drama cover-set 184 ./cover.jpg"],
                     outputs="cover_url（带 ?v= 版本号）",
                     exits=GLOBAL_EXITS + " · 6 上传失败",
                     errors=[("validation_error", "格式或大小不符")]
@@ -894,23 +894,23 @@ def _build_spec():
                 cmd(
                     "cover-clear",
                     "清除封面",
-                    "minitv drama cover-clear <id>",
+                    "opendrama drama cover-clear <id>",
                     cmd_drama_cover_clear,
                     args=[pos("id", "剧集 id")],
-                    examples=["minitv drama cover-clear 184"],
+                    examples=["opendrama drama cover-clear 184"],
                     outputs="cover_url=""",
                     exits=GLOBAL_EXITS,
                 ),
                 cmd(
                     "schedule",
                     "设置定时上线时间（需要外部触发 apply 才生效）",
-                    "minitv drama schedule <id> --at 2026-10-25T20:00+08:00",
+                    "opendrama drama schedule <id> --at 2026-10-25T20:00+08:00",
                     cmd_drama_schedule,
                     args=[pos("id", "剧集 id"), arg(["--at"], "ISO8601 时间", required=True, metavar="AT")],
-                    examples=["minitv drama schedule 184 --at 2026-10-25T20:00+08:00"],
+                    examples=["opendrama drama schedule 184 --at 2026-10-25T20:00+08:00"],
                     outputs="id · scheduled_publish_at",
                     exits=GLOBAL_EXITS,
-                    next_steps=["minitv schedule apply  手动触发到期上架"],
+                    next_steps=["opendrama schedule apply  手动触发到期上架"],
                 ),
             ],
         }
@@ -924,7 +924,7 @@ def _build_spec():
                 cmd(
                     "list",
                     "列出某部剧的分集",
-                    "minitv episode list --drama ID [--status S] [--page N] [--page-size N]",
+                    "opendrama episode list --drama ID [--status S] [--page N] [--page-size N]",
                     cmd_episode_list,
                     args=[
                         arg(["--drama"], "剧集 id（必填）", kind="int", required=True, metavar="ID"),
@@ -935,8 +935,8 @@ def _build_spec():
                         arg(["--page-size"], "每页条数（最大 200）", kind="int", default=50, metavar="N"),
                     ],
                     examples=[
-                        "minitv episode list --drama 184",
-                        "minitv episode list --drama 184 --status in_review",
+                        "opendrama episode list --drama 184",
+                        "opendrama episode list --drama 184 --status in_review",
                     ],
                     outputs="id、集号、标题、状态、时长",
                     exits=GLOBAL_EXITS,
@@ -944,44 +944,44 @@ def _build_spec():
                 cmd(
                     "create",
                     "登记一集（空壳，尚无视频）",
-                    "minitv episode create --drama ID --number N [--title T]",
+                    "opendrama episode create --drama ID --number N [--title T]",
                     cmd_episode_create,
                     args=[
                         arg(["--drama"], "剧集 id", kind="int", required=True, metavar="ID"),
                         arg(["--number"], "集号", kind="int", required=True, metavar="N"),
                         arg(["--title"], "分集标题，缺省 Episode N", metavar="T"),
                     ],
-                    examples=["minitv episode create --drama 184 --number 1 --title '第 1 集'"],
+                    examples=["opendrama episode create --drama 184 --number 1 --title '第 1 集'"],
                     outputs="新分集对象",
                     exits=GLOBAL_EXITS,
                     errors=[("conflict", "该集号已存在")],
-                    next_steps=["minitv episode upload <id> FILE"],
+                    next_steps=["opendrama episode upload <id> FILE"],
                 ),
                 cmd(
                     "bulk",
                     "批量登记 1..N 集（已存在的跳过）",
-                    "minitv episode bulk --drama ID --count N",
+                    "opendrama episode bulk --drama ID --count N",
                     cmd_episode_bulk,
                     args=[
                         arg(["--drama"], "剧集 id", kind="int", required=True, metavar="ID"),
                         arg(["--count"], "登记到第几集", kind="int", required=True, metavar="N"),
                     ],
-                    examples=["minitv episode bulk --drama 184 --count 64"],
+                    examples=["opendrama episode bulk --drama 184 --count 64"],
                     outputs="created 列表",
                     exits=GLOBAL_EXITS,
-                    next_steps=["minitv episode list --drama <id>"],
+                    next_steps=["opendrama episode list --drama <id>"],
                 ),
                 cmd(
                     "update",
                     "修改分集标题或集号",
-                    "minitv episode update <id> [--title T] [--number N]",
+                    "opendrama episode update <id> [--title T] [--number N]",
                     cmd_episode_update,
                     args=[
                         pos("id", "分集 id"),
                         arg(["--title"], "新标题", metavar="T"),
                         arg(["--number"], "新集号", kind="int", metavar="N"),
                     ],
-                    examples=["minitv episode update 552 --title '第 12 集'"],
+                    examples=["opendrama episode update 552 --title '第 12 集'"],
                     outputs="更新后的分集对象",
                     exits=GLOBAL_EXITS,
                     errors=[("conflict", "集号重复")],
@@ -989,10 +989,10 @@ def _build_spec():
                 cmd(
                     "delete",
                     "删除空壳分集（not_uploaded / transcode_failed）",
-                    "minitv episode delete <id> --confirm <id>",
+                    "opendrama episode delete <id> --confirm <id>",
                     cmd_episode_delete,
                     args=[pos("id", "分集 id"), arg(["--confirm"], "必须等于分集 id", required=True, metavar="ID")],
-                    examples=["minitv episode delete 552 --confirm 552"],
+                    examples=["opendrama episode delete 552 --confirm 552"],
                     outputs="无（204）",
                     exits=GLOBAL_EXITS,
                     errors=[("episode_not_empty", "该集已有视频，请先下架")],
@@ -1000,65 +1000,65 @@ def _build_spec():
                 cmd(
                     "publish",
                     "发布单集",
-                    "minitv episode publish <id>",
+                    "opendrama episode publish <id>",
                     cmd_episode_publish,
                     args=[pos("id", "分集 id")],
-                    examples=["minitv episode publish 552"],
+                    examples=["opendrama episode publish 552"],
                     outputs="id · status",
                     exits=GLOBAL_EXITS,
                     errors=[("conflict", "状态机不允许（先 sync 看转码结果）")],
-                    next_steps=["minitv episode publish --drama <id> --all"],
+                    next_steps=["opendrama episode publish --drama <id> --all"],
                 ),
                 cmd(
                     "unpublish",
                     "下架单集（已签发的播放地址立即失效）",
-                    "minitv episode unpublish <id>",
+                    "opendrama episode unpublish <id>",
                     cmd_episode_unpublish,
                     args=[pos("id", "分集 id")],
-                    examples=["minitv episode unpublish 552"],
+                    examples=["opendrama episode unpublish 552"],
                     outputs="id · status",
                     exits=GLOBAL_EXITS,
                 ),
                 cmd(
                     "publish-all",
                     "批量发布某剧里所有待发布/已下架的集",
-                    "minitv episode publish-all --drama ID",
+                    "opendrama episode publish-all --drama ID",
                     cmd_episode_publish_all,
                     args=[arg(["--drama"], "剧集 id", kind="int", required=True, metavar="ID")],
-                    examples=["minitv episode publish-all --drama 184"],
+                    examples=["opendrama episode publish-all --drama 184"],
                     outputs="published / skipped 两组 id",
                     exits=GLOBAL_EXITS,
-                    next_steps=["minitv drama publish <id>"],
+                    next_steps=["opendrama drama publish <id>"],
                 ),
                 cmd(
                     "sync",
                     "手动对账转码状态",
-                    "minitv episode sync <id>",
+                    "opendrama episode sync <id>",
                     cmd_episode_sync,
                     args=[pos("id", "分集 id")],
-                    examples=["minitv episode sync 552"],
+                    examples=["opendrama episode sync 552"],
                     outputs="id · status",
                     exits=GLOBAL_EXITS,
                 ),
                 cmd(
                     "upload",
                     "上传一集的视频（TUS 直传，不过 API）",
-                    "minitv episode upload <id> <file>",
+                    "opendrama episode upload <id> <file>",
                     cmd_episode_upload,
                     args=[pos("id", "分集 id"), pos("file", "本地 .mp4 / .mov，≤200MB"),
                           arg(["--resume"], "从已上传的字节续传（签名过期后仍可用）", kind="bool")],
-                    examples=["minitv episode upload 552 ./S01E01.mp4",
-                              "minitv episode upload 552 ./S01E01.mp4 --json"],
+                    examples=["opendrama episode upload 552 ./S01E01.mp4",
+                              "opendrama episode upload 552 ./S01E01.mp4 --json"],
                     outputs="episode_id · status · seconds · size",
                     exits=GLOBAL_EXITS + " · 6 上传失败",
                     errors=[("upload_failed", "网络中断或 TUS 拒绝；重跑会新建会话"),
                             ("conflict", "该集正在上传或状态不允许")],
-                    next_steps=["minitv episode publish <id>"],
+                    next_steps=["opendrama episode publish <id>"],
                 ),
                 cmd(
                     "upload-all",
                     "把目录里的视频按自然序灌进一部剧",
-                    "minitv episode upload-all --drama ID --dir DIR [--start N] [--title-rule en|cn|none] [--publish]",
+                    "opendrama episode upload-all --drama ID --dir DIR [--start N] [--title-rule en|cn|none] [--publish]",
                     cmd_episode_upload_all,
                     args=[
                         arg(["--drama"], "剧集 id", kind="int", required=True, metavar="ID"),
@@ -1070,21 +1070,21 @@ def _build_spec():
                         arg(["--resume"], "已在上传的分集从断点续传", kind="bool"),
                     ],
                     examples=[
-                        "minitv episode upload-all --drama 184 --dir ./S01 --start 1 --publish",
-                        "minitv episode upload-all --drama 184 --dir ./S01 --json",
+                        "opendrama episode upload-all --drama 184 --dir ./S01 --start 1 --publish",
+                        "opendrama episode upload-all --drama 184 --dir ./S01 --json",
                     ],
                     outputs="uploaded / published / failed",
                     exits=GLOBAL_EXITS + " · 5 有失败项",
                     errors=[("upload_failed", "单个文件失败会继续，最后汇总")],
-                    next_steps=["minitv drama publish <id>"],
+                    next_steps=["opendrama drama publish <id>"],
                 ),
                 cmd(
                     "subtitle",
                     "上传字幕（.vtt / .srt，≤2MB）",
-                    "minitv episode subtitle <id> <file>",
+                    "opendrama episode subtitle <id> <file>",
                     cmd_episode_subtitle,
                     args=[pos("id", "分集 id"), pos("file", "本地字幕文件")],
-                    examples=["minitv episode subtitle 552 ./ep12.vtt"],
+                    examples=["opendrama episode subtitle 552 ./ep12.vtt"],
                     outputs="subtitle_url（存储相对路径）",
                     exits=GLOBAL_EXITS + " · 6 上传失败",
                     errors=[("validation_error", "格式或大小不符")],
@@ -1101,16 +1101,16 @@ def _build_spec():
                 cmd(
                     "list",
                     "列出全部标签及其剧集数",
-                    "minitv tag list",
+                    "opendrama tag list",
                     cmd_tag_list,
-                    examples=["minitv tag list"],
+                    examples=["opendrama tag list"],
                     outputs="id、name_en、name_zh、category、status、drama_count",
                     exits=GLOBAL_EXITS,
                 ),
                 cmd(
                     "create",
                     "新建标签",
-                    "minitv tag create --name-en Name [--name-zh 中文] [--category main|sub]",
+                    "opendrama tag create --name-en Name [--name-zh 中文] [--category main|sub]",
                     cmd_tag_create,
                     args=[
                         arg(["--name-en"], "英文名，全局唯一", required=True, metavar="NAME"),
@@ -1118,16 +1118,16 @@ def _build_spec():
                         arg(["--category"], "分类", kind="choice", choices=["main", "sub"], default="main"),
                         arg(["--status"], "状态", kind="choice", choices=["enabled", "disabled"], default="enabled"),
                     ],
-                    examples=["minitv tag create --name-en Werewolf --name-zh 狼人 --category sub"],
+                    examples=["opendrama tag create --name-en Werewolf --name-zh 狼人 --category sub"],
                     outputs="新标签对象",
                     exits=GLOBAL_EXITS,
                     errors=[("conflict", "name_en 已存在")],
-                    next_steps=["minitv drama tag <id> <tag_ids>"],
+                    next_steps=["opendrama drama tag <id> <tag_ids>"],
                 ),
                 cmd(
                     "update",
                     "修改标签",
-                    "minitv tag update <id> [--name-en N] [--name-zh N] [--category C] [--status S]",
+                    "opendrama tag update <id> [--name-en N] [--name-zh N] [--category C] [--status S]",
                     cmd_tag_update,
                     args=[
                         pos("id", "标签 id"),
@@ -1136,17 +1136,17 @@ def _build_spec():
                         arg(["--category"], "分类", kind="choice", choices=["main", "sub"]),
                         arg(["--status"], "状态", kind="choice", choices=["enabled", "disabled"]),
                     ],
-                    examples=["minitv tag update 12 --status disabled"],
+                    examples=["opendrama tag update 12 --status disabled"],
                     outputs="更新后的标签对象",
                     exits=GLOBAL_EXITS,
                 ),
                 cmd(
                     "delete",
                     "删除标签（仍被剧集引用时会 409 并列出引用）",
-                    "minitv tag delete <id> --confirm <id>",
+                    "opendrama tag delete <id> --confirm <id>",
                     cmd_tag_delete,
                     args=[pos("id", "标签 id"), arg(["--confirm"], "必须等于标签 id", required=True, metavar="ID")],
-                    examples=["minitv tag delete 12 --confirm 12"],
+                    examples=["opendrama tag delete 12 --confirm 12"],
                     outputs="deleted",
                     exits=GLOBAL_EXITS,
                     errors=[("conflict", "标签仍被剧集使用")],
@@ -1163,39 +1163,39 @@ def _build_spec():
                 cmd(
                     "list",
                     "列出首页分组",
-                    "minitv group list",
+                    "opendrama group list",
                     cmd_group_list,
-                    examples=["minitv group list"],
+                    examples=["opendrama group list"],
                     outputs="id、名称、位置、样式、状态、剧集数",
                     exits=GLOBAL_EXITS,
                 ),
                 cmd(
                     "dramas",
                     "列出某个分组里的剧",
-                    "minitv group dramas <id>",
+                    "opendrama group dramas <id>",
                     cmd_group_dramas,
                     args=[pos("id", "分组 id")],
-                    examples=["minitv group dramas 12"],
+                    examples=["opendrama group dramas 12"],
                     outputs="组内剧集列表",
                     exits=GLOBAL_EXITS,
                 ),
                 cmd(
                     "create",
                     "新建首页分组（楼层）",
-                    "minitv group create --name NAME [--position N]",
+                    "opendrama group create --name NAME [--position N]",
                     cmd_group_create,
                     args=[
                         arg(["--name"], "分组名", required=True, metavar="NAME"),
                         arg(["--position"], "排序位置，默认 0", kind="int", default=0, metavar="N"),
                     ],
-                    examples=['minitv group create --name "New Releases" --position 4'],
+                    examples=['opendrama group create --name "New Releases" --position 4'],
                     outputs="id",
                     exits=GLOBAL_EXITS,
                 ),
                 cmd(
                     "update",
                     "改分组名 / 排序 / 样式 / 角标 / 上下线",
-                    "minitv group update <id> [--name N] [--position N] [--style S] [--badge B] [--status S]",
+                    "opendrama group update <id> [--name N] [--position N] [--style S] [--badge B] [--status S]",
                     cmd_group_update,
                     args=[
                         pos("id", "分组 id"),
@@ -1206,18 +1206,18 @@ def _build_spec():
                         arg(["--badge"], "角标样式", kind="choice", choices=["rank", "label"], metavar="B"),
                         arg(["--status"], "状态", kind="choice", choices=["active", "inactive"], metavar="S"),
                     ],
-                    examples=["minitv group update 4 --style grid2 --position 1"],
+                    examples=["opendrama group update 4 --style grid2 --position 1"],
                     outputs="更新后的分组对象",
                     exits=GLOBAL_EXITS,
                 ),
                 cmd(
                     "add",
                     "把剧加进分组（不带 --confirm 只返回容量预览）",
-                    "minitv group add <id> <drama_id> [--confirm]",
+                    "opendrama group add <id> <drama_id> [--confirm]",
                     cmd_group_add,
                     args=[pos("id", "分组 id"), pos("drama", "剧集 id"),
                           arg(["--confirm"], "真正写入", kind="bool")],
-                    examples=["minitv group add 4 184", "minitv group add 4 184 --confirm"],
+                    examples=["opendrama group add 4 184", "opendrama group add 4 184 --confirm"],
                     outputs="written / selected / limit / already_in_group",
                     exits=GLOBAL_EXITS,
                     errors=[("conflict", "分组已满（上限 100）")],
@@ -1225,10 +1225,10 @@ def _build_spec():
                 cmd(
                     "remove",
                     "把剧移出分组",
-                    "minitv group remove <id> <drama_id>",
+                    "opendrama group remove <id> <drama_id>",
                     cmd_group_remove,
                     args=[pos("id", "分组 id"), pos("drama", "剧集 id")],
-                    examples=["minitv group remove 4 184"],
+                    examples=["opendrama group remove 4 184"],
                     outputs="removed",
                     exits=GLOBAL_EXITS,
                     errors=[("not_found", "该剧不在此分组")],
@@ -1236,11 +1236,11 @@ def _build_spec():
                 cmd(
                     "move",
                     "调整组内位置",
-                    "minitv group move <id> <drama_id> --position N",
+                    "opendrama group move <id> <drama_id> --position N",
                     cmd_group_move,
                     args=[pos("id", "分组 id"), pos("drama", "剧集 id"),
                           arg(["--position"], "组内位置", kind="int", required=True, metavar="N")],
-                    examples=["minitv group move 4 184 --position 0"],
+                    examples=["opendrama group move 4 184 --position 0"],
                     outputs="position_in_group",
                     exits=GLOBAL_EXITS,
                 ),
@@ -1256,7 +1256,7 @@ def _build_spec():
                 cmd(
                     "dramas",
                     "导出全部剧集为 JSON",
-                    "minitv export dramas [--status S] [--out FILE]",
+                    "opendrama export dramas [--status S] [--out FILE]",
                     cmd_export_dramas,
                     args=[
                         arg(["--status"], "只要某个状态", kind="choice",
@@ -1264,8 +1264,8 @@ def _build_spec():
                         arg(["--out"], "写入文件；省略则打到 stdout", metavar="FILE"),
                     ],
                     examples=[
-                        "minitv export dramas --out dramas.json",
-                        "minitv export dramas --status published --json",
+                        "opendrama export dramas --out dramas.json",
+                        "opendrama export dramas --status published --json",
                     ],
                     outputs='{"exported_at","count","items"}',
                     exits=GLOBAL_EXITS,
@@ -1281,14 +1281,14 @@ def _build_spec():
             "commands": [
                 cmd(
                     "version",
-                    "显示当前安装的 minitv 版本",
-                    "minitv version",
+                    "显示当前安装的 opendrama 版本",
+                    "opendrama version",
                     cmd_version,
-                    examples=["minitv version", "minitv version --json"],
+                    examples=["opendrama version", "opendrama version --json"],
                     outputs="语义化版本号，如 0.1.1",
                     exits="0 成功",
                     with_globals=False,
-                    next_steps=["minitv --help  查看全部命令"],
+                    next_steps=["opendrama --help  查看全部命令"],
                 ),
             ],
         }
@@ -1302,9 +1302,9 @@ def _build_spec():
                 cmd(
                     "apply",
                     "把已到期的定时排期推上线（后台没有 cron，需要外部触发）",
-                    "minitv schedule apply",
+                    "opendrama schedule apply",
                     cmd_schedule_apply,
-                    examples=["minitv schedule apply"],
+                    examples=["opendrama schedule apply"],
                     outputs="published（本次上线数量）",
                     exits=GLOBAL_EXITS,
                 ),
@@ -1320,9 +1320,9 @@ def _build_spec():
                 cmd(
                     "doctor",
                     "一次性检查网络、密钥、权限与服务端",
-                    "minitv doctor",
+                    "opendrama doctor",
                     cmd_doctor,
-                    examples=["minitv doctor", "minitv doctor --json"],
+                    examples=["opendrama doctor", "opendrama doctor --json"],
                     outputs="五项检查结果；有问题时给出下一步",
                     exits=GLOBAL_EXITS,
                 ),
@@ -1337,34 +1337,34 @@ def _build_spec():
                 cmd(
                     "drama-list",
                     "列出我名下的剧集",
-                    "minitv partner drama-list [--status S]",
+                    "opendrama partner drama-list [--status S]",
                     cmd_partner_drama_list,
                     args=[arg(["--status"], "按状态筛选", metavar="S")],
-                    examples=["minitv partner drama-list", "minitv partner drama-list --status draft"],
+                    examples=["opendrama partner drama-list", "opendrama partner drama-list --status draft"],
                     outputs="items[]：id、标题、状态、审核状态、集数、免费集数",
                     exits=GLOBAL_EXITS,
                 ),
                 cmd(
                     "drama-get",
                     "查看我的剧集详情（含分集与审核结果）",
-                    "minitv partner drama-get <id>",
+                    "opendrama partner drama-get <id>",
                     cmd_partner_drama_get,
                     args=[pos("id", "剧集 id")],
-                    examples=["minitv partner drama-get 301"],
+                    examples=["opendrama partner drama-get 301"],
                     outputs="剧集字段 + episodes[] + tag_ids",
                     exits=GLOBAL_EXITS,
                 ),
                 cmd(
                     "drama-create",
                     "新建剧集（草稿，免费集数默认 5）",
-                    "minitv partner drama-create --title T [--synopsis S] [--free N]",
+                    "opendrama partner drama-create --title T [--synopsis S] [--free N]",
                     cmd_partner_drama_create,
                     args=[
                         arg(["--title"], "剧名（同一供应商内唯一）", required=True, metavar="T"),
                         arg(["--synopsis"], "简介", metavar="S"),
                         arg(["--free"], "免费集数，默认 5", kind="int", metavar="N"),
                     ],
-                    examples=['minitv partner drama-create --title "我的剧"'],
+                    examples=['opendrama partner drama-create --title "我的剧"'],
                     outputs="新剧的 id、status=draft、review_state=none",
                     exits=GLOBAL_EXITS,
                     errors=[("title_exists", "你已有同名剧")],
@@ -1372,7 +1372,7 @@ def _build_spec():
                 cmd(
                     "drama-update",
                     "修改草稿剧集（只传要改的字段）",
-                    "minitv partner drama-update <id> [--title T] [--synopsis S] [--free N] [--tags 1,2]",
+                    "opendrama partner drama-update <id> [--title T] [--synopsis S] [--free N] [--tags 1,2]",
                     cmd_partner_drama_update,
                     args=[
                         pos("id", "剧集 id"),
@@ -1381,7 +1381,7 @@ def _build_spec():
                         arg(["--free"], "免费集数", kind="int", metavar="N"),
                         arg(["--tags"], "标签 id，逗号分隔", metavar="LIST"),
                     ],
-                    examples=['minitv partner drama-update 301 --synopsis "..." --free 6'],
+                    examples=['opendrama partner drama-update 301 --synopsis "..." --free 6'],
                     outputs="更新后的剧集对象",
                     exits=GLOBAL_EXITS,
                     errors=[("drama_locked", "非草稿不可编辑"), ("title_exists", "同名剧")],
@@ -1389,10 +1389,10 @@ def _build_spec():
                 cmd(
                     "drama-submit",
                     "提交审核（封面、简介、转码、免费集数四项校验）",
-                    "minitv partner drama-submit <id>",
+                    "opendrama partner drama-submit <id>",
                     cmd_partner_drama_submit,
                     args=[pos("id", "剧集 id")],
-                    examples=["minitv partner drama-submit 301"],
+                    examples=["opendrama partner drama-submit 301"],
                     outputs="review_state=pending + submitted_at",
                     exits=GLOBAL_EXITS,
                     errors=[
@@ -1405,38 +1405,38 @@ def _build_spec():
                 cmd(
                     "episode-add",
                     "为草稿剧集新增一集",
-                    "minitv partner episode-add <drama_id> [--number N] [--title T]",
+                    "opendrama partner episode-add <drama_id> [--number N] [--title T]",
                     cmd_partner_episode_add,
                     args=[
                         pos("drama", "剧集 id"),
                         arg(["--number"], "集号，默认自动 +1", kind="int", metavar="N"),
                         arg(["--title"], "分集标题", metavar="T"),
                     ],
-                    examples=["minitv partner episode-add 301"],
+                    examples=["opendrama partner episode-add 301"],
                     outputs="id、episode_number、status=not_uploaded",
                     exits=GLOBAL_EXITS,
                 ),
                 cmd(
                     "episode-list",
                     "列出一部剧的分集",
-                    "minitv partner episode-list <drama_id>",
+                    "opendrama partner episode-list <drama_id>",
                     cmd_partner_episode_list,
                     args=[pos("drama", "剧集 id")],
-                    examples=["minitv partner episode-list 301"],
+                    examples=["opendrama partner episode-list 301"],
                     outputs="items[]：id、集号、标题、状态",
                     exits=GLOBAL_EXITS,
                 ),
                 cmd(
                     "episode-upload",
                     "上传分集视频（TUS，可断点续传）",
-                    "minitv partner episode-upload <id> <file> [--resume]",
+                    "opendrama partner episode-upload <id> <file> [--resume]",
                     cmd_partner_episode_upload,
                     args=[
                         pos("id", "分集 id"),
                         pos("file", "本地视频文件（≤200MB，MP4/MOV）"),
                         arg(["--resume"], "从断点续传", kind="bool"),
                     ],
-                    examples=["minitv partner episode-upload 9001 ./ep1.mp4 --resume"],
+                    examples=["opendrama partner episode-upload 9001 ./ep1.mp4 --resume"],
                     outputs="status、size、resumed",
                     exits=GLOBAL_EXITS,
                     errors=[("scope_denied", "密钥缺 upload 或 write 权限")],
@@ -1444,19 +1444,19 @@ def _build_spec():
                 cmd(
                     "episode-status",
                     "查看分集上传 / 转码状态",
-                    "minitv partner episode-status <id>",
+                    "opendrama partner episode-status <id>",
                     cmd_partner_episode_status,
                     args=[pos("id", "分集 id")],
-                    examples=["minitv partner episode-status 9001"],
+                    examples=["opendrama partner episode-status 9001"],
                     outputs="status、size_bytes、duration_seconds、upload_status",
                     exits=GLOBAL_EXITS,
                 ),
                 cmd(
                     "keys-list",
                     "列出我的 API 密钥（新建/轮换请到网页端）",
-                    "minitv partner keys-list",
+                    "opendrama partner keys-list",
                     cmd_partner_keys_list,
-                    examples=["minitv partner keys-list"],
+                    examples=["opendrama partner keys-list"],
                     outputs="items[]：id、名称、前缀、scopes、状态、到期",
                     exits=GLOBAL_EXITS,
                 ),
@@ -1826,7 +1826,7 @@ def cmd_episode_upload_all(args):
 
 
 def _multipart(filename: str, content: bytes, content_type: str, field: str = "file"):
-    boundary = "----minitv" + secrets.token_hex(12)
+    boundary = "----opendrama" + secrets.token_hex(12)
     head = (
         f"--{boundary}\r\n"
         f'Content-Disposition: form-data; name="{field}"; filename="{filename}"\r\n'
@@ -2059,7 +2059,7 @@ def _find(group_name, cmd_name=None):
 
 def render_top_help():
     lines = [
-        f"minitv {VERSION} — OpenDrama 剧集管理 CLI",
+        f"opendrama {VERSION} — OpenDrama 剧集管理 CLI",
         "",
         "开始",
         "  config set-key          配置 API Key（首次）",
@@ -2094,7 +2094,7 @@ def render_group_help(group):
     width = max(_width(entry["name"]) for entry in group["commands"]) + 2
     for entry in group["commands"]:
         lines.append(f"  {_pad(entry['name'], width)}{entry['summary']}")
-    lines += ["", f"用法：minitv {group['name']} <command> [--help]"]
+    lines += ["", f"用法：opendrama {group['name']} <command> [--help]"]
     print("\n".join(lines))
     return EXIT_OK
 
@@ -2102,7 +2102,7 @@ def render_group_help(group):
 def render_command_help(group, entry):
     path = group["name"] if group["name"] == entry["name"] else f"{group['name']} {entry['name']}"
     lines = [
-        f"minitv {path} — {entry['summary']}",
+        f"opendrama {path} — {entry['summary']}",
         "",
         "用途",
         f"  {entry['summary']}",
@@ -2187,8 +2187,8 @@ TOPICS = {
         "  key 前缀   mk_live_<8 hex>_<43 字符>",
         "  绑定       某个 staff 账号；权限 = min(账号角色, scopes)",
         "  scopes     read / write / delete / billing / staff",
-        "  存储       ~/.config/minitv/credentials（0600）",
-        "  环境变量   MINITV_API_KEY 优先，适合容器与沙箱",
+        "  存储       ~/.config/opendrama/credentials（0600）",
+        "  环境变量   OPENDRAMA_API_KEY 优先，适合容器与沙箱",
         "",
         "  不提供 --key 参数：密钥走 stdout/交互输入，避免进入 shell 历史与进程列表。",
     ],
@@ -2253,20 +2253,20 @@ def catalog():
 
 def render_guide():
     lines = [
-        f"# minitv {VERSION} — OpenDrama 剧集管理 CLI",
+        f"# opendrama {VERSION} — OpenDrama 剧集管理 CLI",
         "",
         "单文件、零依赖（Python >= 3.8）。TTY 输出表格，非 TTY 输出 JSON。",
         "",
         "## 快速开始",
         "",
         "```bash",
-        "minitv version    # 当前版本",
+        "opendrama version    # 当前版本",
         "```",
         "",
         "```bash",
-        "curl -fsSL https://YOUR_INSTANCE/cli/install.sh | MINITV_CLI_BASE=https://YOUR_INSTANCE/cli MINITV_API_BASE=https://YOUR_INSTANCE sh",
-        "minitv config set-key",
-        "minitv doctor",
+        "curl -fsSL https://YOUR_INSTANCE/cli/install.sh | OPENDRAMA_CLI_BASE=https://YOUR_INSTANCE/cli OPENDRAMA_API_BASE=https://YOUR_INSTANCE sh",
+        "opendrama config set-key",
+        "opendrama doctor",
         "```",
         "",
         "## 命令",
@@ -2395,7 +2395,7 @@ def cmd_config_set_key(args):
     )
     for note in payload["warnings"]:
         print(f"[提醒] {note}")
-    print("下一步  minitv doctor")
+    print("下一步  opendrama doctor")
     return EXIT_OK
 
 
@@ -2624,7 +2624,7 @@ def cmd_doctor(args):
         return EXIT_NETWORK if exc.exit_code == EXIT_NETWORK else exc.exit_code
 
     if not settings.api_key:
-        record("凭证", False, "没有配置 API Key", "运行 minitv config set-key")
+        record("凭证", False, "没有配置 API Key", "运行 opendrama config set-key")
         _print_doctor(args, settings, results)
         return EXIT_AUTH
 
@@ -2663,7 +2663,7 @@ def _print_doctor(args, settings, results, warnings=()):
             )
         )
         return
-    print(f"minitv {VERSION}")
+    print(f"opendrama {VERSION}")
     for item in results:
         mark = "[ok]" if item["ok"] else "[!!]"
         print(f"{mark:<5}{item['name']:<6}{item['detail']}")
@@ -2808,7 +2808,7 @@ SPEC = _build_spec()
 def build_parser():
     parents = argparse.ArgumentParser(add_help=False)
     # SUPPRESS: a subparser must not reset a global flag given before the
-    # subcommand (`minitv --json drama list`).
+    # subcommand (`opendrama --json drama list`).
     parents.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="结构化输出")
     parents.add_argument("--quiet", action="store_true", default=argparse.SUPPRESS, help="只输出 id")
     parents.add_argument("--fields", default=argparse.SUPPRESS, help="裁剪字段")
@@ -2818,13 +2818,13 @@ def build_parser():
     parents.add_argument("--dry-run", action="store_true", default=argparse.SUPPRESS,
                          help="只打印将要发送的请求，不执行")
 
-    parser = argparse.ArgumentParser(prog="minitv", add_help=False, parents=[parents])
+    parser = argparse.ArgumentParser(prog="opendrama", add_help=False, parents=[parents])
     subparsers = parser.add_subparsers(dest="group")
 
     for group in SPEC:
         group_parser = subparsers.add_parser(group["name"], add_help=False, parents=[parents])
         if len(group["commands"]) == 1 and group["commands"][0]["name"] == group["name"]:
-            # `minitv doctor` / `minitv version` have no subcommand.
+            # `opendrama doctor` / `opendrama version` have no subcommand.
             group_parser.set_defaults(func=group["commands"][0]["fn"])
             continue
         command_parsers = group_parser.add_subparsers(dest="command")

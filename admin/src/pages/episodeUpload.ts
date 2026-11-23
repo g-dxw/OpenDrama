@@ -60,7 +60,7 @@ export function directUpload(
   const token = getToken();
   if (base.origin === window.location.origin && token) {
     headers.Authorization = `Bearer ${token}`;
-    headers["X-JJTV-Tenant"] = getCurrentTenantId();
+    headers["X-OpenDrama-Tenant"] = getCurrentTenantId();
   }
   // Bunny answers the POST with a root-relative Location ("/tusupload/<id>");
   // it must be resolved against Bunny's origin, not the admin page.

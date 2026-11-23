@@ -6,5 +6,5 @@ export function getCurrentTenantId(): string { return boundTenantId; }
 export function setCurrentTenantId(id: string): void { boundTenantId = id; }
 export function tenantHeaders(path: string): Record<string, string> {
   if (!['tenant','support'].includes(CURRENT_ENTRY.kind) || /\/auth\//.test(path) || path.endsWith('/context')) return {};
-  return boundTenantId ? { 'X-JJTV-Tenant': boundTenantId } : {};
+  return boundTenantId ? { 'X-OpenDrama-Tenant': boundTenantId } : {};
 }

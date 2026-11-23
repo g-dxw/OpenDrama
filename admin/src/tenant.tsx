@@ -5,7 +5,7 @@ export type Tenant = {
   code?: string;
   version?: number;
   name: string;
-  kind: "native" | "india_legacy";
+  kind: "native";
   status: "active" | "paused";
   role?: string;
   own_role?: string;

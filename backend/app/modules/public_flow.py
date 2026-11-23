@@ -411,17 +411,6 @@ def plans(db: Session = Depends(get_db)):
     return {"items": billing.list_current_plans(db), "billing_mode": billing.billing_mode(db)}
 
 
-@router.post("/billing/webhook")
-async def webhook(request: Request, db: Session = Depends(get_db)):
-    body = await request.body()
-    signature = request.headers.get("X-Pay-Signature", "")
-    try:
-        payload = json.loads(body)
-        return billing.apply_webhook(db, body=body, signature=signature, payload=payload)
-    except BillingError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
-
-
 @router.post("/billing/cancel")
 def cancel(user: User = Depends(_require_user), db: Session = Depends(get_db)):
     try:

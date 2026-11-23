@@ -18,7 +18,6 @@ branch_labels = None
 depends_on = None
 
 CONTENT = frozenset({'dramas.view','dramas.edit','dramas.upload','dramas.publish','dramas.delete','dramas.pricing','episodes.delete','reviews.view','reviews.decide','tags.view','tags.manage','groups.view','groups.manage'})
-INDIA = frozenset({'dramas.view','dramas.edit','dramas.upload','dramas.publish','dramas.pricing','reviews.view','reviews.decide'})
 GLOBAL = frozenset({'dashboard.view','users.view','users.manage','home_ops.view','home_ops.manage','rewards.view','rewards.manage','comments.view','comments.manage','moderation.view','moderation.manage','finance.view','settlements.view','settlements.manage','plans.view','plans.manage','staff.view','staff.manage','api_keys.view','api_keys.manage','suppliers.view','suppliers.manage'})
 OLD_READ = frozenset(key for key in GLOBAL if key.endswith('.view')) - {'staff.view','api_keys.view','settlements.view'}
 OLD_OPS = frozenset({'dashboard.view','home_ops.view','home_ops.manage','rewards.view','rewards.manage','comments.view','comments.manage','moderation.view'})
@@ -37,7 +36,7 @@ def unknown_password_hash():
     return 'pbkdf2_sha256$120000$'+salt+'$'+digest.hex()
 
 def old_capabilities(tenant):
-    return INDIA if tenant['kind'] == 'india_legacy' else CONTENT | GLOBAL if tenant['id'] == 'jjtv' else CONTENT
+    return CONTENT | GLOBAL
 
 def business_capabilities(tenant):
     return set(old_capabilities(tenant)) - OLD_IAM
@@ -62,7 +61,7 @@ def audit_mapping(bind, tenant_id, new_id, old_id, old_role_id, new_role_id):
 def upgrade():
     bind = op.get_bind()
     # Freeze the authorization graph before taking the effective-grant snapshot.
-    bind.execute(sa.text('LOCK TABLE tenants,admin_users,tenant_roles,tenant_members,admin_api_keys,audit_logs,india_connections IN ACCESS EXCLUSIVE MODE'))
+    bind.execute(sa.text('LOCK TABLE tenants,admin_users,tenant_roles,tenant_members,admin_api_keys,audit_logs IN ACCESS EXCLUSIVE MODE'))
     tenants = {row['id']:dict(row) for row in bind.execute(sa.text('SELECT id,name,kind FROM tenants')).mappings()}
     if 'jjtv' not in tenants: raise RuntimeError('The existing JJTV business tenant is required for an explicit legacy binding')
     users = {row['id']:dict(row) for row in bind.execute(sa.text('SELECT id,username,password_hash,display_name,role,status,supplier_id FROM admin_users')).mappings()}
@@ -127,7 +126,7 @@ def upgrade():
     op.create_index('uq_tenant_domains_hostname_lower','tenant_domains',[sa.text('lower(hostname)')],unique=True)
 
     for tenant in tenants.values():
-        modules = ['dramas','reviews'] if tenant['kind'] == 'india_legacy' else ['dramas','reviews','tags','groups']
+        modules = ['dramas','reviews','tags','groups']
         if tenant['id'] == 'jjtv': modules += list(LEGACY_MODULES)
         for module in modules:
             bind.execute(sa.text('INSERT INTO tenant_modules(tenant_id,module_key,enabled) VALUES (:tenant,:module,true)'),dict(tenant=tenant['id'],module=module))
@@ -140,7 +139,6 @@ def upgrade():
         new_keys = set(role['permissions']) & business_capabilities(tenants[role['tenant_id']])
         bind.execute(sa.text('UPDATE tenant_roles SET permissions=CAST(:keys AS jsonb) WHERE id=:id'),dict(keys=json.dumps(sorted(new_keys)),id=role['id']))
         role['new_permissions'] = new_keys
-    bind.execute(sa.text('DELETE FROM india_connections'))
     bind.execute(sa.text('DELETE FROM tenant_members'))
     compatibility_roles = {}
     for member, keys in member_snapshots:

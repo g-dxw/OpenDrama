@@ -1,11 +1,11 @@
 """Native content ownership. Public requests always use the default tenant."""
 from __future__ import annotations
 from fastapi import HTTPException
-from sqlalchemy import event, inspect, select
+from sqlalchemy import event
 from sqlalchemy.orm import Session, with_loader_criteria
 from app.modules.common.models import AuditLog
 from app.modules.content.models import Drama, Episode, EpisodeSubtitle, Tag, HomeGroup, DramaTag, DramaHomeGroup, MediaUpload
-from app.modules.tenancy.models import LegacyBusinessBinding
+from app.modules.tenancy.models import TenantModule
 from app.modules.ops.config_models import ChannelTab, Banner
 
 @event.listens_for(Session, "do_orm_execute")
@@ -67,12 +67,9 @@ def scope_writes(session, flush_context, instances):
                 if record.actor_type=='admin':
                     record.actor_id=context['actor_id']
                     record.actor_scope=context['actor_scope']
-                elif record.actor_scope in (None,'legacy'):
-                    record.actor_scope=record.actor_type
             elif record.actor_scope != "platform":
                 if record.tenant_id is None: record.tenant_id=tenant
                 record.payload.setdefault("tenant_id", record.tenant_id)
-            if record.actor_scope in (None, "legacy"): record.actor_scope=session.info.get("actor_scope", "tenant")
         if isinstance(record, (Drama, Tag, HomeGroup, ChannelTab, Banner)):
             if record in session.new and not record.tenant_id:
                 record.tenant_id = tenant
@@ -82,8 +79,6 @@ def scope_writes(session, flush_context, instances):
                 refuse()
             if isinstance(record, Banner) and record.drama_id is not None and not owns(Drama, record.drama_id):
                 refuse()
-            if isinstance(record, Drama) and record.supplier_id is not None and not session.scalar(select(LegacyBusinessBinding.module_key).where(LegacyBusinessBinding.module_key=='suppliers',LegacyBusinessBinding.tenant_id==tenant)):
-                raise HTTPException(400, detail="上剧方配置仅属于 JJTV 自营")
         elif isinstance(record, Episode):
             if not owns(Drama, record.drama_id): refuse()
         elif isinstance(record, (MediaUpload, EpisodeSubtitle)):
@@ -96,7 +91,7 @@ def scope_writes(session, flush_context, instances):
 
 @event.listens_for(Session, 'before_commit')
 def audit_business_transaction(session):
-    """Record committed tenant commands even when a legacy handler has no audit."""
+    """Record committed tenant commands with audit context."""
     context=session.info.get('tenant_audit_context')
     if not context or session.in_nested_transaction() or session.info.get('_tenant_audit_added'):
         return

@@ -79,7 +79,7 @@ def test_host_is_authority_and_unknown_host_never_falls_back(sites):
         assert response.json()["tenant"]["id"] == code
     assert client.get("/v1/site/bootstrap", headers={"Host": "unknown.example.test"}).status_code == 404
     assert client.get("/v1/site/bootstrap", headers={"Host": "unknown.example.test", "X-Forwarded-Host": "alpha.example.test"}).status_code == 404
-    response = client.get("/v1/site/bootstrap", headers={"Host": "alpha.example.test", "X-JJTV-Tenant": "bravo"})
+    response = client.get("/v1/site/bootstrap", headers={"Host": "alpha.example.test", "X-OpenDrama-Tenant": "bravo"})
     assert response.json()["tenant"]["id"] == "alpha"
 
 
@@ -117,7 +117,6 @@ def test_site_admin_only_and_safe_brand_values(sites, make):
 
 
 def test_fresh_selfhost_console_hides_only_unused_compatibility_realms(session, make, monkeypatch):
-    monkeypatch.setenv("MINITV_DISTRIBUTION", "selfhost")
     client = TestClient(app)
     platform = headers(make.platform_admin())
     assert client.get("/platform/v1/tenants", headers=platform).json() == []

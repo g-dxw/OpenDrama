@@ -32,9 +32,9 @@
 
 | 文件 | 内容 |
 |---|---|
-| `cli/minitv` | 单文件、纯标准库（argparse + urllib + json + getpass）的 CLI 本体，带 shebang，可直接执行 |
-| `cli/install.sh` | 下载安装 + 可选写 key + 自检的引导脚本（发布到 `https://jjtv.8jj.net/cli/install.sh`） |
-| `docs/cli-reference.md` | **由 `minitv guide` 生成**后提交入库：命令表、参数、示例、错误码、典型流程（给 Agent 读） |
+| `cli/opendrama` | 单文件、纯标准库（argparse + urllib + json + getpass）的 CLI 本体，带 shebang，可直接执行 |
+| `cli/install.sh` | 下载安装 + 可选写 key + 自检的引导脚本（发布到 `https://app.example.com/cli/install.sh`） |
+| `docs/cli-reference.md` | **由 `opendrama guide` 生成**后提交入库：命令表、参数、示例、错误码、典型流程（给 Agent 读） |
 | `admin/src/pages/ApiKeys.tsx` | 密钥页新增「接入 Agent」入口 + 签发弹窗里的一键命令（见 §3.7） |
 
 单文件的取舍：37 个命令约 1500–1900 行，仍可读；换来「丢进任何有 python3 的沙箱就能跑」，不用装包、不用 venv。超过 2000 行再拆包。
@@ -51,9 +51,9 @@ SPEC = [
         Cmd("list", "列出剧集",
             args=[Arg("--status", choices=[...], help="按状态筛选"),
                   Arg("--q", help="标题关键字（只匹配标题）")],
-            examples=["minitv drama list --status draft",
-                      "minitv drama list --json --fields id,title"],
-            next="minitv drama get <id>  查看单部详情"),
+            examples=["opendrama drama list --status draft",
+                      "opendrama drama list --json --fields id,title"],
+            next="opendrama drama get <id>  查看单部详情"),
         ...
     ]),
 ]
@@ -70,18 +70,18 @@ Client  →  request() / paginate() / upload()
 
 | 入口 | 内容 | 典型用法 |
 |---|---|---|
-| `minitv --help` | 30 秒上手：能干什么、能力地图、去哪读更多 | Agent 被丢进来第一件事 |
-| `minitv <group> --help` | 该组每个子命令一行说明 | 缩小范围 |
-| `minitv <group> <cmd> --help` | 完整规格（见下） | 真正执行前 |
-| `minitv help errors` / `output` / `auth` / `upload` | 专题说明 | 排错 |
-| `minitv guide [--format md\|json]` | 完整手册打到 stdout | `minitv guide > context.md` 喂给模型 |
-| `minitv help --json` | 机器可读目录：name / summary / args / examples / exits | Agent 自己发现能力 |
+| `opendrama --help` | 30 秒上手：能干什么、能力地图、去哪读更多 | Agent 被丢进来第一件事 |
+| `opendrama <group> --help` | 该组每个子命令一行说明 | 缩小范围 |
+| `opendrama <group> <cmd> --help` | 完整规格（见下） | 真正执行前 |
+| `opendrama help errors` / `output` / `auth` / `upload` | 专题说明 | 排错 |
+| `opendrama guide [--format md\|json]` | 完整手册打到 stdout | `opendrama guide > context.md` 喂给模型 |
+| `opendrama help --json` | 机器可读目录：name / summary / args / examples / exits | Agent 自己发现能力 |
 
 **单条命令 help 的固定 8 段**（顺序不许变，Agent 可稳定解析）：
 
 ```
 用途    一句话说明这条命令做什么
-用法    minitv drama create --title T [--upsert]
+用法    opendrama drama create --title T [--upsert]
 参数    每个参数一行：名称、是否必填、默认值、说明
 示例    至少 2 条：一条人类可读、一条 --json（可直接复制）
 输出    成功时返回哪些字段；表格模式显示哪几列
@@ -92,19 +92,19 @@ Client  →  request() / paginate() / upload()
 
 四条硬性要求：
 
-1. **help 不发网络请求、不需要 key、配置损坏也能看**（`minitv --help` 必须在首次安装、未配置时可用）；
+1. **help 不发网络请求、不需要 key、配置损坏也能看**（`opendrama --help` 必须在首次安装、未配置时可用）；
 2. 每条命令**至少 2 个示例**，且示例必须能直接复制执行；
 3. 每条命令都写「相关命令 / 下一步」——Agent 是照着串命令的，不是读散文的；
 4. 退出码和错误码写进每条 help，不用让 Agent 去翻文档。
 
-`minitv --help` 的能力地图大致长这样：
+`opendrama --help` 的能力地图大致长这样：
 
 ```
-minitv — JJTV 剧集管理 CLI
+opendrama — JJTV 剧集管理 CLI
 
 开始
-  minitv config set-key       配置 API Key（首次）
-  minitv doctor               自检：连通 / 身份 / 权限 / 限流
+  opendrama config set-key       配置 API Key（首次）
+  opendrama doctor               自检：连通 / 身份 / 权限 / 限流
 
 能做什么
   drama     剧集：列表、详情、建改、上下线、排期、封面、标签
@@ -114,22 +114,22 @@ minitv — JJTV 剧集管理 CLI
   export    批量导出（给模型做上下文）
 
 给程序/Agent
-  minitv <任意命令> --json    结构化输出
-  minitv help --json          机器可读的命令目录
-  minitv guide                完整手册
+  opendrama <任意命令> --json    结构化输出
+  opendrama help --json          机器可读的命令目录
+  opendrama guide                完整手册
 
 更多
-  minitv help errors          错误码与处置
-  minitv <group> --help       分组内命令
+  opendrama help errors          错误码与处置
+  opendrama <group> --help       分组内命令
 ```
 
-### 3.4 配置与密钥（`minitv config`）
+### 3.4 配置与密钥（`opendrama config`）
 
 **两个文件**，密钥与配置分离，`config.json` 可以随手拷给别人：
 
 ```
-~/.config/minitv/config.json      # 非敏感：环境、默认 profile、沙箱剧 id（0600 也无妨）
-~/.config/minitv/credentials      # 0600，一行一个：prod=mk_live_...
+~/.config/opendrama/config.json      # 非敏感：环境、默认 profile、沙箱剧 id（0600 也无妨）
+~/.config/opendrama/credentials      # 0600，一行一个：prod=mk_live_...
 ```
 
 ```json
@@ -144,31 +144,31 @@ minitv — JJTV 剧集管理 CLI
 
 | 命令 | 行为 |
 |---|---|
-| `minitv config init` | 交互式引导：选环境 → 隐藏输入粘贴 key → 验证 → 写盘（目录 0700 / 文件 0600） |
-| `minitv config set-key [--profile P] [--stdin]` | 设置/替换 key；`--stdin` 供 `echo "$KEY" \| minitv config set-key --stdin` |
-| `minitv config show` | 打印 profile、base_url、**key 前缀与长度**、到期、文件路径；永不打印明文 |
-| `minitv config test` | 用当前 key 调 `/auth/me` + `/auth/keys`，打印身份 / scopes / 到期 |
-| `minitv config use <profile>` | 切换默认 profile |
-| `minitv config path` | 打印两个文件路径（排错用） |
-| `minitv config rm-key [--profile P]` | 删除该 profile 的 key（不删配置） |
+| `opendrama config init` | 交互式引导：选环境 → 隐藏输入粘贴 key → 验证 → 写盘（目录 0700 / 文件 0600） |
+| `opendrama config set-key [--profile P] [--stdin]` | 设置/替换 key；`--stdin` 供 `echo "$KEY" \| opendrama config set-key --stdin` |
+| `opendrama config show` | 打印 profile、base_url、**key 前缀与长度**、到期、文件路径；永不打印明文 |
+| `opendrama config test` | 用当前 key 调 `/auth/me` + `/auth/keys`，打印身份 / scopes / 到期 |
+| `opendrama config use <profile>` | 切换默认 profile |
+| `opendrama config path` | 打印两个文件路径（排错用） |
+| `opendrama config rm-key [--profile P]` | 删除该 profile 的 key（不删配置） |
 
 规则：
 
 1. **没有 `--key` 参数**：传了直接报错并提示用 `--stdin` 或交互输入（避免进 shell history 与进程列表）；
 2. **写入前先验证**：拿 key 调一次 `/auth/me`，失败就不落盘，避免存进一个错 key 之后每次都要排查；
 3. **密钥只存 `credentials`**，`config.toml` 里不出现；`config show` 只回前缀；
-4. **环境变量优先**：`MINITV_API_KEY` 存在时直接用它，不读文件（Agent 沙箱/容器最省事）；
-5. 优先级：`--base-url` / `MINITV_API_KEY` > `--profile` > `default_profile`。
+4. **环境变量优先**：`OPENDRAMA_API_KEY` 存在时直接用它，不读文件（Agent 沙箱/容器最省事）；
+5. 优先级：`--base-url` / `OPENDRAMA_API_KEY` > `--profile` > `default_profile`。
 
 首次使用的完整体验（三次输入以内）：
 
 ```
-$ minitv config set-key
+$ opendrama config set-key
 环境     prod  https://jjtv-api.8jj.net
 凭证     粘贴 API Key（输入不回显）：********
 校验     GET /auth/me → admin（管理员）· 读 · 写 · 删除 · 2027-10-21 到期
-已保存   ~/.config/minitv/credentials（0600）
-下一步   minitv doctor
+已保存   ~/.config/opendrama/credentials（0600）
+下一步   opendrama doctor
 ```
 
 ### 3.5 输出契约（Agent 最关心的部分）
@@ -186,18 +186,18 @@ $ minitv config set-key
 ### 3.6 命令集（迭代 0）
 
 ```
-minitv config init | set-key | show | test | use | path | rm-key
-minitv doctor                      # 连通 / 身份 / 权限 / 服务端 / 限流
-minitv auth whoami                 # 由 /auth/me + /auth/keys 组合
-minitv version                     # 显示 CLI 版本（等同 --version）
-minitv guide [--format md|json]
-minitv help [--json] [errors|output|auth|upload]
-minitv drama list   [--status S] [--q 关键字] [--tag ID] [--page N]
-minitv drama get    <id>
-minitv episode list --drama ID [--status S]
-minitv tag list
-minitv group list | get <id> | dramas <id>
-minitv export dramas [--status published] --out FILE   # 给 Agent 做大上下文
+opendrama config init | set-key | show | test | use | path | rm-key
+opendrama doctor                      # 连通 / 身份 / 权限 / 服务端 / 限流
+opendrama auth whoami                 # 由 /auth/me + /auth/keys 组合
+opendrama version                     # 显示 CLI 版本（等同 --version）
+opendrama guide [--format md|json]
+opendrama help [--json] [errors|output|auth|upload]
+opendrama drama list   [--status S] [--q 关键字] [--tag ID] [--page N]
+opendrama drama get    <id>
+opendrama episode list --drama ID [--status S]
+opendrama tag list
+opendrama group list | get <id> | dramas <id>
+opendrama export dramas [--status published] --out FILE   # 给 Agent 做大上下文
 ```
 
 `doctor` 的检查项（每项一行，失败即非 0 退出）：
@@ -223,62 +223,62 @@ python3 scripts/release.py r2 --dist cli --source cli --prefix cli --allow-no-in
 
 | URL | 内容 |
 |---|---|
-| `https://jjtv.8jj.net/cli/install.sh` | 安装引导 |
-| `https://jjtv.8jj.net/cli/minitv` | 单文件本体（由 install.sh 下载） |
+| `https://app.example.com/cli/install.sh` | 安装引导 |
+| `https://app.example.com/cli/opendrama` | 单文件本体（由 install.sh 下载） |
 
 **两条一行命令**：
 
 A. 给 Agent 的完整初始化（含 key，只在「密钥已生成」弹窗出现一次）
 
 ```
-curl -fsSL https://jjtv.8jj.net/cli/install.sh | MINITV_API_KEY='mk_live_...' sh
+curl -fsSL https://app.example.com/cli/install.sh | OPENDRAMA_API_KEY='mk_live_...' sh
 ```
 
 B. 不含 key 的安装（页面顶部「接入 Agent」用）
 
 ```
-curl -fsSL https://jjtv.8jj.net/cli/install.sh | sh && minitv config set-key
+curl -fsSL https://app.example.com/cli/install.sh | sh && opendrama config set-key
 ```
 
 `install.sh` 的行为（幂等）：
 
 1. 找 `python3`，低于 3.8 直接报错并给安装提示，不留半成品；
-2. 下载 `cli/minitv` → `~/.local/bin/minitv`（`--prefix` 可改），`chmod 0755`；
+2. 下载 `cli/opendrama` → `~/.local/bin/opendrama`（`--prefix` 可改），`chmod 0755`；
 3. `~/.local/bin` 不在 PATH 时打印 `export PATH=...` 提示（不自动改 rc 文件）；
-4. 若 `MINITV_API_KEY` 存在 → `printf '%s' "$MINITV_API_KEY" | minitv config set-key --stdin`
+4. 若 `OPENDRAMA_API_KEY` 存在 → `printf '%s' "$OPENDRAMA_API_KEY" | opendrama config set-key --stdin`
    —— **key 只走 stdin，不进 argv**，`ps` 里看不到；
-5. 跑 `minitv doctor`（`--no-doctor` 可跳过）；失败也保留已装好的文件，方便复诊；
-6. 重复执行 = 覆盖升级；没给 `MINITV_API_KEY` 时**不动已保存的 key**。
+5. 跑 `opendrama doctor`（`--no-doctor` 可跳过）；失败也保留已装好的文件，方便复诊；
+6. 重复执行 = 覆盖升级；没给 `OPENDRAMA_API_KEY` 时**不动已保存的 key**。
 
 UI 改动（`admin/src/pages/ApiKeys.tsx`）：
 
 | 位置 | 内容 |
 |---|---|
-| 页面右上角 | 「接入 Agent」按钮 → 弹窗三步：① 安装（B 命令）② 设置 key ③ `minitv doctor`；每段带复制按钮 |
+| 页面右上角 | 「接入 Agent」按钮 → 弹窗三步：① 安装（B 命令）② 设置 key ③ `opendrama doctor`；每段带复制按钮 |
 | 密钥弹窗（签发 / 轮换后） | 明文下方增加「复制给 Agent 的一键命令」，内容为 A 形式（含该 key）；旁边红字提示「命令含密钥，勿粘贴到公开渠道」 |
 | 列表行 | 不加。明文不在列表里，行内命令无法含 key，加了只会误导 |
 
 安全提示（必须写进 UI 文案）：
 
 - A 形式的 key 会留在执行方的 shell history / Agent 日志里，共享机器请用 B 形式手动 `set-key`；
-- 安装脚本与 CLI 只从 `minitv.us` 取，不接受第三方镜像。
+- 安装脚本与 CLI 只从 `opendrama.us` 取，不接受第三方镜像。
 
 **顺序约束**：这个按钮必须与 `cli/` 的首次发布同一批上线，否则用户复制到的是 404。
 
 ### 3.8 验收
 
-- [ ] `minitv --help` 在**没有配置文件、没有 key、断网**时正常输出并返回 0；
+- [ ] `opendrama --help` 在**没有配置文件、没有 key、断网**时正常输出并返回 0；
 - [ ] 每条命令的 `--help` 都含 8 段，且示例可直接复制执行；
-- [ ] `minitv help --json` 能列出全部命令，字段与 `--help` 一致（同源生成）；
-- [ ] `minitv guide` 输出可被 `>` 重定向成 markdown，且与 `docs/cli-reference.md` 逐字一致（CI 里 diff）；
-- [ ] `minitv config set-key` 写入 0600/0700；`config show` 不出现明文；`--key` 参数被拒绝；
+- [ ] `opendrama help --json` 能列出全部命令，字段与 `--help` 一致（同源生成）；
+- [ ] `opendrama guide` 输出可被 `>` 重定向成 markdown，且与 `docs/cli-reference.md` 逐字一致（CI 里 diff）；
+- [ ] `opendrama config set-key` 写入 0600/0700；`config show` 不出现明文；`--key` 参数被拒绝；
 - [ ] 错误的 key 不会被写盘（校验失败即退出 3）；
 - [ ] 断网 / 错误 key / 过期 key 三种情况都给出可区分 `code` 与退出码；
-- [ ] `minitv drama list --json` 与 `curl /admin/v1/dramas` 字段一致；
+- [ ] `opendrama drama list --json` 与 `curl /admin/v1/dramas` 字段一致；
 - [ ] `--fields id,title` 输出只含两列；
 - [ ] 在线上用**只读 key** 跑通全部只读命令（不产生任何写事件）；
 - [ ] 单文件 `python3 -m py_compile` 通过，无第三方 import；
-- [ ] 干净环境（无 `~/.config/minitv`、无 `~/.local/bin/minitv`）跑 A 命令，90 秒内完成安装 + 配置 + doctor；
+- [ ] 干净环境（无 `~/.config/opendrama`、无 `~/.local/bin/opendrama`）跑 A 命令，90 秒内完成安装 + 配置 + doctor；
 - [ ] `ps` 输出里看不到 key（stdin 传递）；
 - [ ] 重复执行 `install.sh` 幂等，已保存的 key 不被空值覆盖；
 - [ ] 无 python3 / python<3.8 时报错明确，且不留下半个可执行文件；
@@ -306,14 +306,14 @@ except IntegrityError:
 ### 4.2 CLI 命令
 
 ```
-minitv drama create --title T [--upsert]     # 409 时回读同名片并复用（幂等）
-minitv drama update <id> [--synopsis] [--cover-url] [--free N] [--coin N] [--tags 1,2]
-minitv drama status <id> --to draft|in_review|published|unpublished
-minitv drama publish <id>                    # 自动补跳（draft→in_review→published）
-minitv drama unpublish <id>
-minitv drama schedule <id> --at ISO8601
-minitv drama tags set <id> 1,2,3
-minitv drama cover set <id> FILE | clear <id>
+opendrama drama create --title T [--upsert]     # 409 时回读同名片并复用（幂等）
+opendrama drama update <id> [--synopsis] [--cover-url] [--free N] [--coin N] [--tags 1,2]
+opendrama drama status <id> --to draft|in_review|published|unpublished
+opendrama drama publish <id>                    # 自动补跳（draft→in_review→published）
+opendrama drama unpublish <id>
+opendrama drama schedule <id> --at ISO8601
+opendrama drama tags set <id> 1,2,3
+opendrama drama cover set <id> FILE | clear <id>
 ```
 
 ### 4.3 验收
@@ -340,13 +340,13 @@ minitv drama cover set <id> FILE | clear <id>
 ### 5.2 CLI 命令
 
 ```
-minitv episode create --drama ID --number N [--title T]
-minitv episode bulk   --drama ID --count N
-minitv episode update <id> [--title T] [--number N]
-minitv episode delete <id> --confirm <id>
-minitv episode publish|unpublish <id>
-minitv episode publish --drama ID --all       # 批量，跳过无视频的
-minitv episode sync <id>                      # 手动对账转码状态
+opendrama episode create --drama ID --number N [--title T]
+opendrama episode bulk   --drama ID --count N
+opendrama episode update <id> [--title T] [--number N]
+opendrama episode delete <id> --confirm <id>
+opendrama episode publish|unpublish <id>
+opendrama episode publish --drama ID --all       # 批量，跳过无视频的
+opendrama episode sync <id>                      # 手动对账转码状态
 ```
 
 ### 5.3 验收
@@ -384,8 +384,8 @@ minitv episode sync <id>                      # 手动对账转码状态
 ```
 
 ```
-minitv episode upload <id> FILE [--resume] [--wait]
-minitv episode upload-all --drama ID --dir DIR
+opendrama episode upload <id> FILE [--resume] [--wait]
+opendrama episode upload-all --drama ID --dir DIR
         [--start N] [--title-rule en|cn|custom:"第{n}集"]
         [--concurrency 2] [--publish] [--retry 2]
 ```
@@ -408,8 +408,8 @@ minitv episode upload-all --drama ID --dir DIR
 
 ## 7. 迭代 4：Agent 接入（规模 M）
 
-1. `~/.workbuddy/skills/minitv-ops/SKILL.md`：**不要复述命令细节**——只写「先跑 `minitv guide` 拿手册，按 help 的『相关命令』串流程」，再补三条典型流程（建剧并配齐元数据 / 补传分集 / 全量下架）与禁忌（未经确认不 `delete`、不碰 `staff`/`billing`）。手册以 `minitv guide` 为唯一真源，避免 Skill 文档与 CLI 漂移。
-2. 可选 `minitv mcp`：把同一批函数注册成 MCP stdio 工具（手写 JSON-RPC），只有宿主支持 MCP 时才用。
+1. `~/.workbuddy/skills/opendrama-ops/SKILL.md`：**不要复述命令细节**——只写「先跑 `opendrama guide` 拿手册，按 help 的『相关命令』串流程」，再补三条典型流程（建剧并配齐元数据 / 补传分集 / 全量下架）与禁忌（未经确认不 `delete`、不碰 `staff`/`billing`）。手册以 `opendrama guide` 为唯一真源，避免 Skill 文档与 CLI 漂移。
+2. 可选 `opendrama mcp`：把同一批函数注册成 MCP stdio 工具（手写 JSON-RPC），只有宿主支持 MCP 时才用。
 3. 灰度：`read` key 跑一周 → `read+write` → 临时 `delete`。
 4. 收尾：用 CLI 替换 `scripts/publish_ready_dramas.py`、`repair_stalled_episodes.py`、`import_hotlist.py`（三者仍在用已失效的 `admin-1234` 默认口令）。
 
@@ -508,7 +508,7 @@ upload --resume
 ### 验收
 
 - 隔离库 + fake 模式：**20/20 PASS**（标签 CRUD、建剧+标签+排期、续传补完 2 集、分组增删改排、`schedule apply`、被引用标签拒删、清理）。
-- 封面/字幕需要 real 模式（fake 直接 503），单独起 real 实例验证：`cover.png` → `https://minitv-dev-img.b-cdn.net/covers/8/cover.png`，`sub.vtt` → `subs/7/sub.vtt` 且 CDN 200；`cover-clear` 后字段清空。测试对象已从存储删除。
+- 封面/字幕需要 real 模式（fake 直接 503），单独起 real 实例验证：`cover.png` → `https://opendrama-dev-img.b-cdn.net/covers/8/cover.png`，`sub.vtt` → `subs/7/sub.vtt` 且 CDN 200；`cover-clear` 后字段清空。测试对象已从存储删除。
 - 后端 **360 passed**。
 
 ### 仍未做 / 已知缺口

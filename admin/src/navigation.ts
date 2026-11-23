@@ -23,7 +23,6 @@ export const NAVIGATION: NavigationNode[] = [
       { key: "/groups", label: "首页分组" },
       { key: "/home-ops", label: "首页运营" },
       { key: "/tags", label: "标签库" },
-      { key: "/india-content", label: "India 内容运营" },
     ],
   },
   {
@@ -89,16 +88,14 @@ export function navigationPath(key: string, nodes: NavigationNode[] = NAVIGATION
 }
 
 export function visibleNavigation({
-  menuKeys, partner, platformAdmin, india, tenantAdmin = false,
-}: { menuKeys: string[]; partner: boolean; platformAdmin: boolean; india: boolean; tenantAdmin?: boolean }): NavigationNode[] {
+  menuKeys, partner, platformAdmin, tenantAdmin = false,
+}: { menuKeys: string[]; partner: boolean; platformAdmin: boolean; tenantAdmin?: boolean }): NavigationNode[] {
   const allowed = new Set(menuKeys);
   const visible = (leaf: NavigationLeaf) => {
     if (partner) return leaf.audience === "partner" && allowed.has(leaf.key);
     if (leaf.audience === "partner") return false;
     if (leaf.platformAdminOnly) return platformAdmin;
     if (["/staff", "/roles", "/api-keys", "/site-settings", "/brand", "/merchant-binding"].includes(leaf.key)) return tenantAdmin;
-    if (india && leaf.key !== "/india-content") return false;
-    if (!india && leaf.key === "/india-content") return false;
     return allowed.has(leaf.key);
   };
   return NAVIGATION.flatMap<NavigationNode>(node => {

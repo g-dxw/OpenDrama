@@ -69,7 +69,7 @@ def _bearer_token(request: Request) -> str:
 
 def _resolve(request: Request,db: Session) -> tuple[AdminUser,AdminApiKey|None]:
     from app.modules.tenancy.identity import SessionPrincipal
-    from app.modules.tenancy.models import LegacyBusinessBinding,Tenant
+    from app.modules.tenancy.models import Tenant
     from app.modules.tenancy.modules import enabled_modules
     credential=_bearer_token(request)
     key=None
@@ -82,10 +82,9 @@ def _resolve(request: Request,db: Session) -> tuple[AdminUser,AdminApiKey|None]:
         except ops_service.SessionStoreUnavailable as exc: raise HTTPException(503,detail='会话存储不可用') from exc
         if principal is None: raise HTTPException(401,detail=dict(code='invalid_session',message='会话无效或已过期'),headers={'WWW-Authenticate':'Bearer'})
         user=principal.user
-    binding=db.get(LegacyBusinessBinding,'suppliers')
     if principal.account_scope!='tenant' or not binding or principal.tenant_id!=binding.tenant_id or user.tenant_id!=principal.tenant_id:
         raise HTTPException(403,detail=dict(code='partner_scope_denied',message='该合作方账号不能访问此业务'))
-    selected=request.headers.get('X-JJTV-Tenant')
+    selected=request.headers.get('X-OpenDrama-Tenant')
     if selected and selected!=principal.tenant_id: raise HTTPException(403,detail=dict(code='tenant_scope_mismatch',message='账号不能切换租户'))
     tenant=db.get(Tenant,principal.tenant_id)
     from app.modules.tenancy.domains import validate_entry_origin

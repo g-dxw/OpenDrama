@@ -62,7 +62,7 @@ export default function Tenants() {
     {error && <Alert showIcon type="error" message={error} />}
     <Table<BusinessTenant> rowKey="id" loading={loading} dataSource={rows} pagination={false} scroll={{ x: 900 }} locale={{ emptyText: <Empty description="暂无租户" /> }} columns={[
       { title: '租户', render: (_, row) => <Space direction="vertical" size={0}><Typography.Text strong>{row.name}</Typography.Text><Typography.Text type="secondary">{row.code}</Typography.Text></Space> },
-      { title: '类型', render: (_, row) => row.kind === 'india_legacy' ? <Tag color="blue">India 老项目接入</Tag> : '独立站点管理' },
+      { title: '类型', render: () => '独立站点管理' },
       { title: '状态', render: (_, row) => <Tag color={row.status === 'active' ? 'green' : 'default'}>{row.status === 'active' ? '启用' : '已暂停'}</Tag> },
       { title: '操作', render: (_, row) => <Space wrap size={4}>
         <Button type="link" disabled={row.status !== 'active'} loading={entering === row.id} onClick={() => void enter(row)}>进入租户 · 30 分钟</Button>

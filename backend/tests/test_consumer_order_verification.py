@@ -115,7 +115,7 @@ def test_tenant_selector_cannot_expand_public_jjtv_ownership(order_http):
     client, _owner, other, headers, create = order_http
     own = create(settled=True)
     foreign = create(user=other, settled=True)
-    selected = {**headers, "X-JJTV-Tenant": "india-short-drama"}
+    selected = {**headers, "X-OpenDrama-Tenant": "india-short-drama"}
     assert client.get("/v1/commerce/orders/" + own.order_no, headers=selected).status_code == 200
     assert client.get("/v1/commerce/orders/" + foreign.order_no, headers=selected).status_code == 404
 

@@ -1,4 +1,4 @@
-"""JJTV-only admin commerce and authenticated consumer checkout routes."""
+"""Tenant admin commerce and authenticated consumer checkout routes."""
 from __future__ import annotations
 import csv
 import io
@@ -182,28 +182,23 @@ def plan_price(code:str,body:PlanPriceIn,request:Request,user=Depends(require_ad
 
 @admin_router.get('/stripe/accounts')
 def stripe_accounts(user=Depends(require_admin),db:Session=Depends(get_db)):
-    require_legacy_merchant_owner(db)
     return {'items':service.account_list(db)}
 @admin_router.post('/stripe/accounts')
 def create_account(body:AccountIn,request:Request,user=Depends(require_admin),db:Session=Depends(get_db)):
-    require_legacy_merchant_owner(db)
     require_permission(request,'stripe.manage')
     return call(db,service.save_account,db,body.code,body.model_dump(exclude={'code'}),user.id)
 @admin_router.patch('/stripe/accounts/{code}')
 def patch_account(code:str,body:AccountPatch,request:Request,user=Depends(require_admin),db:Session=Depends(get_db)):
-    require_legacy_merchant_owner(db)
     require_permission(request,'stripe.manage')
     return call(db,service.save_account,db,code,body.model_dump(exclude_unset=True),user.id)
 @admin_router.post('/stripe/accounts/{code}/test')
 def account_test(code:str,request:Request,user=Depends(require_admin),db:Session=Depends(get_db)):
-    require_legacy_merchant_owner(db)
     require_permission(request,'stripe.manage');return call(db,service.test_account,db,code)
 @admin_router.get('/stripe/prices')
 def prices(user=Depends(require_admin),db:Session=Depends(get_db)):
     return {'items':[dict(account_code=x.account_code,product_type=x.product_type,version_id=x.version_id,billing_mode=x.billing_mode,price_id=x.price_id) for x in db.scalars(select(StripePriceBinding))]}
 @admin_router.post('/stripe/prices/provision')
 def provision(request:Request,user=Depends(require_admin),db:Session=Depends(get_db)):
-    require_legacy_merchant_owner(db)
     require_permission(request,'stripe.manage');out=[]
     from app.modules.billing.service import list_current_plans
     for account in service.account_list(db):
@@ -272,9 +267,6 @@ class MerchantBindingIn(BaseModel):
     account_code:str=Field(pattern='^[a-z0-9_]{2,32}$')
     allow_reuse:bool=False
 
-def require_legacy_merchant_owner(db):
-    from app.modules.tenancy.consumer_scope import current_site
-    if current_site(db)!='jjtv':raise HTTPException(403,'Merchant credentials are managed by the instance administrator')
 
 @tenant_router.get('/merchant-binding')
 def read_site_merchant(db:Session=Depends(get_db),user=Depends(require_tenant_admin)):

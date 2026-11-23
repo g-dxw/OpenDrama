@@ -165,10 +165,10 @@ function FinanceOrderDrawer({number,onClose,onChanged}:{number:string|null;onClo
  </Modal></>;
 }
 
-export function CommerceFinancePage({legacyMerchantOwner}:{legacyMerchantOwner:boolean}){
+export function CommerceFinancePage(){
  const initial=new URLSearchParams(window.location.search);const [keyword,setKeyword]=useState(initial.get('q')||initial.get('order_no')||''),[q,setQ]=useState(initial.get('q')||initial.get('order_no')||''),[filterStatus,setFilterStatus]=useState(''),[product,setProduct]=useState(''),[mode,setMode]=useState(''),[account,setAccount]=useState(''),[from,setFrom]=useState(''),[to,setTo]=useState(''),[rangeKey,setRangeKey]=useState(0),[page,setPage]=useState(1),[pageSize,setPageSize]=useState(20),[number,setNumber]=useState<string|null>(null);
  const [data,setData]=useState<FinancePayload>({items:[],has_more:false,total:0}),[loading,setLoading]=useState(false),[error,setError]=useState('');const generation=useRef(0);
-  const canStripe=usePermission('stripe.view')&&legacyMerchantOwner;
+  const canStripe=usePermission('stripe.view');
   const accounts=useLoad<{items:Account[]}>('/admin/v1/stripe/accounts',{items:[]},{enabled:canStripe});
  useEffect(()=>{const timer=window.setTimeout(()=>{setQ(keyword.trim());setPage(1);},300);return()=>clearTimeout(timer);},[keyword]);
  const params=new URLSearchParams({limit:String(pageSize),offset:String((page-1)*pageSize)});if(q)params.set('q',q);if(filterStatus)params.set('status',filterStatus);if(product)params.set('product_type',product);if(mode)params.set('billing_mode',mode);if(account)params.set('account_code',account);if(from)params.set('date_from',from);if(to)params.set('date_to',to);

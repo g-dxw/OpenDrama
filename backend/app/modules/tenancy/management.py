@@ -16,7 +16,7 @@ from app.modules.ops.models import AdminUser
 from app.modules.ops import service as ops_service
 from app.modules.ops.router import require_identity,require_platform_admin,require_tenant_admin,_bearer_token
 from app.modules.tenancy.identity import SessionPrincipal
-from app.modules.tenancy.models import Tenant,TenantRole,TenantMember,TenantModule,TenantDomain,IndiaConnection
+from app.modules.tenancy.models import Tenant,TenantRole,TenantMember,TenantModule,TenantDomain
 from app.modules.tenancy import service
 from app.modules.tenancy.permissions import seed_tenant_defaults,preset_role_id,permission_catalog,validate_permissions,preset_permissions
 from app.modules.tenancy.modules import BY_KEY,module_catalog,supported_keys
@@ -25,7 +25,6 @@ from app.modules.tenancy.domains import validate_entry_origin,shared_hosts,activ
 
 platform_router=APIRouter(prefix='/platform/v1',tags=['platform'])
 tenant_router=APIRouter(prefix='/tenant/v1',tags=['tenant'])
-legacy_router=APIRouter(prefix='/admin/v1/tenants',tags=['tenant-compatibility'])
 
 class Strict(BaseModel): model_config=ConfigDict(extra='forbid')
 class Login(Strict):
@@ -100,7 +99,7 @@ def allowed_modules(db,tenant,keys):
 def validate_tenant_auth_context(request,db,principal):
     if not principal.tenant_id:
         raise HTTPException(403,detail=dict(code='tenant_context_required',message='请从租户入口登录'))
-    if request.headers.get('X-JJTV-Tenant') not in (None,principal.tenant_id):
+    if request.headers.get('X-OpenDrama-Tenant') not in (None,principal.tenant_id):
         raise HTTPException(403,detail=dict(code='tenant_scope_mismatch',message='当前会话不能切换租户'))
     tenant=platform_tenant(db,principal.tenant_id)
     validate_entry_origin(request,db,tenant)
@@ -180,7 +179,6 @@ def change_password(body,request,db,user,scope):
     _validate_password(body.new_password,user.username)
     user.password_hash=ops_service.hash_password(body.new_password); user.auth_version+=1; user.must_change_password=False
     ops_service.revoke_user_sessions(user.id)
-    db.execute(delete(IndiaConnection).where(IndiaConnection.user_id==user.id))
     audit(db,request,user,principal.tenant_id,'account.password.change')
     token=ops_service.create_session(user)
     db.commit()
@@ -196,29 +194,8 @@ def tenant_password(body:Password,request:Request,db:Session=Depends(get_db),use
     return change_password(body,request,db,user,'tenant')
 
 @platform_router.get('/tenants')
-@legacy_router.get('')
 def tenants(request:Request,db:Session=Depends(get_db),user:AdminUser=Depends(require_platform_admin)):
     rows=list(db.scalars(select(Tenant).order_by(Tenant.created_at,Tenant.id)))
-    # Historical migrations retain compatibility realms. A fresh self-hosted
-    # company sees only sites it has actually provisioned, without deleting or
-    # hiding an existing business that already has accounts or content.
-    import os
-    if os.environ.get('MINITV_DISTRIBUTION')=='selfhost':
-        from app.modules.account.models import User
-        from app.modules.content.models import Drama
-        from app.modules.tenancy.models import TenantMember
-        from sqlalchemy import or_
-        visible=[]
-        for row in rows:
-            compatibility=row.id in {'jjtv','india-short-drama'}
-            configured_connector=row.kind=='india_legacy' and any(os.environ.get(key,'').lower() in {'1','true','yes'} for key in ('INDIA_JJTV_CLIENT_ENABLED','INDIA_JJTV_DELEGATED_ENABLED'))
-            used=not compatibility or configured_connector or any(db.scalar(query.limit(1)) is not None for query in (
-                select(TenantMember.user_id).join(AdminUser,AdminUser.id==TenantMember.user_id).where(TenantMember.tenant_id==row.id,or_(AdminUser.must_change_password.is_(False),AdminUser.last_login_at.is_not(None))),
-                select(User.id).where(User.tenant_id==row.id),
-                select(Drama.id).where(Drama.tenant_id==row.id),
-                select(TenantDomain.id).where(TenantDomain.tenant_id==row.id)))
-            if used: visible.append(row)
-        rows=visible
     return [tenant_info(t) for t in rows]
 
 @platform_router.post('/tenants',status_code=201)
@@ -242,14 +219,6 @@ def create_tenant(body:CreateTenant,request:Request,db:Session=Depends(get_db),u
     commit(db,'租户编码或管理员账号已存在')
     return dict(tenant=tenant_info(tenant),site=site_out(db,tenant),administrator=dict(id=owner.id,username=owner.username,temporary_password=password),content_defaults=defaults)
 
-@legacy_router.post('',status_code=201)
-def legacy_create_tenant(body:dict,request:Request,db:Session=Depends(get_db),user:AdminUser=Depends(require_platform_admin)):
-    if set(body)-{'code','name','admin_username','modules'}: raise HTTPException(422,detail='包含不支持的租户字段')
-    try:
-        value=CreateTenant(code=body.get('code') or 'tenant-'+uuid4().hex,name=body.get('name',''),admin_username=body.get('admin_username','tenant-admin'),modules=body.get('modules'))
-    except ValueError: raise HTTPException(422,detail='租户字段无效') from None
-    return create_tenant(value,request,db,user)['tenant']
-
 @platform_router.patch('/tenants/{tenant_id}')
 def update_tenant(tenant_id:str,body:PatchTenant,request:Request,db:Session=Depends(get_db),user:AdminUser=Depends(require_platform_admin)):
     tenant=platform_tenant(db,tenant_id,lock=True); check_version(tenant,body.version)
@@ -259,19 +228,10 @@ def update_tenant(tenant_id:str,body:PatchTenant,request:Request,db:Session=Depe
     if 'status' in body.model_fields_set:
         if body.status not in {'active','paused'}: raise HTTPException(422,detail='后台接入状态无效')
         tenant.status=body.status
-        if body.status=='paused': db.execute(delete(IndiaConnection).where(IndiaConnection.tenant_id==tenant.id))
     from app.modules.sites.service import get_site
     apply_site_fields(db,tenant,get_site(db,tenant.id),body)
     tenant.version+=1; audit(db,request,user,tenant.id,'platform.tenant.update'); commit(db)
     return tenant_info(tenant)
-
-@legacy_router.patch('/{tenant_id}')
-def legacy_update_tenant(tenant_id:str,body:dict,request:Request,db:Session=Depends(get_db),user:AdminUser=Depends(require_platform_admin)):
-    tenant=platform_tenant(db,tenant_id)
-    try:
-        value=PatchTenant(version=body.get('version',tenant.version),**{k:v for k,v in body.items() if k!='version'})
-    except ValueError: raise HTTPException(422,detail='租户字段无效') from None
-    return update_tenant(tenant_id,value,request,db,user)
 
 @platform_router.get('/tenants/{tenant_id}/modules')
 def get_modules(tenant_id:str,request:Request,db:Session=Depends(get_db),user:AdminUser=Depends(require_platform_admin)):
@@ -424,35 +384,6 @@ def delete_role(role_id:str,version:int,request:Request,db:Session=Depends(get_d
     db.delete(role); audit(db,request,user,tenant.id,'tenant.role.delete',resource_id=role.id); commit(db)
     return dict(deleted=True)
 
-
-def assert_legacy_tenant(request,identifier):
-    if request.state.tenant.id!=identifier: raise HTTPException(403,detail=dict(code='tenant_scope_mismatch',message='当前会话不能切换租户'))
-
-@legacy_router.get('/{tenant_id}/roles')
-def legacy_roles(tenant_id:str,request:Request,db:Session=Depends(get_db),user:AdminUser=Depends(require_tenant_admin)):
-    assert_legacy_tenant(request,tenant_id); return roles(request,db,user)
-@legacy_router.post('/{tenant_id}/roles',status_code=201)
-def legacy_create_role(tenant_id:str,body:RoleCreate,request:Request,db:Session=Depends(get_db),user:AdminUser=Depends(require_tenant_admin)):
-    assert_legacy_tenant(request,tenant_id); return create_role(body,request,db,user)
-@legacy_router.patch('/{tenant_id}/roles/{role_id}')
-def legacy_update_role(tenant_id:str,role_id:str,body:RolePatch,request:Request,db:Session=Depends(get_db),user:AdminUser=Depends(require_tenant_admin)):
-    assert_legacy_tenant(request,tenant_id); return update_role(role_id,body,request,db,user)
-@legacy_router.delete('/{tenant_id}/roles/{role_id}')
-def legacy_delete_role(tenant_id:str,role_id:str,version:int,request:Request,db:Session=Depends(get_db),user:AdminUser=Depends(require_tenant_admin)):
-    assert_legacy_tenant(request,tenant_id); return delete_role(role_id,version,request,db,user)
-
-@legacy_router.get('/{tenant_id}/members')
-def legacy_members(tenant_id:str,request:Request,db:Session=Depends(get_db),user:AdminUser=Depends(require_tenant_admin)):
-    from app.modules.tenancy.tenant_staff import staff_out
-    assert_legacy_tenant(request,tenant_id)
-    rows=db.scalars(select(AdminUser).where(AdminUser.account_scope=='tenant',AdminUser.tenant_id==tenant_id).order_by(AdminUser.username)).all()
-    items=[staff_out(db,row) for row in rows]
-    return dict(members=[dict(user_id=item['id'],**{k:v for k,v in item.items() if k!='id'}) for item in items],staff=items,roles=role_rows(db,request.state.tenant))
-
-@legacy_router.put('/{tenant_id}/members')
-def legacy_replace_members(tenant_id:str,request:Request,user:AdminUser=Depends(require_tenant_admin)):
-    assert_legacy_tenant(request,tenant_id)
-    raise HTTPException(409,detail=dict(code='tenant_staff_api_required',message='员工账号已经归属租户，请通过员工管理逐个创建、变更角色或停用，不能替换全平台成员清单'))
 
 def apply_site_fields(db,tenant,row,body):
     from app.modules.sites.router import safe_url

@@ -44,7 +44,7 @@ def test_public_directory_exposes_only_names_and_codes_for_active_tenants(sessio
     assert 'private-staff-account' not in response.text
     assert 'directory-private' not in response.text
     # The directory is public metadata, not a session or a way to change scope.
-    assert client.get(URL,headers={'X-JJTV-Tenant':'directory-private-b'}).json() == value
+    assert client.get(URL,headers={'X-OpenDrama-Tenant':'directory-private-b'}).json() == value
     a,_,_ = directory
     a.status = 'paused'
     session.commit()

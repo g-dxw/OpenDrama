@@ -287,7 +287,7 @@ def seed_content_defaults(db: Session, tenant: Tenant, *, populate_content: bool
     No drama, episode, publication, count or remote media object is generated.
     """
     if tenant.kind!='native':
-        raise ValueError('Content defaults are available only for native tenants; India remains managed by its own backend')
+        raise ValueError('Content defaults are available only for native tenants')
     locked = db.scalar(select(Tenant).where(Tenant.id==tenant.id).execution_options(populate_existing=True).with_for_update())
     if locked is None or locked.kind!='native':
         raise ValueError('A persisted native tenant is required')

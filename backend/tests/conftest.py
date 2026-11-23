@@ -31,7 +31,6 @@ os.environ["RESEND_API_KEY"] = ""
 os.environ["RESEND_FROM"] = ""
 # The sweeper must not race the per-test TRUNCATE; tests drive the worker directly.
 os.environ["MODERATION_WORKER"] = "0"
-os.environ["SITE_LEGACY_HOSTS"] = "testserver,localhost,127.0.0.1,jjtv.8jj.net,jjtv-h5.8jj.net,jjtv-api.8jj.net"
 
 from app import modules  # noqa: E402,F401  registers every ORM model
 from app.db import Base, load_env  # noqa: E402
@@ -93,11 +92,10 @@ def session(engine):
     factory = sessionmaker(bind=engine, expire_on_commit=False)
     s = factory()
     from app.modules.tenancy.models import Tenant
-    from app.modules.tenancy.permissions import seed_legacy_bindings, seed_tenant_defaults
-    tenants = [Tenant(id="jjtv", code="jjtv", name="JJTV 自营", kind="native", status="active"), Tenant(id="india-short-drama", code="india-short-drama", name="India Short Drama", kind="india_legacy", status="active")]
+    from app.modules.tenancy.permissions import seed_tenant_defaults
+    tenants = [Tenant(id="jjtv", code="jjtv", name="OpenDrama Demo", kind="native", status="active")]
     s.add_all(tenants)
     s.flush()
-    seed_legacy_bindings(s, "jjtv")
     for tenant in tenants:
         seed_tenant_defaults(s, tenant)
     s.commit()

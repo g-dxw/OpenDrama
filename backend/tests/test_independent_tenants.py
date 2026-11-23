@@ -155,7 +155,7 @@ def test_employee_reset_revokes_current_sessions_and_requires_password_change(en
 def test_business_session_cannot_switch_tenant_or_supply_ownership_in_payload(env):
     a,b=provision(env),provision(env)
     headers=owner_for(env,a)
-    assert env['client'].get('/admin/v1/dramas',headers={**headers,'X-JJTV-Tenant':b['tenant']['id']}).status_code==403
+    assert env['client'].get('/admin/v1/dramas',headers={**headers,'X-OpenDrama-Tenant':b['tenant']['id']}).status_code==403
     result=env['client'].post('/admin/v1/dramas',json={'title':'Bound ownership','tenant_id':b['tenant']['id']},headers=headers)
     assert result.status_code in (200,422),result.text
     if result.status_code==200:
@@ -166,7 +166,7 @@ def test_business_session_cannot_switch_tenant_or_supply_ownership_in_payload(en
 def test_platform_normal_token_has_no_implicit_business_access_and_support_is_scoped(env):
     a,b=provision(env),provision(env)
     assert env['client'].get('/admin/v1/dramas',headers=env['pheaders']).status_code==403
-    assert env['client'].get('/admin/v1/dramas',headers={**env['pheaders'],'X-JJTV-Tenant':a['tenant']['id']}).status_code==403
+    assert env['client'].get('/admin/v1/dramas',headers={**env['pheaders'],'X-OpenDrama-Tenant':a['tenant']['id']}).status_code==403
     support=env['client'].post(PLATFORM+'/tenants/'+a['tenant']['id']+'/enter',json={},headers=env['pheaders'])
     assert support.status_code==200,support.text
     value=support.json();token=value['token'];context=value['context']
@@ -176,7 +176,7 @@ def test_platform_normal_token_has_no_implicit_business_access_and_support_is_sc
     assert 0<auth.get_redis().ttl(auth.SESSION_PREFIX+token)<=1800
     headers=bearer(token)
     assert env['client'].get('/admin/v1/dramas',headers=headers).status_code==200
-    assert env['client'].get('/admin/v1/dramas',headers={**headers,'X-JJTV-Tenant':b['tenant']['id']}).status_code==403
+    assert env['client'].get('/admin/v1/dramas',headers={**headers,'X-OpenDrama-Tenant':b['tenant']['id']}).status_code==403
     assert env['client'].get(PLATFORM+'/tenants',headers=headers).status_code==403
     assert env['client'].post(PLATFORM+'/tenants/'+b['tenant']['id']+'/enter',json={},headers=headers).status_code==403
     written=env['client'].post('/admin/v1/dramas',json={'title':'Explicit platform support'},headers=headers)

@@ -11,13 +11,11 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.db import Base
 
 DEFAULT_TENANT = "jjtv"
-INDIA_TENANT = "india-short-drama"
 
 class Tenant(Base):
     __tablename__ = "tenants"
-    __table_args__ = (UniqueConstraint("code", name="uq_tenants_code"), CheckConstraint("kind IN ('native','india_legacy')", name="ck_tenants_kind"),
-                     CheckConstraint("status IN ('active','paused')", name="ck_tenants_status"),
-                     CheckConstraint("kind <> 'india_legacy' OR id = 'india-short-drama'", name="ck_tenants_india_fixed"))
+    __table_args__ = (UniqueConstraint("code", name="uq_tenants_code"), CheckConstraint("kind = 'native'", name="ck_tenants_kind"),
+                     CheckConstraint("status IN ('active','paused')", name="ck_tenants_status"))
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     code: Mapped[str] = mapped_column(String(64), nullable=False, default=lambda context: context.get_current_parameters()["id"])
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
@@ -64,25 +62,11 @@ class TenantMember(Base):
     role: Mapped[str] = mapped_column(String(16), nullable=False, default="ops")
     role_id: Mapped[str] = mapped_column(String(64), nullable=False)
 
-class IndiaConnection(Base):
-    __tablename__ = "india_connections"
-    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("admin_users.id", ondelete="CASCADE"), primary_key=True)
-    session_key: Mapped[str] = mapped_column(String(64), primary_key=True)
-    secret: Mapped[str] = mapped_column(Text, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-
 class TenantModule(Base):
     __tablename__ = 'tenant_modules'
     tenant_id: Mapped[str] = mapped_column(ForeignKey('tenants.id', ondelete='CASCADE'), primary_key=True)
     module_key: Mapped[str] = mapped_column(String(32), primary_key=True)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default='false')
-
-class LegacyBusinessBinding(Base):
-    __tablename__ = 'legacy_business_bindings'
-    module_key: Mapped[str] = mapped_column(String(32), primary_key=True)
-    tenant_id: Mapped[str] = mapped_column(ForeignKey('tenants.id', ondelete='RESTRICT'), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 class TenantDomain(Base):
     __tablename__ = 'tenant_domains'
