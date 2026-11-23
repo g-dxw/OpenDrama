@@ -105,6 +105,8 @@ def _register_routers() -> None:
     from app.modules.public_flow import router as public_flow_router
     from app.modules.recommend.router import router as feed_router
 
+    from app.modules.tenancy.management import platform_router, tenant_router as tenant_management_router
+    from app.modules.tenancy.tenant_staff import tenant_router as staff_router
     from app.modules.ops.api_key_router import tenant_router as tenant_key_router
     from app.modules.sites.router import public_router as site_public_router, tenant_router as site_tenant_router
     from app.modules.library.router import platform_router as library_platform_router, tenant_router as library_tenant_router
@@ -113,7 +115,7 @@ def _register_routers() -> None:
     app.include_router(library_platform_router)
     app.include_router(library_tenant_router)
     app.include_router(platform_router)
-    app.include_router(tenant_router)
+    app.include_router(tenant_management_router)
     app.include_router(staff_router)
     app.include_router(tenant_key_router)
     app.include_router(admin_router)
