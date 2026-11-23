@@ -14,7 +14,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
 FRONTENDS = ("web", "h5", "admin")
-API_BASE = ""
+API_BASE = "https://jjtv-api.8jj.net"
 
 
 def git(root: Path, *args: str) -> str:
