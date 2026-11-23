@@ -5,7 +5,6 @@ revision = "f9c2a71d8b30"
 down_revision = "a3c9f1e28b70"
 branch_labels = None
 depends_on = None
-
 def upgrade():
     op.create_table("tenants", sa.Column("id", sa.String(64), primary_key=True),
         sa.Column("name", sa.String(100), nullable=False), sa.Column("kind", sa.String(20), nullable=False),
@@ -24,14 +23,12 @@ def upgrade():
         op.add_column(table, sa.Column("tenant_id", sa.String(64), nullable=False, server_default="jjtv"))
         op.create_foreign_key("fk_"+table+"_tenant", table, "tenants", ["tenant_id"], ["id"])
         op.create_index("ix_"+table+"_tenant_id", table, ["tenant_id"])
-        
     op.drop_index("uq_dramas_title_self", table_name="dramas")
     op.drop_index("uq_dramas_title_supplier", table_name="dramas")
     op.create_index("uq_dramas_title_self", "dramas", ["tenant_id","title"], unique=True, postgresql_where=sa.text("supplier_id IS NULL"))
     op.create_index("uq_dramas_title_supplier", "dramas", ["tenant_id","supplier_id","title"], unique=True, postgresql_where=sa.text("supplier_id IS NOT NULL"))
     op.drop_constraint("uq_tags_name_en", "tags", type_="unique")
     op.create_unique_constraint("uq_tags_tenant_name_en", "tags", ["tenant_id","name_en"])
-
 def downgrade():
     bind = op.get_bind()
     for table in ("dramas", "tags", "home_groups"):
