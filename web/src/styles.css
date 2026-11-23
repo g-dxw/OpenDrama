@@ -824,8 +824,8 @@ summary:focus-visible {
   background: rgba(229, 59, 62, 0.2);
 }
 
-/* The sideloaded APK is the only install path that works today, so it gets the
-   primary treatment while the two store badges sit one rung lower. */
+/* The Android availability card keeps the primary brand treatment while the
+   two store badges sit one rung lower. */
 .store-btn-apk {
   border-color: transparent;
   background: linear-gradient(100deg, #ff6b6e 4%, var(--accent) 92%);

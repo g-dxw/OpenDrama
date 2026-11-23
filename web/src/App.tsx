@@ -1,547 +1,284 @@
-import { useEffect, useRef, useState } from "react";
-
-import { fetchMarketing, fetchPreviewCatalog, Marketing, Plan, PreviewDrama } from "./api";
-import { ANDROID_APK, ANDROID_MIN } from "./downloads";
-import { SiteFooter, SiteHeader, WEB_APP_URL } from "./layout";
-import PreviewPage from "./preview";
-import { parseRoute, Route, scrollToRoute } from "./routes";
-import { PosterImage, formatPlays } from "./ui";
-import WatchPage from "./watch";
-
-type FeatureIcon = "swipe" | "coins" | "diamond";
-
-const features: { icon: FeatureIcon; title: string; body: string }[] = [
-  {
-    icon: "swipe",
-    title: "Vertical swipe",
-    body: "Every episode is shot for the phone. Swipe up and the next one starts — no rotation, no waiting.",
-  },
-  {
-    icon: "coins",
-    title: "Coins",
-    body: "Watch free episodes every day, then spend coins to unlock the ones you cannot stop thinking about.",
-  },
-  {
-    icon: "diamond",
-    title: "Membership",
-    body: "Skip the coins. Members unlock the whole library, ad-free, in up to 1080p.",
-  },
-];
-
-function FeatureGlyph({ name }: { name: FeatureIcon }) {
-  if (name === "swipe") {
-    return (
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <rect x="7" y="3" width="10" height="18" rx="3" />
-        <path d="M12 16.5h.01" />
-        <path d="M12 7.2v4.6" />
-        <path d="M10.2 8.8 12 7l1.8 1.8" />
-      </svg>
-    );
-  }
-  if (name === "coins") {
-    return (
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <ellipse cx="12" cy="6.5" rx="7" ry="3" />
-        <path d="M5 6.5v5c0 1.7 3.1 3 7 3s7-1.3 7-3v-5" />
-        <path d="M5 11.5v5c0 1.7 3.1 3 7 3s7-1.3 7-3v-5" />
-      </svg>
-    );
-  }
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M12 3.5 4 9l8 11.5L20 9z" />
-      <path d="M4 9h16" />
-      <path d="M9.5 9 12 3.7 14.5 9" />
-      <path d="M9.5 9 12 20.2 14.5 9" />
-    </svg>
-  );
-}
-
-const faqs = [
-  {
-    q: "Is MiniTV free?",
-    a: "Yes. Many episodes are free to watch. Locked episodes unlock with coins or a membership.",
-  },
-  {
-    q: "Can I watch on the website?",
-    a: "Yes — the Free Preview page streams the first free episodes of our shows right in your browser, no account needed. Paid episodes and full series unlock in the app.",
-  },
-  {
-    q: "Where do I download the app?",
-    a: "The Android app is ready — tap Download APK in the Download section, then allow installs from your browser when Android asks. The iOS app is still coming soon; until then you can watch free episodes and the full web app right here in your browser.",
-  },
-  {
-    q: "How do coins work?",
-    a: "Earn coins from daily check-ins and rewards, then spend them to unlock locked episodes. Members skip coins entirely.",
-  },
-  {
-    q: "Can I cancel anytime?",
-    a: "Yes. Cancel from Me → Subscription in the app. Your benefits stay active until the end of the billing period.",
-  },
-];
-
-const planUnit: Record<string, string> = {
-  weekly: "week",
-  monthly: "month",
-  yearly: "year",
-};
-
-function HomePage() {
-  const [data, setData] = useState<Marketing | null>(null);
-  const [error, setError] = useState("");
-  const [teaser, setTeaser] = useState<PreviewDrama[]>([]);
-  // The store listings are not live yet: the badges stay, the click explains
-  // why and points people at the APK / browser build instead.
-  const [storeNotice, setStoreNotice] = useState("");
-  const noticeTimer = useRef<number | null>(null);
-
-  const showStoreNotice = (message: string) => {
-    setStoreNotice(message);
-    if (noticeTimer.current) window.clearTimeout(noticeTimer.current);
-    noticeTimer.current = window.setTimeout(() => setStoreNotice(""), 6000);
-  };
-
-  useEffect(
-    () => () => {
-      if (noticeTimer.current) window.clearTimeout(noticeTimer.current);
-    },
-    [],
-  );
-
-  const load = () => {
-    setError("");
-    fetchMarketing()
-      .then(setData)
-      .catch(() => setError("Could not load MiniTV. Check the local API and retry."));
-  };
-
-  useEffect(() => {
-    load();
-    fetchPreviewCatalog()
-      .then((catalog) => setTeaser(catalog.categories.find((category) => category.id === 0)?.dramas.slice(0, 6) ?? []))
-      .catch(() => setTeaser([]));
-  }, []);
-
-  // Async sections (stats, plans, teaser row) change the page height, which
-  // can strand a #download / #premium anchor; re-anchor once content settles.
-  useEffect(() => {
-    if (data) scrollToRoute(parseRoute(), { instant: true });
-  }, [data, teaser]);
-
-  const stats = data?.stats ?? [];
-  const rating = stats.find((stat) => stat.label.toLowerCase().includes("rating"));
-  const downloads = stats.find((stat) => stat.label.toLowerCase().includes("download"));
-  const trending = data?.trending ?? [];
-  const plans: Plan[] = data?.plans ?? [];
-  const testimonials = data?.testimonials ?? [];
-  const loading = !data && !error;
-
-  return (
-    <main>
-      <section id="home" className="hero">
-        <div className="shell hero-inner">
-          <div className="hero-copy">
-            <span className="eyebrow">Vertical drama · New episodes daily</span>
-            <h1>
-              Vertical dramas, <em>one swipe away.</em>
-            </h1>
-            <p className="lede">
-              Free episodes play right here on the web. Unlock the rest — and the whole
-              library — in the MiniTV app.
-            </p>
-            <div className="hero-actions">
-              <a className="btn btn-primary" href="#preview">
-                Watch free episodes
-              </a>
-              <a className="btn btn-ghost" href="#download">
-                Download App
-              </a>
-              <a className="btn btn-ghost" href="#premium">
-                See plans
-              </a>
-            </div>
-            <p className="hero-web-link">
-              Prefer the browser?{" "}
-              <a href={WEB_APP_URL} target="_blank" rel="noopener noreferrer">
-                Open the web app ↗
-              </a>
-            </p>
-            {stats.length > 0 && (
-              <ul className="hero-meta">
-                {rating && (
-                  <li>
-                    <strong>★★★★★</strong>
-                    {rating.value} average rating
-                  </li>
-                )}
-                {downloads && <li>{downloads.value} downloads worldwide</li>}
-              </ul>
-            )}
-          </div>
-          <div className="hero-art">
-            <div className="phone">
-              <img src="/ph_feed.png" alt="A MiniTV drama playing in the mobile app" />
-            </div>
-            {rating && <div className="chip chip-top">★ {rating.value} rating</div>}
-            {downloads && <div className="chip chip-bottom">{downloads.value} downloads</div>}
-          </div>
-        </div>
-      </section>
-
-      <section className="stats">
-        <div className="shell">
-          <div className="stats-grid">
-            {loading
-              ? Array.from({ length: 4 }, (_, index) => (
-                  <div className="stat" key={index}>
-                    <span className="skeleton stat-value-skeleton" />
-                    <span className="skeleton stat-label-skeleton" />
-                  </div>
-                ))
-              : stats.map((stat) => (
-                  <div className="stat" key={stat.label}>
-                    <div className="stat-value">{stat.value}</div>
-                    <div className="stat-label">{stat.label}</div>
-                  </div>
-                ))}
-          </div>
-          {error && (
-            <div className="error-banner">
-              <span>{error}</span>
-              <button type="button" className="btn btn-ghost btn-sm" onClick={load}>
-                Retry
-              </button>
-            </div>
-          )}
-        </div>
-      </section>
-
-      <section id="about" className="section">
-        <div className="shell">
-          <div className="section-head">
-            <div>
-              <span className="eyebrow">Why MiniTV</span>
-              <h2>Built for the way you watch</h2>
-              <p className="section-sub">
-                Short, vertical, and always one swipe from the next episode.
-              </p>
-            </div>
-          </div>
-          <div className="feature-grid">
-            {features.map((feature) => (
-              <article className="feature" key={feature.title}>
-                <span className="feature-icon">
-                  <FeatureGlyph name={feature.icon} />
-                </span>
-                <h3>{feature.title}</h3>
-                <p>{feature.body}</p>
-              </article>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      <section id="shows" className="section">
-        <div className="shell">
-          <div className="section-head">
-            <div>
-              <span className="eyebrow">Shows</span>
-              <h2>Trending now</h2>
-              <p className="section-sub">The dramas our viewers keep coming back to.</p>
-            </div>
-            <a className="text-link" href="#download">
-              Watch in the app →
-            </a>
-          </div>
-          <div className="poster-grid">
-            {loading
-              ? Array.from({ length: 6 }, (_, index) => (
-                  <div className="poster" key={index}>
-                    <span className="skeleton poster-skeleton" />
-                    <span className="skeleton poster-title-skeleton" />
-                  </div>
-                ))
-              : trending.map((drama) => (
-                  <a className="poster" key={drama.id} href="#download">
-                    <span className="poster-frame">
-                      <PosterImage src={drama.cover_url} alt={`${drama.title} cover`} />
-                      <span className="poster-overlay">Open in app</span>
-                    </span>
-                    <span className="poster-title">{drama.title}</span>
-                    {drama.play_count > 0 && (
-                      <span className="poster-meta">{formatPlays(drama.play_count)} plays</span>
-                    )}
-                  </a>
-                ))}
-          </div>
-          {!loading && !error && trending.length === 0 && (
-            <p className="empty-state">No published dramas yet. Check back after the next release.</p>
-          )}
-        </div>
-      </section>
-
-      {teaser.length > 0 && (
-        <section className="section">
-          <div className="shell">
-            <div className="section-head">
-              <div>
-                <span className="eyebrow">Free Preview</span>
-                <h2>Watch free episodes online</h2>
-                <p className="section-sub">
-                  The first episodes of our shows stream free in your browser — no app
-                  needed. Paid episodes unlock in the MiniTV app.
-                </p>
-              </div>
-              <a className="text-link" href="#preview">
-                Open the free preview →
-              </a>
-            </div>
-            <div className="poster-grid">
-              {teaser.map((drama) => (
-                <a className="poster" key={drama.id} href={`#watch/${drama.id}`}>
-                  <span className="poster-frame">
-                    <PosterImage src={drama.cover_url} alt={`${drama.title} cover`} />
-                    <span className="preview-badge preview-badge-compact">
-                      {drama.free_playable_count} free
-                    </span>
-                    <span className="poster-overlay">Watch free</span>
-                  </span>
-                  <span className="poster-title">{drama.title}</span>
-                  <span className="poster-meta">Free episodes on the web</span>
-                </a>
-              ))}
-            </div>
-          </div>
-        </section>
-      )}
-
-      {testimonials.length > 0 && (
-        <section className="section">
-          <div className="shell">
-            <div className="section-head">
-              <div>
-                <span className="eyebrow">Loved by viewers</span>
-                <h2>What people say</h2>
-              </div>
-            </div>
-            <div className="quote-grid">
-              {testimonials.map((item) => (
-                <blockquote className="quote" key={item.author}>
-                  <span className="quote-stars" aria-label="5 out of 5 stars">
-                    ★★★★★
-                  </span>
-                  <p>{item.body}</p>
-                  <footer>{item.author}</footer>
-                </blockquote>
-              ))}
-            </div>
-          </div>
-        </section>
-      )}
-
-      <section id="premium" className="section">
-        <div className="shell">
-          <div className="section-head">
-            <div>
-              <span className="eyebrow">Premium</span>
-              <h2>Pick how you unlock</h2>
-              <p className="section-sub">
-                Same three plans everywhere. Subscribe on the web with a card (secure
-                checkout by Stripe) or in the app through the App Store or Google Play.
-              </p>
-            </div>
-          </div>
-          <div className="plan-grid">
-            {loading
-              ? Array.from({ length: 3 }, (_, index) => (
-                  <div className="plan" key={index}>
-                    <span className="skeleton stat-label-skeleton" />
-                    <span className="skeleton stat-value-skeleton" />
-                    <span className="skeleton stat-label-skeleton" />
-                  </div>
-                ))
-              : plans.map((plan) => (
-                  <article
-                    className={plan.benefits?.best ? "plan best" : "plan"}
-                    key={plan.code}
-                  >
-                    {plan.benefits?.best && <span className="plan-badge">Most popular</span>}
-                    <h3 className="plan-name">{plan.name_en}</h3>
-                    <p className="plan-price">
-                      <strong>${(plan.price_cents / 100).toFixed(2)}</strong>
-                      <span>/ {planUnit[plan.code] ?? "period"}</span>
-                    </p>
-                    <ul className="plan-benefits">
-                      {(plan.benefits?.items ?? []).map((item) => (
-                        <li key={item}>{item}</li>
-                      ))}
-                    </ul>
-                    <a
-                      className={
-                        plan.benefits?.best
-                          ? "btn btn-primary btn-block plan-cta"
-                          : "btn btn-ghost btn-block plan-cta"
-                      }
-                      href="https://h5.minitv.us"
-                    >
-                      Subscribe on the web
-                    </a>
-                  </article>
-                ))}
-          </div>
-        </div>
-      </section>
-
-      <section className="section">
-        <div className="shell">
-          <div className="section-head">
-            <div>
-              <span className="eyebrow">FAQ</span>
-              <h2>Good to know</h2>
-            </div>
-          </div>
-          <div className="faq-list">
-            {faqs.map((faq) => (
-              <details className="faq-item" key={faq.q}>
-                <summary>{faq.q}</summary>
-                <p>{faq.a}</p>
-              </details>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      <section id="download" className="section">
-        <div className="shell">
-          <div className="download-card">
-            <div className="download-copy">
-              <span className="eyebrow">Download</span>
-              <h2>Get MiniTV on your phone</h2>
-              <p>
-                Install the app to unlock every episode, download shows, and manage your
-                subscription. The Android build is ready — install the APK below. iOS is
-                still on the way; until then, free previews and the full web app work
-                right here in your browser.
-              </p>
-              <div className="store-buttons">
-                <a
-                  className="store-btn store-btn-apk"
-                  href={ANDROID_APK.url}
-                  download={`MiniTV-${ANDROID_APK.version}.apk`}
-                >
-                  <svg className="icon-stroke" viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="M12 3.6v10.4" />
-                    <path d="m7.4 9.9 4.6 4.6 4.6-4.6" />
-                    <path d="M4.6 17.3v1.3a1.8 1.8 0 0 0 1.8 1.8h11.2a1.8 1.8 0 0 0 1.8-1.8v-1.3" />
-                  </svg>
-                  <span>
-                    <small>
-                      Android {ANDROID_MIN}+ · {ANDROID_APK.size}
-                    </small>
-                    <strong>Download APK</strong>
-                  </span>
-                </a>
-                <a
-                  className="store-btn store-btn-web"
-                  href={WEB_APP_URL}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  <svg className="icon-stroke" viewBox="0 0 24 24" aria-hidden="true">
-                    <circle cx="12" cy="12" r="8.4" />
-                    <path d="M3.6 12h16.8" />
-                    <path d="M12 3.6c2.4 2.5 2.4 14.4 0 16.8M12 3.6c-2.4 2.5-2.4 14.4 0 16.8" />
-                  </svg>
-                  <span>
-                    <small>No download needed</small>
-                    <strong>Watch Online</strong>
-                  </span>
-                </a>
-              </div>
-              <p className="apk-hint">
-                v{ANDROID_APK.version} · The first install asks you to allow installs from
-                this browser — tap Settings, allow, then Install.
-              </p>
-              <div className="store-buttons store-buttons-soon">
-                <button
-                  type="button"
-                  className="store-btn"
-                  onClick={() =>
-                    showStoreNotice(
-                      "The iOS app is coming soon — watch online in your browser for now.",
-                    )
-                  }
-                >
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="M17.05 20.28c-.98.95-2.05.8-3.08.35-1.09-.46-2.09-.48-3.24 0-1.44.62-2.2.44-3.06-.35C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.53 4.08zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z" />
-                  </svg>
-                  <span>
-                    <small>Coming soon</small>
-                    <strong>App Store</strong>
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  className="store-btn"
-                  onClick={() =>
-                    showStoreNotice(
-                      "Google Play is coming soon — download the APK above to install the Android app now.",
-                    )
-                  }
-                >
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="M3.61 1.81 13.79 12 3.61 22.19a1 1 0 0 1-.61-.92V2.73a1 1 0 0 1 .61-.92zM14.5 12.7l2.3 2.3-10.94 6.34 8.64-8.64zm3.2-3.2 2.8 1.63a1 1 0 0 1 0 1.73l-2.8 1.63-2.5-2.49 2.5-2.5zM5.95 3.06l10.94 6.33-2.3 2.3-8.64-8.63z" />
-                  </svg>
-                  <span>
-                    <small>Coming soon</small>
-                    <strong>Google Play</strong>
-                  </span>
-                </button>
-              </div>
-              {storeNotice && (
-                <p className="store-note" role="status" aria-live="polite">
-                  {storeNotice}
-                </p>
-              )}
-            </div>
-            <div className="qr-block">
-              <div className="qr-tile">
-                <img src="/qr-web.png" alt="QR code to watch MiniTV in your browser" />
-              </div>
-              <p className="qr-caption">Scan to watch on the web</p>
-            </div>
-          </div>
-        </div>
-      </section>
-    </main>
-  );
-}
-
+import { resolveStoreRoute } from "./store-route";
+import { cleanupCheckoutReturn, readCheckoutReturn } from "../../shared/consumer/payment-channels";
+import { getSite, siteName, siteLink, siteFeature, siteStorageKey } from "../../shared/site";
+import { LocaleProvider, useLocale } from "./locale";
+import { LanguageMenu } from "./language-menu";
+import { useEffect, useState, lazy, Suspense } from "react";
+import { AuthProvider, useAuth } from "./auth";
+import { Login } from "./login";
+import { Home, Browse, ForYou } from "./browse";
+import { Account, Rewards } from "./account";
+import { Store, CheckoutReturn } from "./commerce";
+const Watch = lazy(() =>
+  import("./player").then((module) => ({ default: module.Watch })),
+);
+import { Support } from "./support";
+import { get, post, errorMessage } from "./consumer-api";
+import { Failure, Icon, Loading } from "./components";
 export default function App() {
-  const [route, setRoute] = useState<Route>(() => parseRoute());
-  const previousKind = useRef<Route["kind"] | null>(null);
-
-  useEffect(() => {
-    const onHashChange = () => setRoute(parseRoute());
-    window.addEventListener("hashchange", onHashChange);
-    return () => window.removeEventListener("hashchange", onHashChange);
-  }, []);
-
-  useEffect(() => {
-    // Page switches jump; anchors within the homepage keep smooth scrolling.
-    const instant = previousKind.current !== null && previousKind.current !== route.kind;
-    previousKind.current = route.kind;
-    scrollToRoute(route, { instant });
-  }, [route]);
-
   return (
-    <div className="page">
-      <SiteHeader />
-      {route.kind === "home" && <HomePage />}
-      {route.kind === "preview" && <PreviewPage />}
-      {route.kind === "watch" && <WatchPage dramaId={route.dramaId} />}
-      <SiteFooter />
+    <LocaleProvider><AuthProvider>
+      <Shell />
+    </AuthProvider></LocaleProvider>
+  );
+}
+function Shell() {
+  const { t } = useLocale();
+  const { user, status, loginOpen, openLogin, authError, refresh } = useAuth();
+  const [hash, setHash] = useState(window.location.hash.slice(1) || "home"),
+    [menu, setMenu] = useState(false);
+  const [checkout, setCheckout] = useState(() => readCheckoutReturn("jjtv_checkout_order"));
+  useEffect(() => {
+    const update = () => {
+      setHash(window.location.hash.slice(1) || "home");
+      setMenu(false);
+      setCheckout(null);
+      window.scrollTo(0, 0);
+    };
+    window.addEventListener("hashchange", update);
+    return () => window.removeEventListener("hashchange", update);
+  }, []);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const hashQuery = new URLSearchParams(hash.split("?")[1] || "");
+    const paymentReturn = params.has("checkout");
+    if (paymentReturn) cleanupCheckoutReturn(params);
+    const pid = params.get("pid") || hashQuery.get("pid");
+    if (siteFeature("attribution") && pid && /^[A-Za-z0-9_-]{1,128}$/.test(pid)) {
+      localStorage.setItem(siteStorageKey("jjtv_attribution_pid"), pid);
+      void post("/v1/attr/visit", {
+        pid,
+        client_id: localStorage.getItem(siteStorageKey("jjtv_pc_device")) || undefined,
+        fbclid: params.get("fbclid") || undefined,
+        ttclid: params.get("ttclid") || undefined,
+      }).catch(() => undefined);
+    }
+    if (paymentReturn) {
+      const query = params.toString();
+      history.replaceState(
+        {},
+        "",
+        window.location.pathname +
+          (query ? "?" + query : "") +
+          window.location.hash,
+      );
+    }
+  }, []);
+  const [path, query = ""] = hash.replace(/^\/+/, "").split("?");
+  const params = new URLSearchParams(query);
+  const route = path.split("/");
+  const storeRoute = resolveStoreRoute(path, params.get("tab"), { coins: siteFeature("coins"), membership: siteFeature("membership") }, Boolean(user?.membership?.active));
+  const activeNavigation =
+    ["account", "me"].includes(route[0]) || path === "rewards"
+      ? "account"
+      : ["premium", "coins", "price"].includes(path)
+        ? "price"
+        : ["browse", "search", "shows", "preview"].includes(path)
+          ? "browse"
+          : path;
+  let content;
+  if (path === "home" || path === "") content = <Home />;
+  else if (["browse", "search", "shows", "preview"].includes(path))
+    content = <Browse key={path} query={query} preview={path === "preview"} searchOnly={path === "search"} />;
+  else if (path === "foryou") content = <ForYou />;
+  else if (route[0] === "watch") {
+    const id = Number(route[1]);
+    content =
+      Number.isSafeInteger(id) && id > 0 ? (
+        <Watch
+          key={id + ":" + (params.get("episode") || "resume")}
+          dramaId={id}
+          episodeId={Number(params.get("episode")) || undefined}
+        />
+      ) : (
+        <Failure message={t("This drama link is invalid.")} />
+      );
+  } else if (route[0] === "account" || route[0] === "me")
+    content = (
+      <Account key={route[1] || "history"} section={route[1] || "history"} />
+    );
+  else if (path === "premium" || path === "coins" || path === "price")
+    content = (
+      <Store
+        kind={storeRoute.kind}
+        sourceDramaId={Number(params.get("drama")) || undefined}
+        sourceEpisodeId={Number(params.get("episode")) || undefined}
+      />
+    );
+  else if (path === "rewards")
+    content = (
+      <>
+        <Account section="history" />
+        <Rewards
+          panel
+          onClose={() => {
+            window.location.hash =
+              params.get("return") === "price" ? "price" : "account";
+          }}
+        />
+      </>
+    );
+  else if (path === "support") content = <Support />;
+  else if (route[0] === "legal") content = <Legal slug={route[1] || "terms"} />;
+  else if (path === "about" || path === "download") content = <About />;
+  else content = <Home />;
+  if ((["coins","price","premium"].includes(path) && !storeRoute.available) || (path === "rewards" && !siteFeature("rewards")) || (path === "support" && !siteFeature("support"))) content = <Failure message={t("This feature is unavailable on this site.")} />;
+  return (
+    <div className="consumer-app">
+      {new URLSearchParams(window.location.search).has("preview_token") && <div className="site-preview-banner" role="status">{t("Brand preview — this draft is not published.")}</div>}
+      <a
+        className="skip-link"
+        href="#main-content"
+        onClick={(e) => {
+          e.preventDefault();
+          document.getElementById("main-content")?.focus();
+        }}
+      >
+        {t("Skip to content")}</a>
+      <header className="consumer-header">
+        <a className="consumer-brand" href="#home" aria-label={t("JJTV home")}>
+          {getSite().brand.logo_url ? <img src={getSite().brand.logo_url} alt=""/> : <span className="brand-symbol"><Icon name="play" size={20}/></span>}
+          {siteName()}
+        </a>
+        <button
+          className="icon-button mobile-menu"
+          aria-expanded={menu}
+          aria-label={t("Toggle navigation")}
+          onClick={() => setMenu(!menu)}
+        >
+          <Icon name="menu" />
+        </button>
+        <nav className={menu ? "open" : ""} aria-label={t("Main navigation")}>
+          {[
+            ["home", "Home"],
+            ["foryou", "For You"],
+            ["price", "Price"],
+            ["account", "Me"],
+          ].filter(([id])=>id!=="price"||siteFeature("membership")||siteFeature("coins")).map(([id, label]) => (
+            <a
+              key={id}
+              href={"#" + id}
+              className={activeNavigation === id ? "active" : ""}
+              aria-current={activeNavigation === id ? "page" : undefined}
+            >
+              {t(label)}
+            </a>
+          ))}
+        </nav>
+        <div className="header-account">
+          <a className={"header-search-trigger icon-button" + (path === "search" ? " active" : "")} href="#search" aria-label={t("Search dramas")}><Icon name="search" size={20}/></a>
+          <LanguageMenu />
+          {user ? (
+            <>
+              <a
+                className="profile-button"
+                href="#account"
+                aria-label={t("Your account")}
+              >
+                {user.display_name.slice(0, 1).toUpperCase()}
+              </a>
+            </>
+          ) : (
+            <button
+              className="button secondary sign-in"
+              onClick={openLogin}
+              disabled={status === "loading"}
+            >
+              {status === "loading" ? "…" : t("Sign in")}
+            </button>
+          )}
+        </div>
+      </header>
+      <main id="main-content" tabIndex={-1}>
+        {authError && (
+          <div className="auth-notice" role="alert">
+            <span>{t("Your session is saved.")} {t(authError)}</span>
+            <button className="button secondary" onClick={() => void refresh()}>
+              {t("Retry account connection")}</button>
+          </div>
+        )}
+        {checkout && (
+          <CheckoutReturn
+            reference={checkout}
+            onDismiss={() => setCheckout(null)}
+          />
+        )}
+        <Suspense fallback={<Loading />}>{content}</Suspense>
+      </main>
+      <footer className="consumer-footer">
+        <div className="footer-identity"><a className="consumer-brand" href="#home">{siteName()}</a><span>© {new Date().getFullYear()} {getSite().company.name || siteName()}</span></div>
+        <nav aria-label={t("Footer")}><a href="#about">{t("About")}</a>{siteFeature("support")&&<a href="#support">{t("Help & support")}</a>}<a href="#legal/terms">{t("Terms")}</a><a href="/privacy.html">{t("Privacy")}</a></nav>
+      </footer>
+      {loginOpen && <Login />}
+    </div>
+  );
+}
+function About() {
+  const { t } = useLocale();
+  return (
+    <div className="page-content about-page">
+      <span className="eyebrow">{t("Welcome to JJTV")}</span>
+      <h1>{t("Stories that fit your day.")}</h1>
+      <p>
+        {t("Discover short dramas, watch free episodes, and unlock the stories you love with coins or membership.")}</p>
+      <div className="button-row">
+        <a className="button primary" href="#browse">
+          {t("Watch online")}</a>
+        <a
+          className="button secondary"
+          href={siteLink("h5")}
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          {t("Open mobile web app")}<Icon name="arrow" />
+        </a>
+      </div>
+      <div className="about-card">
+        <img src="/ph_feed.png" alt={t("JJTV mobile viewing experience")} />
+        <div>
+          <h2>{t("Take the story with you.")}</h2>
+          <p>
+            {t("The mobile web app is ready to watch in your browser. Native app downloads will appear when verified JJTV builds are available.")}</p>
+          <a href={siteLink("h5")} className="button primary">
+            {t("Watch on mobile")}</a>
+        </div>
+      </div>
+    </div>
+  );
+}
+function Legal({ slug }: { slug: string }) {
+  const { t } = useLocale();
+  const [data, setData] = useState<{
+      title?: string;
+      body?: string;
+      content?: string;
+    } | null>(null),
+    [error, setError] = useState("");
+  useEffect(() => {
+    setData(null);
+    setError("");
+    get<{ title?: string; body?: string; content?: string }>(
+      "/v1/legal/" + encodeURIComponent(slug),
+    )
+      .then(setData)
+      .catch((e) => setError(errorMessage(e)));
+  }, [slug]);
+  return (
+    <div className="page-content legal-page">
+      {error ? (
+        <Failure message={error} />
+      ) : !data ? (
+        <Loading />
+      ) : (
+        <>
+          <h1>{data.title || slug}</h1>
+          <div className="legal-body">
+            {data.body ||
+              data.content ||
+              t("This document is not available yet. Please contact support.")}
+          </div>
+        </>
+      )}
     </div>
   );
 }

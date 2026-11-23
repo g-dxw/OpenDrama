@@ -1,4 +1,4 @@
-# minitv
+# OpenDrama
 
 A new Flutter project.
 

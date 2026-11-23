@@ -11,6 +11,8 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
+    Index,
     Integer,
     String,
     Text,
@@ -20,14 +22,21 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
+from sqlalchemy import String, ForeignKey
 from app.db import Base
 
 
 class ChannelTab(Base):
     __tablename__ = "channel_tabs"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "code", name="uq_channel_tabs_tenant_code"),
+        ForeignKeyConstraint(["tenant_id", "group_id"], ["home_groups.tenant_id", "home_groups.id"], name="fk_channel_tabs_tenant_group"),
+        Index("ix_channel_tabs_tenant", "tenant_id"),
+    )
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="RESTRICT"), nullable=False, default="jjtv", server_default="jjtv")
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    code: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)
+    code: Mapped[str] = mapped_column(String(32), nullable=False)
     title_en: Mapped[str] = mapped_column(String(64), nullable=False)
     title_zh: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -40,6 +49,11 @@ class ChannelTab(Base):
 
 class Banner(Base):
     __tablename__ = "banners"
+    __table_args__ = (
+        ForeignKeyConstraint(["tenant_id", "drama_id"], ["dramas.tenant_id", "dramas.id"], name="fk_banners_tenant_drama"),
+        Index("ix_banners_tenant", "tenant_id"),
+    )
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="RESTRICT"), nullable=False, default="jjtv", server_default="jjtv")
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     slot: Mapped[str] = mapped_column(String(32), nullable=False, default="home")
@@ -55,6 +69,7 @@ class Banner(Base):
 
 class HotSearch(Base):
     __tablename__ = "hot_searches"
+    tenant_id: Mapped[str] = mapped_column(ForeignKey('tenants.id', ondelete='RESTRICT'), nullable=False, default='jjtv', server_default='jjtv', index=True)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     term: Mapped[str] = mapped_column(String(80), nullable=False)
@@ -64,6 +79,7 @@ class HotSearch(Base):
 
 class CopyEntry(Base):
     __tablename__ = "copy_entries"
+    tenant_id: Mapped[str] = mapped_column(ForeignKey('tenants.id', ondelete='RESTRICT'), nullable=False, default='jjtv', server_default='jjtv', index=True)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     key: Mapped[str] = mapped_column(String(120), unique=True, nullable=False)
@@ -75,6 +91,7 @@ class MarketingStat(Base):
     """Configured marketing numbers. Never read from live playback counters."""
 
     __tablename__ = "marketing_stats"
+    tenant_id: Mapped[str] = mapped_column(ForeignKey('tenants.id', ondelete='RESTRICT'), nullable=False, default='jjtv', server_default='jjtv', index=True)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     label: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -84,6 +101,7 @@ class MarketingStat(Base):
 
 class Testimonial(Base):
     __tablename__ = "testimonials"
+    tenant_id: Mapped[str] = mapped_column(ForeignKey('tenants.id', ondelete='RESTRICT'), nullable=False, default='jjtv', server_default='jjtv', index=True)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     author: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -93,6 +111,7 @@ class Testimonial(Base):
 
 class StoreLink(Base):
     __tablename__ = "store_links"
+    tenant_id: Mapped[str] = mapped_column(ForeignKey('tenants.id', ondelete='RESTRICT'), nullable=False, default='jjtv', server_default='jjtv', index=True)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     platform: Mapped[str] = mapped_column(String(16), unique=True, nullable=False)
@@ -101,6 +120,7 @@ class StoreLink(Base):
 
 class LegalPage(Base):
     __tablename__ = "legal_pages"
+    tenant_id: Mapped[str] = mapped_column(ForeignKey('tenants.id', ondelete='RESTRICT'), primary_key=True, nullable=False, default='jjtv', server_default='jjtv', index=True)
 
     slug: Mapped[str] = mapped_column(String(32), primary_key=True)
     title: Mapped[str] = mapped_column(String(120), nullable=False)
@@ -111,6 +131,7 @@ class RewardConfig(Base):
     """Reward amounts. A newly saved row takes effect on effective_on (next day)."""
 
     __tablename__ = "reward_configs"
+    tenant_id: Mapped[str] = mapped_column(ForeignKey('tenants.id', ondelete='RESTRICT'), nullable=False, default='jjtv', server_default='jjtv', index=True)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     code: Mapped[str] = mapped_column(String(32), nullable=False)  # checkin / register / bind_email / bind_facebook / ad
@@ -125,6 +146,7 @@ class RewardConfig(Base):
 
 class Checkin(Base):
     __tablename__ = "checkins"
+    tenant_id: Mapped[str] = mapped_column(ForeignKey('tenants.id', ondelete='RESTRICT'), nullable=False, default='jjtv', server_default='jjtv', index=True)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
@@ -140,6 +162,7 @@ class Checkin(Base):
 
 class AdClaim(Base):
     __tablename__ = "ad_claims"
+    tenant_id: Mapped[str] = mapped_column(ForeignKey('tenants.id', ondelete='RESTRICT'), nullable=False, default='jjtv', server_default='jjtv', index=True)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
@@ -156,6 +179,7 @@ class TaskClaim(Base):
     """One payout per user, task and local day. Daily tasks reset at midnight LA."""
 
     __tablename__ = "task_claims"
+    tenant_id: Mapped[str] = mapped_column(ForeignKey('tenants.id', ondelete='RESTRICT'), nullable=False, default='jjtv', server_default='jjtv', index=True)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
@@ -180,8 +204,9 @@ class ModerationSettings(Base):
     """
 
     __tablename__ = "moderation_settings"
+    tenant_id: Mapped[str] = mapped_column(ForeignKey('tenants.id', ondelete='RESTRICT'), nullable=False, default='jjtv', server_default='jjtv', index=True)
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     base_url: Mapped[str] = mapped_column(String(200), nullable=False, default="https://api.openai.com/v1")
     model: Mapped[str] = mapped_column(String(64), nullable=False, default="gpt-4o-mini")

@@ -22,7 +22,7 @@ def client(session):
 def _headers(make, client, role="admin") -> dict:
     account = make.admin(role=role)
     response = client.post(
-        "/admin/v1/auth/login", json={"username": account.username, "password": "pass-1234"}
+        "/admin/v1/auth/login", json={"tenant_code": "jjtv", "username": account.username, "password": "pass-1234"}
     )
     assert response.status_code == 200, response.text
     return {"Authorization": f"Bearer {response.json()['token']}"}

@@ -30,7 +30,7 @@ def client(session):
 
 
 def _login(client, username, password="pass-1234"):
-    response = client.post("/admin/v1/auth/login", json={"username": username, "password": password})
+    response = client.post("/admin/v1/auth/login", json={"tenant_code": "jjtv", "username": username, "password": password})
     assert response.status_code == 200, response.text
     return {"Authorization": f"Bearer {response.json()['token']}"}
 
@@ -355,6 +355,7 @@ def test_copy_requires_english_and_price_versions_stay_pinned(make, client, sess
 
 
 def test_google_verified_email_merges_with_existing_user(make, session, client, monkeypatch):
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "test.apps.googleusercontent.com")
     from app.modules.account.google import GoogleIdentity
     from app.modules.account.models import ThirdPartyIdentity
 
@@ -384,6 +385,7 @@ def test_google_verified_email_merges_with_existing_user(make, session, client, 
 
 
 def test_google_unverified_email_does_not_merge(make, session, client, monkeypatch):
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "test.apps.googleusercontent.com")
     from app.modules.account.google import GoogleIdentity
 
     existing = make.user(email="same@example.com")

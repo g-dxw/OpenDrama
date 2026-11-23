@@ -1,3 +1,12 @@
+import { siteStorageKey } from "../../shared/site";
+import {
+  checkoutReturnMarker,
+  isReconciledProvider,
+  paymentChannelFields,
+  paymentChannelKey,
+  type CheckoutOrderStatus,
+  type PaymentChannel,
+} from "../../shared/consumer/payment-channels";
 import type {
   CommentCreateResult,
   CommentsPayload,
@@ -8,96 +17,36 @@ import type {
   MessagesPayload,
 } from "./types";
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? "";
-
+import { createConsumerClient, ApiError } from "../../shared/consumer/client";
+export { ApiError };
 const DEVICE_KEY = "minitv_h5_device";
-
-export function deviceId(): string {
-  const existing = localStorage.getItem(DEVICE_KEY);
-  if (existing) return existing;
-  const created = `h5-${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
-  localStorage.setItem(DEVICE_KEY, created);
-  return created;
-}
-
-export class ApiError extends Error {
-  status: number;
-  /** Parsed response body (e.g. the {need, have} object behind a 402). */
-  data: unknown;
-  constructor(status: number, message: string, data: unknown = null) {
-    super(message);
-    this.status = status;
-    this.data = data;
+export function deviceId() {
+  let value = localStorage.getItem(siteStorageKey(DEVICE_KEY));
+  if (!value) {
+    value = "h5-" + crypto.randomUUID();
+    localStorage.setItem(siteStorageKey(DEVICE_KEY), value);
   }
+  return value;
 }
-
-let token: string | null = localStorage.getItem("minitv_h5_token");
-
-export function authToken(): string | null {
-  return token;
-}
-
-export function setAuthToken(value: string | null) {
-  token = value;
-  if (value) localStorage.setItem("minitv_h5_token", value);
-  else localStorage.removeItem("minitv_h5_token");
-}
-
-let unauthorizedHandler: (() => void) | null = null;
-
-/** The session died (expired token, revoked). Let the auth layer reset to guest. */
-export function onUnauthorized(handler: (() => void) | null) {
-  unauthorizedHandler = handler;
-}
-
-async function send(
-  method: string,
-  path: string,
-  body?: unknown,
-  headers: Record<string, string> = {},
-): Promise<unknown> {
-  let response: Response;
-  try {
-    response = await fetch(`${API_BASE}${path}`, {
-      method,
-      headers: {
-        "Content-Type": "application/json",
-        "X-Device-Id": deviceId(),
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        ...headers,
-      },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
-  } catch {
-    throw new ApiError(0, "network");
-  }
-  if (!response.ok) {
-    let detail = `HTTP ${response.status}`;
-    let payload: unknown = null;
-    try {
-      const data = (await response.json()) as { detail?: unknown };
-      payload = data;
-      if (typeof data.detail === "string") detail = data.detail;
-    } catch {
-      /* body was not JSON */
-    }
-    // A failed sign-in is a wrong code, not a dead session.
-    if (response.status === 401 && !path.startsWith("/v1/auth/") && unauthorizedHandler) {
-      unauthorizedHandler();
-    }
-    throw new ApiError(response.status, detail, payload);
-  }
-  return response.json();
-}
-
-export function getJson<T>(path: string): Promise<T> {
-  return send("GET", path) as Promise<T>;
-}
-
-export function postJson<T>(path: string, body: unknown): Promise<T> {
-  return send("POST", path, body) as Promise<T>;
-}
-
+const client = createConsumerClient({
+  apiBase:
+    import.meta.env.VITE_API_BASE ?? "",
+  attributionPid: () => localStorage.getItem(siteStorageKey("jjtv_attribution_pid")),
+  deviceId,
+  tokenStore: {
+    get: () => localStorage.getItem(siteStorageKey("minitv_h5_token")),
+    set: (value) => {
+      if (value) localStorage.setItem(siteStorageKey("minitv_h5_token"), value);
+      else localStorage.removeItem(siteStorageKey("minitv_h5_token"));
+    },
+  },
+});
+export const authToken = client.authToken,
+  setAuthToken = client.setAuthToken,
+  onUnauthorized = client.onUnauthorized;
+const send = client.send;
+export const getJson = client.get,
+  postJson = client.post;
 export interface AuthProviders {
   email: { enabled: boolean };
   google: { enabled: boolean; client_id: string | null };
@@ -141,10 +90,16 @@ export function getAuthProviders(): Promise<AuthProviders> {
 }
 
 export function sendEmailCode(email: string): Promise<{ sent: boolean }> {
-  return postJson<{ sent: boolean }>("/v1/auth/email/code", { email, purpose: "login" });
+  return postJson<{ sent: boolean }>("/v1/auth/email/code", {
+    email,
+    purpose: "login",
+  });
 }
 
-export function authenticateEmail(email: string, code: string): Promise<Session> {
+export function authenticateEmail(
+  email: string,
+  code: string,
+): Promise<Session> {
   return postJson<Session>("/v1/auth/email/authenticate", { email, code });
 }
 
@@ -161,12 +116,21 @@ export function getMe(): Promise<MeProfile> {
   return getJson<MeProfile>("/v1/me");
 }
 
-export function getFavorites(limit = 50, offset = 0): Promise<FavoritesPayload> {
-  return getJson<FavoritesPayload>(`/v1/me/favorites?limit=${limit}&offset=${offset}`);
+export function getFavorites(
+  limit = 50,
+  offset = 0,
+): Promise<FavoritesPayload> {
+  return getJson<FavoritesPayload>(
+    `/v1/me/favorites?limit=${limit}&offset=${offset}`,
+  );
 }
 
-export function getHistory(): Promise<HistoryPayload> {
-  return getJson<HistoryPayload>("/v1/me/history");
+export function getHistory(limit?: number, offset = 0): Promise<HistoryPayload> {
+  // Preserve the original no-argument request for existing callers.
+  const url = limit == null && offset === 0
+    ? "/v1/me/history"
+    : `/v1/me/history?limit=${limit ?? 60}&offset=${offset}`;
+  return getJson<HistoryPayload>(url);
 }
 
 export function getLikes(): Promise<LikesPayload> {
@@ -236,7 +200,10 @@ export function claimTask(code: string): Promise<TaskClaimResult> {
   return postJson<TaskClaimResult>(`/v1/me/tasks/${code}/claim`, {});
 }
 
-export function updateMe(body: { display_name?: string; bio?: string }): Promise<{ ok: boolean }> {
+export function updateMe(body: {
+  display_name?: string;
+  bio?: string;
+}): Promise<{ ok: boolean }> {
   return send("PATCH", "/v1/me", body) as Promise<{ ok: boolean }>;
 }
 
@@ -252,10 +219,18 @@ export interface UnlockResult {
  * Spend coins on one episode. The key makes retries safe: reuse the same value
  * for a retry, and mint a new one for a different episode or a fresh intent.
  */
-export function unlockEpisode(episodeId: number, idempotencyKey: string): Promise<UnlockResult> {
-  return send("POST", "/v1/unlock", { episode_id: episodeId }, {
-    "Idempotency-Key": idempotencyKey,
-  }) as Promise<UnlockResult>;
+export function unlockEpisode(
+  episodeId: number,
+  idempotencyKey: string,
+): Promise<UnlockResult> {
+  return send(
+    "POST",
+    "/v1/unlock",
+    { episode_id: episodeId },
+    {
+      "Idempotency-Key": idempotencyKey,
+    },
+  ) as Promise<UnlockResult>;
 }
 
 export interface Plan {
@@ -286,9 +261,96 @@ export function getPlans(): Promise<PlansPayload> {
   return getJson<PlansPayload>("/v1/plans");
 }
 
-/** Create a Stripe Checkout session and send the browser to it. */
-export function startCheckout(planCode: string): Promise<CheckoutResult> {
-  return postJson<CheckoutResult>("/v1/billing/checkout", { plan_code: planCode });
+export function getPaymentChannels(): Promise<{items: PaymentChannel[]}> {
+  return getJson<{items: PaymentChannel[]}>("/v1/billing/channels");
+}
+
+const membershipIntentKey = (planCode: string, channel?: PaymentChannel) =>
+  "jjtv_checkout_membership_" + planCode +
+  (channel && isReconciledProvider(channel.provider) ? ":" + paymentChannelKey(channel) : "");
+export function membershipCheckoutIntent(planCode: string, channel?: PaymentChannel): string {
+  const key = membershipIntentKey(planCode, channel);
+  let intent = sessionStorage.getItem(key);
+  if (!intent) {
+    intent = crypto.randomUUID();
+    sessionStorage.setItem(key, intent);
+  }
+  return intent;
+}
+export function matchesMembershipCheckoutIntent(
+  planCode: string,
+  expectedIntent: string,
+  ownerToken: string,
+  channel?: PaymentChannel,
+): boolean {
+  return (
+    authToken() === ownerToken &&
+    sessionStorage.getItem(membershipIntentKey(planCode, channel)) === expectedIntent
+  );
+}
+/** Rotate only a terminal intent explicitly confirmed by the user, preserving newer attempts. */
+export function replaceExpiredMembershipIntent(
+  planCode: string,
+  expectedIntent: string,
+  ownerToken: string,
+  channel?: PaymentChannel,
+): boolean {
+  const key = membershipIntentKey(planCode, channel);
+  if (!matchesMembershipCheckoutIntent(planCode, expectedIntent, ownerToken, channel))
+    return false;
+  sessionStorage.setItem(key, crypto.randomUUID());
+  return true;
+}
+/** The caller confirmed this exact order settled and paid or fully refunded before its explicit action. */
+export const replacePaidMembershipIntent = replaceExpiredMembershipIntent;
+export function getCheckoutOrder(
+  orderNo: string,
+): Promise<CheckoutOrderStatus> {
+  return getJson<CheckoutOrderStatus>(
+    "/v1/commerce/orders/" + encodeURIComponent(orderNo),
+  );
+}
+export function cancelPendingMembershipOrder(orderNo: string) {
+  return postJson<{ order_no: string; canceled: boolean }>(
+    "/v1/commerce/orders/" + encodeURIComponent(orderNo) + "/cancel",
+    undefined,
+  );
+}
+
+export function reconcileReturnedCheckout(orderNo: string): Promise<CheckoutOrderStatus> {
+  return postJson<CheckoutOrderStatus>(
+    "/v1/commerce/orders/" + encodeURIComponent(orderNo) + "/reconcile",
+    undefined,
+  );
+}
+
+/** Uncertain retries keep the exact same payment intent. */
+export function startCheckout(
+  planCode: string,
+  intent: string,
+  channel?: PaymentChannel,
+): Promise<CheckoutResult> {
+  return postJson<CheckoutResult>(
+    "/v1/commerce/checkout",
+    {
+      product_type: "membership",
+      code: planCode,
+      ...paymentChannelFields(channel),
+      idempotency_key: intent,
+      attribution_pid:
+        localStorage.getItem(siteStorageKey("jjtv_attribution_pid")) || undefined,
+      success_url:
+        window.location.origin +
+        "/?checkout=success&surface=h5" +
+        checkoutReturnMarker(channel?.provider) +
+        window.location.hash,
+      cancel_url:
+        window.location.origin +
+        "/?checkout=cancel&surface=h5" +
+        window.location.hash,
+    },
+    { "Idempotency-Key": intent },
+  );
 }
 
 /** Stop renewing; access stays until the end of the paid period. */
@@ -316,16 +378,25 @@ export interface OrdersPayload {
 
 /** Purchase history shown in the Me page. */
 export function getOrders(limit = 20, offset = 0): Promise<OrdersPayload> {
-  return getJson<OrdersPayload>(`/v1/me/orders?limit=${limit}&offset=${offset}`);
+  return getJson<OrdersPayload>(
+    `/v1/me/orders?limit=${limit}&offset=${offset}`,
+  );
 }
 
-
-export function listComments(episodeId: number, cursor: number | null = null, limit = 20) {
+export function listComments(
+  episodeId: number,
+  cursor: number | null = null,
+  limit = 20,
+) {
   const query = new URLSearchParams({ limit: String(limit) });
   if (cursor) query.set("cursor", String(cursor));
-  return getJson<CommentsPayload>(`/v1/episodes/${episodeId}/comments?${query}`);
+  return getJson<CommentsPayload>(
+    `/v1/episodes/${episodeId}/comments?${query}`,
+  );
 }
 
 export function createComment(episodeId: number, body: string) {
-  return postJson<CommentCreateResult>(`/v1/episodes/${episodeId}/comments`, { body });
+  return postJson<CommentCreateResult>(`/v1/episodes/${episodeId}/comments`, {
+    body,
+  });
 }

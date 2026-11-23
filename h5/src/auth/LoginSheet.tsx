@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   ApiError,
   authenticateEmail,
@@ -10,7 +10,7 @@ import {
 } from "../api";
 import type { Locale } from "../copy";
 import { t } from "../copy";
-import { IconClose } from "../icons";
+import { Sheet } from "../ui/Sheet";
 import { useAuth } from "./AuthProvider";
 import { facebookAccessToken, prepareFacebookLogin } from "./facebook";
 import { renderGoogleButton } from "./google";
@@ -158,6 +158,12 @@ function LoginForm({
 
   const focusBox = (index: number) => boxes.current[index]?.focus();
 
+  // Focus the new code form before the browser accepts keystrokes. A delayed
+  // callback can otherwise steal focus from a viewer already entering digits.
+  useLayoutEffect(() => {
+    if (step === "code") boxes.current[0]?.focus();
+  }, [step]);
+
   const setDigit = (index: number, raw: string) => {
     const clean = raw.replace(/\D/g, "");
     if (clean.length === 0) {
@@ -186,9 +192,9 @@ function LoginForm({
       .then(() => {
         setEmail(value);
         setDigits(Array.from({ length: CODE_LENGTH }, () => ""));
+        setBusy("idle");
         setStep("code");
         setCooldown(RESEND_SECONDS);
-        window.setTimeout(() => focusBox(0), 60);
       })
       .catch((err) => setError(messageFor(err, locale)))
       .finally(() => setBusy("idle"));
@@ -221,17 +227,14 @@ function LoginForm({
   const disabled = busy !== "idle";
 
   return (
-    <>
-      <button className="sheet-mask auth-mask" onClick={onClose} aria-label={t(locale, "close")} />
-      <div className="sheet auth-sheet" role="dialog" aria-modal="true" aria-label={t(locale, "sign_in")} data-testid="login-sheet">
-        <div className="sheet-handle" />
-        <header className="auth-head">
-          <h3>{step === "email" ? t(locale, "sign_in") : t(locale, "enter_code")}</h3>
-          <button type="button" className="close-btn" onClick={onClose} aria-label={t(locale, "close")}>
-            <IconClose size={18} />
-          </button>
-        </header>
-
+    <Sheet
+      title={step === "email" ? t(locale, "sign_in") : t(locale, "enter_code")}
+      closeLabel={t(locale, "close")}
+      onClose={onClose}
+      className="auth-sheet"
+      maskClassName="auth-mask"
+      testId="login-sheet"
+    >
         <div className="auth-body">
           {step === "email" ? (
             <>
@@ -339,7 +342,6 @@ function LoginForm({
           {error && <p className="auth-error" role="alert">{error}</p>}
           <p className="auth-terms">{t(locale, "terms")}</p>
         </div>
-      </div>
-    </>
+    </Sheet>
   );
 }

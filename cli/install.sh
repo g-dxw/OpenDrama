@@ -1,15 +1,15 @@
 #!/bin/sh
-# MiniTV CLI installer.
+# OpenDrama CLI installer.
 #
-#   curl -fsSL https://minitv.us/cli/install.sh | sh
-#   curl -fsSL https://minitv.us/cli/install.sh | MINITV_API_KEY='mk_live_...' sh
+#   curl -fsSL https://YOUR_INSTANCE/cli/install.sh | OPENDRAMA_CLI_BASE=https://YOUR_INSTANCE/cli OPENDRAMA_API_BASE=https://YOUR_INSTANCE sh
+#   curl -fsSL https://YOUR_INSTANCE/cli/install.sh | OPENDRAMA_API_KEY='mk_live_...' sh
 #
-# 行为：校验 python3 → 下载单文件到 ~/.local/bin/minitv → 可选写入 API Key →
-# 自检。幂等：重复执行是覆盖升级，没给 MINITV_API_KEY 时不动已保存的密钥。
+# 行为：校验 python3 → 下载单文件到 ~/.local/bin/opendrama → 可选写入 API Key →
+# 自检。幂等：重复执行是覆盖升级，没给 OPENDRAMA_API_KEY 时不动已保存的密钥。
 set -eu
 
-BASE="${MINITV_CLI_BASE:-https://minitv.us/cli}"
-PREFIX="${MINITV_BIN_DIR:-$HOME/.local/bin}"
+BASE="${OPENDRAMA_CLI_BASE:-}"
+PREFIX="${OPENDRAMA_BIN_DIR:-$HOME/.local/bin}"
 DO_DOCTOR=1
 MIN_PY="3.8"
 
@@ -22,17 +22,19 @@ while [ $# -gt 0 ]; do
     --base=*) BASE="${1#*=}"; shift ;;
     -h|--help)
       cat <<'USAGE'
-minitv install.sh
+opendrama install.sh
 
 用法: sh install.sh [--prefix DIR] [--base URL] [--no-doctor]
 
   --prefix DIR   安装目录（默认 ~/.local/bin）
-  --base URL     下载基址（默认 https://minitv.us/cli）
-  --no-doctor    装完不跑 minitv doctor
+  --base URL     下载基址（需指定自己的实例 /cli 地址）
+  --no-doctor    装完不跑 opendrama doctor
   -h, --help     显示本说明
 
 环境变量:
-  MINITV_API_KEY 提供时自动写入（经 stdin，不进进程参数）；缺省则只安装。
+  OPENDRAMA_CLI_BASE 本实例的 /cli 下载地址。
+  OPENDRAMA_API_BASE 本实例 API 地址；随密钥一并保存。
+  OPENDRAMA_API_KEY 提供时自动写入（经 stdin，不进进程参数）；缺省则只安装。
 USAGE
       exit 0
       ;;
@@ -42,6 +44,7 @@ done
 
 say() { printf '%s\n' "$*"; }
 fail() { printf '[err] %s\n' "$*" >&2; exit 1; }
+[ -n "$BASE" ] || fail "请通过 --base 或 OPENDRAMA_CLI_BASE 指定自己的实例 /cli 地址"
 
 # ---- 1. python3 ----
 PY=$(command -v python3 || true)
@@ -56,8 +59,8 @@ say "python3  $("$PY" -c 'import sys; print(".".join(map(str, sys.version_info[:
 
 # ---- 2. download ----
 mkdir -p "$PREFIX" || fail "无法创建目录 $PREFIX"
-TMP="$PREFIX/.minitv.download.$$"
-URL="$BASE/minitv"
+TMP="$PREFIX/.opendrama.download.$$"
+URL="$BASE/opendrama"
 say "下载      $URL"
 if command -v curl >/dev/null 2>&1; then
   curl -fsSL "$URL" -o "$TMP" || { rm -f "$TMP"; fail "下载失败：$URL"; }
@@ -66,10 +69,10 @@ elif command -v wget >/dev/null 2>&1; then
 else
   fail "系统里没有 curl 或 wget"
 fi
-head -n 1 "$TMP" | grep -q "python" || { rm -f "$TMP"; fail "下载到的内容不是 minitv（检查 $BASE）"; }
+head -n 1 "$TMP" | grep -q "python" || { rm -f "$TMP"; fail "下载到的内容不是 opendrama（检查 $BASE）"; }
 chmod 0755 "$TMP"
-mv "$TMP" "$PREFIX/minitv"
-say "已安装    $PREFIX/minitv"
+mv "$TMP" "$PREFIX/opendrama"
+say "已安装    $PREFIX/opendrama"
 
 case ":$PATH:" in
   *":$PREFIX:"*) ;;
@@ -77,25 +80,32 @@ case ":$PATH:" in
      say "          export PATH=\"$PREFIX:\$PATH\"" ;;
 esac
 
-MINITV="$PREFIX/minitv"
+OPENDRAMA="$PREFIX/opendrama"
 
 # ---- 3. key ----
-if [ -n "${MINITV_API_KEY:-}" ]; then
+if [ -n "${OPENDRAMA_API_KEY:-}" ]; then
   # stdin, not argv: the key must never show up in `ps`.
-  if printf '%s' "$MINITV_API_KEY" | "$MINITV" config set-key --stdin; then
+  configure_key() {
+    if [ -n "${OPENDRAMA_API_BASE:-}" ]; then
+      "$OPENDRAMA" config set-key --stdin --base-url "$OPENDRAMA_API_BASE"
+    else
+      "$OPENDRAMA" config set-key --stdin
+    fi
+  }
+  if printf '%s' "$OPENDRAMA_API_KEY" | configure_key; then
     say "密钥      已写入本地凭据文件"
   else
     fail "密钥校验失败，未写入（磁盘上的旧密钥保持不变）"
   fi
 else
-  say "密钥      未提供；稍后运行 $MINITV config set-key"
+  say "密钥      未提供；稍后运行 $OPENDRAMA config set-key"
 fi
 
 # ---- 4. doctor ----
-if [ "$DO_DOCTOR" = "1" ] && [ -n "${MINITV_API_KEY:-}" ]; then
+if [ "$DO_DOCTOR" = "1" ] && [ -n "${OPENDRAMA_API_KEY:-}" ]; then
   say ""
-  "$MINITV" doctor || say "提示      doctor 未全部通过，按上面的提示处理"
+  "$OPENDRAMA" doctor || say "提示      doctor 未全部通过，按上面的提示处理"
 fi
 
 say ""
-say "下一步    $MINITV guide     # 完整手册"
+say "下一步    $OPENDRAMA guide     # 完整手册"

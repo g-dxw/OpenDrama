@@ -23,6 +23,7 @@ import {
   SearchOutlined,
 } from "@ant-design/icons";
 import { api, errorText } from "../api";
+import { usePermission, useModuleEnabled } from "../me";
 import { DragRow, GRAY, Handle, LINE, RED, RED_SOFT, reorder, type DragVisual } from "./dragSort";
 
 type FloorStyle = "poster3" | "rank" | "grid2";
@@ -104,13 +105,14 @@ function MoveButtons({
   onUp: () => void;
   onDown: () => void;
 }) {
+  const canManage = usePermission("groups.manage");
   return (
     <Space size={0}>
       <Tooltip title="上移">
         <Button
           size="small"
           type="text"
-          disabled={!canUp}
+          disabled={!canManage || !canUp}
           icon={<ArrowUpOutlined style={{ fontSize: 10 }} />}
           onClick={(event) => {
             event.stopPropagation();
@@ -123,7 +125,7 @@ function MoveButtons({
         <Button
           size="small"
           type="text"
-          disabled={!canDown}
+          disabled={!canManage || !canDown}
           icon={<ArrowDownOutlined style={{ fontSize: 10 }} />}
           onClick={(event) => {
             event.stopPropagation();
@@ -139,6 +141,11 @@ function MoveButtons({
 type DragKey = { kind: "tab" | "banner" | "floor"; id: number };
 
 export function HomeOpsPage() {
+  const groupsEnabled = useModuleEnabled("groups");
+  const dramasEnabled = useModuleEnabled("dramas");
+  const canViewGroups = usePermission("groups.view") && groupsEnabled;
+  const canManageGroups = usePermission("groups.manage") && groupsEnabled;
+  const canManage = usePermission("home_ops.manage");
   const [tabs, setTabs] = useState<TabRow[]>([]);
   const [groups, setGroups] = useState<GroupRow[]>([]);
   const [banners, setBanners] = useState<BannerRow[]>([]);
@@ -152,6 +159,9 @@ export function HomeOpsPage() {
   const [picking, setPicking] = useState(false);
   const [bannerSearch, setBannerSearch] = useState("");
   const [addingTab, setAddingTab] = useState(false);
+  const [renamingTab,setRenamingTab]=useState<TabRow|null>(null);
+  const [renameEn,setRenameEn]=useState('');
+  const [renameZh,setRenameZh]=useState('');
   const [addingFloor, setAddingFloor] = useState(false);
   const [loading, setLoading] = useState(true);
 
@@ -160,9 +170,9 @@ export function HomeOpsPage() {
     try {
       const [tabRes, groupRes, bannerRes, dramaRes] = await Promise.all([
         api<{ items: TabRow[] }>("/admin/v1/tabs"),
-        api<{ items: GroupRow[] }>("/admin/v1/groups"),
+        groupsEnabled ? api<{ items: GroupRow[] }>("/admin/v1/groups") : Promise.resolve({ items: [] as GroupRow[] }),
         api<{ items: BannerRow[] }>("/admin/v1/banners"),
-        api<{ items: DramaHit[] }>("/admin/v1/dramas?status=published&page_size=100"),
+        dramasEnabled ? api<{ items: DramaHit[] }>("/admin/v1/dramas?status=published&page_size=100") : Promise.resolve({ items: [] as DramaHit[] }),
       ]);
       setTabs(tabRes.items);
       setGroups(groupRes.items.slice().sort((a, b) => a.position - b.position || a.id - b.id));
@@ -186,7 +196,7 @@ export function HomeOpsPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [groupsEnabled, dramasEnabled]);
 
   useEffect(() => {
     load();
@@ -198,6 +208,7 @@ export function HomeOpsPage() {
   const discoverFloors = useMemo(() => groups.filter((group) => group.status === "active"), [groups]);
 
   const saveTabOrder = async (next: TabRow[]) => {
+    if (!canManage) return;
     setTabs(next);
     try {
       await Promise.all(
@@ -214,6 +225,7 @@ export function HomeOpsPage() {
   };
 
   const saveFloorOrder = async (next: GroupRow[]) => {
+    if (!canManageGroups) return;
     setGroups(next);
     try {
       await Promise.all(
@@ -228,6 +240,7 @@ export function HomeOpsPage() {
   };
 
   const saveBannerOrder = async (next: BannerRow[]) => {
+    if (!canManage) return;
     setBanners(next);
     try {
       await Promise.all(
@@ -242,6 +255,7 @@ export function HomeOpsPage() {
   };
 
   const patchTab = async (tab: TabRow, body: Record<string, unknown>) => {
+    if (!canManage) return;
     const previous = tabs;
     setTabs(tabs.map((item) => (item.id === tab.id ? { ...item, ...body } : item)));
     try {
@@ -254,6 +268,7 @@ export function HomeOpsPage() {
   };
 
   const patchGroup = async (group: GroupRow, body: Partial<GroupRow>) => {
+    if (!canManageGroups) return;
     const previous = groups;
     setGroups(groups.map((item) => (item.id === group.id ? { ...item, ...body } : item)));
     try {
@@ -271,6 +286,7 @@ export function HomeOpsPage() {
   const usedDramaIds = new Set(banners.map((banner) => banner.drama_id));
 
   const addBanner = async (drama: DramaHit) => {
+    if (!canManage) return;
     if (usedDramaIds.has(drama.id) || banners.length >= BANNER_LIMIT) return;
     try {
       const created = await api<BannerRow>("/admin/v1/banners", {
@@ -293,6 +309,7 @@ export function HomeOpsPage() {
   };
 
   const moveTab = (fromId: number, toId: number) => {
+    if (!canManage) return;
     const from = tabs.findIndex((item) => item.id === fromId);
     const to = tabs.findIndex((item) => item.id === toId);
     if (from < 0 || to < 0 || from === to) return;
@@ -301,6 +318,7 @@ export function HomeOpsPage() {
   };
 
   const moveBanner = (fromId: number, toId: number) => {
+    if (!canManage) return;
     const from = banners.findIndex((item) => item.id === fromId);
     const to = banners.findIndex((item) => item.id === toId);
     if (from < 0 || to < 0 || from === to) return;
@@ -308,6 +326,7 @@ export function HomeOpsPage() {
   };
 
   const moveFloor = (fromId: number, toId: number) => {
+    if (!canManageGroups) return;
     const from = discoverFloors.findIndex((item) => item.id === fromId);
     const to = discoverFloors.findIndex((item) => item.id === toId);
     if (from < 0 || to < 0 || from === to) return;
@@ -322,6 +341,7 @@ export function HomeOpsPage() {
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "minmax(460px, 1fr) 300px", gap: 20, alignItems: "start" }}>
+      <Modal title="修改频道名称" open={!!renamingTab} onCancel={()=>setRenamingTab(null)} onOk={async()=>{if(!renamingTab)return;try{await api('/admin/v1/tabs/'+renamingTab.id,{method:'PATCH',body:JSON.stringify({title_en:renameEn.trim(),title_zh:renameZh.trim()})});await load();setRenamingTab(null);}catch(error){message.error(errorText(error));}}} okButtonProps={{disabled:!renameEn.trim()||!canManage}}><Space direction="vertical" style={{width:'100%'}}><Input aria-label="频道英文名称" value={renameEn} onChange={e=>setRenameEn(e.target.value)} maxLength={64}/><Input aria-label="频道中文名称" value={renameZh} onChange={e=>setRenameZh(e.target.value)} maxLength={64}/></Space></Modal>
       <Space direction="vertical" size={14} style={{ width: "100%" }}>
         <div>
           <Typography.Title level={4} style={{ marginBottom: 2 }}>
@@ -337,7 +357,7 @@ export function HomeOpsPage() {
           size="small"
           styles={{ body: { paddingTop: 10 } }}
           extra={
-            <Button size="small" icon={<PlusOutlined />} onClick={() => setAddingTab(true)}>
+            <Button disabled={!canManage || !groupsEnabled} size="small" icon={<PlusOutlined />} onClick={() => setAddingTab(true)}>
               添加频道
             </Button>
           }
@@ -353,16 +373,16 @@ export function HomeOpsPage() {
                 <DragRow
                   key={tab.id}
                   columns={TAB_COLS}
-                  draggable={!tab.locked}
+                  draggable={canManage && !tab.locked}
                   visual={visual}
                   onDragStart={() => setDrag({ kind: "tab", id: tab.id })}
                   onDragEnd={endDrag}
                   onDragOver={() => {
-                    if (drag?.kind !== "tab" || tab.locked) return;
+                    if (!canManage || drag?.kind !== "tab" || tab.locked) return;
                     setOver({ kind: "tab", id: tab.id });
                   }}
                   onDrop={() => {
-                    if (drag?.kind !== "tab") return;
+                    if (!canManage || drag?.kind !== "tab") return;
                     moveTab(drag.id, tab.id);
                     endDrag();
                   }}
@@ -370,9 +390,9 @@ export function HomeOpsPage() {
                 >
                   {(onArm) => (
                     <>
-                      <Handle locked={tab.locked} onArm={onArm} />
+                      <Handle locked={!canManage || tab.locked} onArm={onArm} />
                       <div style={{ minWidth: 0 }}>
-                        <Typography.Text style={{ fontSize: 13 }}>{tab.title_zh || tab.title_en}</Typography.Text>
+                        <Button size="small" type="text" disabled={!canManage} onClick={event=>{event.stopPropagation();setRenamingTab(tab);setRenameEn(tab.title_en);setRenameZh(tab.title_zh);}}>{tab.title_zh || tab.title_en}</Button>
                         <Typography.Text type="secondary" style={{ marginLeft: 6, fontSize: 11 }}>
                           {tab.code}
                         </Typography.Text>
@@ -382,7 +402,7 @@ export function HomeOpsPage() {
                           固定发现页
                         </Tag>
                       ) : (
-                        <Select
+                        <Select disabled={!canManage || !groupsEnabled}
                           size="small"
                           style={{ width: "100%" }}
                           value={tab.group_id ?? undefined}
@@ -395,7 +415,7 @@ export function HomeOpsPage() {
                       <Switch
                         size="small"
                         checked={tab.enabled}
-                        disabled={tab.locked}
+                        disabled={!canManage || tab.locked}
                         onChange={(enabled) => patchTab(tab, { enabled })}
                         onClick={(_, event) => event.stopPropagation()}
                       />
@@ -403,12 +423,14 @@ export function HomeOpsPage() {
                         <span />
                       ) : (
                         <Popconfirm
+                          disabled={!canManage}
                           title="删除这个频道？"
                           okText="删除"
                           cancelText="取消"
                           okButtonProps={{ danger: true }}
                           onConfirm={async (event) => {
                             event?.stopPropagation();
+                            if (!canManage) return;
                             try {
                               await api(`/admin/v1/tabs/${tab.id}`, { method: "DELETE" });
                               if (activeTab === tab.id) setActiveTab(null);
@@ -424,6 +446,7 @@ export function HomeOpsPage() {
                               size="small"
                               type="text"
                               danger
+                              disabled={!canManage}
                               icon={<DeleteOutlined style={{ fontSize: 12 }} />}
                               style={ICON_BTN}
                               onClick={(event) => event.stopPropagation()}
@@ -463,11 +486,11 @@ export function HomeOpsPage() {
                 onDragStart={() => setDrag({ kind: "banner", id: banner.id })}
                 onDragEnd={endDrag}
                 onDragOver={() => {
-                  if (drag?.kind !== "banner") return;
+                  if (!canManage || drag?.kind !== "banner") return;
                   setOver({ kind: "banner", id: banner.id });
                 }}
                 onDrop={() => {
-                  if (drag?.kind !== "banner") return;
+                  if (!canManage || drag?.kind !== "banner") return;
                   moveBanner(drag.id, banner.id);
                   endDrag();
                 }}
@@ -481,12 +504,13 @@ export function HomeOpsPage() {
                   )
                 }
                 onCommit={(field, value) =>
-                  api(`/admin/v1/banners/${banner.id}`, {
+                  canManage && api(`/admin/v1/banners/${banner.id}`, {
                     method: "PATCH",
                     body: JSON.stringify({ [field]: value }),
                   }).catch((error) => message.error(errorText(error)))
                 }
                 onRemove={async () => {
+                  if (!canManage) return;
                   try {
                     await api(`/admin/v1/banners/${banner.id}`, { method: "DELETE" });
                     setBanners((current) => current.filter((item) => item.id !== banner.id));
@@ -500,7 +524,8 @@ export function HomeOpsPage() {
             {banners.length < BANNER_LIMIT ? (
               <button
                 type="button"
-                onClick={() => setPicking(true)}
+                disabled={!canManage || !dramasEnabled}
+                onClick={() => { if (dramasEnabled) setPicking(true); }}
                 style={{
                   width: 176,
                   alignSelf: "stretch",
@@ -509,7 +534,8 @@ export function HomeOpsPage() {
                   borderRadius: 10,
                   background: "transparent",
                   color: GRAY,
-                  cursor: "pointer",
+                  cursor: canManage ? "pointer" : "not-allowed",
+                  opacity: canManage ? 1 : 0.5,
                   fontSize: 12,
                 }}
               >
@@ -525,11 +551,11 @@ export function HomeOpsPage() {
           styles={{ body: { paddingTop: 10 } }}
           extra={
             <Space size={12}>
-              <Link to="/groups">管理分组内容</Link>
+              {canViewGroups && <Link to="/groups">管理分组内容</Link>}
               <Button
                 size="small"
                 icon={<PlusOutlined />}
-                disabled={idleGroups.length === 0}
+                disabled={!canManageGroups || !groupsEnabled || idleGroups.length === 0}
                 onClick={() => setAddingFloor(true)}
               >
                 添加楼层
@@ -548,16 +574,16 @@ export function HomeOpsPage() {
               <DragRow
                 key={group.id}
                 columns={FLOOR_COLS}
-                draggable
+                draggable={canManageGroups}
                 visual={visual}
                 onDragStart={() => setDrag({ kind: "floor", id: group.id })}
                 onDragEnd={endDrag}
                 onDragOver={() => {
-                  if (drag?.kind !== "floor") return;
+                  if (!canManageGroups || drag?.kind !== "floor") return;
                   setOver({ kind: "floor", id: group.id });
                 }}
                 onDrop={() => {
-                  if (drag?.kind !== "floor") return;
+                  if (!canManageGroups || drag?.kind !== "floor") return;
                   moveFloor(drag.id, group.id);
                   endDrag();
                 }}
@@ -565,14 +591,14 @@ export function HomeOpsPage() {
               >
                 {(onArm) => (
                   <>
-                    <Handle onArm={onArm} title="按住拖动排序，也可用右侧箭头微调" />
+                    <Handle locked={!canManageGroups} onArm={onArm} title="按住拖动排序，也可用右侧箭头微调" />
                     <div style={{ minWidth: 0 }}>
                       <Typography.Text style={{ fontSize: 13 }}>{group.name}</Typography.Text>
                       <Typography.Text type="secondary" style={{ marginLeft: 6, fontSize: 11 }}>
                         {group.drama_count} 部
                       </Typography.Text>
                     </div>
-                    <Select
+                    <Select disabled={!canManageGroups}
                       size="small"
                       style={{ width: "100%" }}
                       value={group.style}
@@ -580,7 +606,7 @@ export function HomeOpsPage() {
                       onChange={(style) => patchGroup(group, { style })}
                       onClick={(event) => event.stopPropagation()}
                     />
-                    <Select
+                    <Select disabled={!canManageGroups}
                       size="small"
                       style={{ width: "100%" }}
                       value={group.badge}
@@ -589,6 +615,7 @@ export function HomeOpsPage() {
                       onClick={(event) => event.stopPropagation()}
                     />
                     <Switch
+                      disabled={!canManageGroups}
                       size="small"
                       checked={group.status === "active"}
                       onChange={(active) => patchGroup(group, { status: active ? "active" : "inactive" })}
@@ -612,7 +639,7 @@ export function HomeOpsPage() {
             );
           })}
             {discoverFloors.length === 0 ? (
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有启用的分组" />
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={groupsEnabled ? "还没有启用的分组" : "首页分组模块未开通"} />
             ) : null}
           </Space>
         </Card>
@@ -687,7 +714,7 @@ export function HomeOpsPage() {
                 <button
                   key={drama.id}
                   type="button"
-                  disabled={drama.inBanner}
+                  disabled={!canManage || drama.inBanner}
                   onClick={() => addBanner(drama)}
                   className="bp-card"
                   style={{
@@ -757,6 +784,7 @@ export function HomeOpsPage() {
         groups={groups}
         onCancel={() => setAddingTab(false)}
         onCreate={async (body) => {
+          if (!canManage) return;
           try {
             const created = await api<TabRow>("/admin/v1/tabs", {
             method: "POST",
@@ -775,6 +803,7 @@ export function HomeOpsPage() {
         groups={idleGroups}
         onCancel={() => setAddingFloor(false)}
         onPick={async (groupId) => {
+          if (!canManageGroups) return;
           const group = groups.find((item) => item.id === groupId);
           if (!group) return;
           await patchGroup(group, { status: "active", position: discoverFloors.length });
@@ -816,10 +845,11 @@ function BannerCard({
   onCommit: (field: "kicker" | "headline", value: string) => void;
   onRemove: () => Promise<void>;
 }) {
+  const canManage = usePermission("home_ops.manage");
   const [armed, setArmed] = useState(false);
   return (
     <div
-      draggable={armed}
+      draggable={canManage && armed}
       onDragStart={(event) => {
         event.dataTransfer.effectAllowed = "move";
         onDragStart();
@@ -854,7 +884,7 @@ function BannerCard({
       <div style={{ position: "relative" }}>
         <BannerArt banner={banner} height={96} />
         <span style={{ position: "absolute", left: 6, top: 6 }}>
-          <Handle onArm={() => setArmed(true)} title="按住拖动调整轮播顺序" />
+          <Handle locked={!canManage} onArm={() => setArmed(true)} title="按住拖动调整轮播顺序" />
         </span>
         <span
           style={{
@@ -875,7 +905,7 @@ function BannerCard({
       </div>
       <div style={{ padding: 8 }}>
         <Field label="钩子文案">
-          <Input
+          <Input disabled={!canManage}
             size="small"
             value={banner.kicker}
             placeholder="如 独家首发"
@@ -885,7 +915,7 @@ function BannerCard({
           />
         </Field>
         <Field label="大标题">
-          <Input
+          <Input disabled={!canManage}
             size="small"
             value={banner.headline}
             placeholder={banner.title ?? "剧名"}
@@ -907,7 +937,7 @@ function BannerCard({
               <Button
                 size="small"
                 type="text"
-                disabled={!canUp}
+                disabled={!canManage || !canUp}
                 icon={<ArrowUpOutlined style={{ fontSize: 10 }} />}
                 onClick={() => onMove(-1)}
                 style={{ ...ICON_BTN, color: canUp ? "#595550" : "#d9d9d9" }}
@@ -917,18 +947,19 @@ function BannerCard({
               <Button
                 size="small"
                 type="text"
-                disabled={!canDown}
+                disabled={!canManage || !canDown}
                 icon={<ArrowDownOutlined style={{ fontSize: 10 }} />}
                 onClick={() => onMove(1)}
                 style={{ ...ICON_BTN, color: canDown ? "#595550" : "#d9d9d9" }}
               />
             </Tooltip>
-            <Popconfirm title="从轮播移除？" okText="移除" cancelText="取消" okButtonProps={{ danger: true }} onConfirm={onRemove}>
+            <Popconfirm disabled={!canManage} title="从轮播移除？" okText="移除" cancelText="取消" okButtonProps={{ danger: true }} onConfirm={onRemove}>
               <Tooltip title="移除">
                 <Button
                   size="small"
                   type="text"
                   danger
+                  disabled={!canManage}
                   icon={<DeleteOutlined style={{ fontSize: 12 }} />}
                   style={ICON_BTN}
                 />
@@ -1131,7 +1162,7 @@ function PhonePreview({
             >
               M
             </span>
-            <span style={{ fontSize: 13, fontWeight: 600, color: "#fff", flex: "0 0 auto" }}>MiniTV</span>
+            <span style={{ fontSize: 13, fontWeight: 600, color: "#fff", flex: "0 0 auto" }}>JJTV</span>
             <div
               style={{
                 flex: 1,
@@ -1281,7 +1312,7 @@ function PhonePreview({
                 >
                   M
                 </span>
-                <span style={{ color: "#fff", fontWeight: 600 }}>MiniTV</span>
+                <span style={{ color: "#fff", fontWeight: 600 }}>JJTV</span>
                 <span style={{ color: GRAY }}>独家</span>
               </div>
             ) : null}
@@ -1584,6 +1615,7 @@ function AddTabModal({
   onCancel: () => void;
   onCreate: (body: { code: string; title_en: string; title_zh: string; group_id: number }) => Promise<void>;
 }) {
+  const canManage = usePermission("home_ops.manage");
   const [code, setCode] = useState("");
   const [titleZh, setTitleZh] = useState("");
   const [titleEn, setTitleEn] = useState("");
@@ -1594,7 +1626,9 @@ function AddTabModal({
       open={open}
       onCancel={onCancel}
       destroyOnHidden
+      okButtonProps={{ disabled: !canManage }}
       onOk={async () => {
+        if (!canManage) return;
         if (!code.trim() || !titleEn.trim() || groupId == null) {
           message.warning("编码、英文标题和分组都要填");
           return;
@@ -1608,16 +1642,16 @@ function AddTabModal({
     >
       <Space direction="vertical" size={8} style={{ width: "100%" }}>
         <Field label="中文名">
-          <Input value={titleZh} placeholder="如 榜单" onChange={(event) => setTitleZh(event.target.value)} />
+          <Input disabled={!canManage} value={titleZh} placeholder="如 榜单" onChange={(event) => setTitleZh(event.target.value)} />
         </Field>
         <Field label="英文名">
-          <Input value={titleEn} placeholder="如 Ranking" onChange={(event) => setTitleEn(event.target.value)} />
+          <Input disabled={!canManage} value={titleEn} placeholder="如 Ranking" onChange={(event) => setTitleEn(event.target.value)} />
         </Field>
         <Field label="编码">
-          <Input value={code} placeholder="如 ranking" onChange={(event) => setCode(event.target.value)} />
+          <Input disabled={!canManage} value={code} placeholder="如 ranking" onChange={(event) => setCode(event.target.value)} />
         </Field>
         <Field label="绑定分组">
-          <Select
+          <Select disabled={!canManage}
             style={{ width: "100%" }}
             placeholder="这个频道打开哪个分组"
             value={groupId ?? undefined}
@@ -1641,6 +1675,7 @@ function AddFloorModal({
   onCancel: () => void;
   onPick: (groupId: number) => Promise<void>;
 }) {
+  const canManage = usePermission("groups.manage");
   const [groupId, setGroupId] = useState<number | null>(null);
   return (
     <Modal
@@ -1648,7 +1683,9 @@ function AddFloorModal({
       open={open}
       onCancel={onCancel}
       destroyOnHidden
+      okButtonProps={{ disabled: !canManage }}
       onOk={async () => {
+        if (!canManage) return;
         if (groupId == null) {
           message.warning("先选一个分组");
           return;
@@ -1658,7 +1695,7 @@ function AddFloorModal({
       }}
     >
       <Field label="选择分组">
-        <Select
+        <Select disabled={!canManage}
           style={{ width: "100%" }}
           placeholder="从已停用或未上首页的分组里挑"
           value={groupId ?? undefined}

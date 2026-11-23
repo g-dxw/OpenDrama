@@ -2,13 +2,13 @@
  * Rewards tab acceptance: daily task list, progress, claim and check-in.
  * Every /v1 call is mocked, so the check is about wiring and state, not the API.
  */
-import { createRequire } from "node:module";
+import {chromium} from "playwright-core";
+import os from "node:os";
+import path from "node:path";
+import { respondSiteBootstrap } from "../../tests/frontend-site-fixture.mjs";
 
-const require = createRequire("/opt/homebrew/lib/node_modules/");
-const { chromium } = require("playwright");
-
-const APP_URL = "http://localhost:5175/";
-const OUT = "/tmp/h5rewards";
+const APP_URL = process.env.BASE_URL || "https://jjtv-h5.8jj.net/";
+const OUT = process.env.OUT_DIR || path.join(os.tmpdir(), "h5rewards");
 const TOKEN = "test-token-42";
 
 const me = {
@@ -91,6 +91,7 @@ function json(route, status, body) {
 const calls = { claim: [], checkin: 0, tasks: 0 };
 
 async function buildRoutes(route) {
+  if (await respondSiteBootstrap(route)) return;
   const request = route.request();
   const path = new URL(request.url()).pathname;
   const method = request.method();
@@ -152,7 +153,7 @@ function check(ok, label) {
   console.log(`${ok ? "PASS" : "FAIL"}  ${label}`);
 }
 
-const browser = await chromium.launch({ channel: "chrome" });
+const browser = await chromium.launch(process.env.CHROME_PATH ? {executablePath: process.env.CHROME_PATH} : {channel: "chrome"});
 const context = await browser.newContext({
   viewport: { width: 390, height: 844 },
   deviceScaleFactor: 2,

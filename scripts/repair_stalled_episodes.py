@@ -21,6 +21,9 @@ Usage::
         --min-id 116 --stale-minutes 30 --publish
 """
 
+# Authentication uses a tenant-local account selected by --tenant-code or
+# JJTV_TENANT_CODE (default jjtv). Set ADMIN_USER and ADMIN_PASS to that tenant
+# account; platform administrator credentials cannot access business operations.
 from __future__ import annotations
 
 import argparse
@@ -59,8 +62,9 @@ def api(token: str, base: str, method: str, path: str, payload: dict | None = No
         raise RuntimeError(f"HTTP {exc.code}: {exc.read().decode('utf-8', 'replace')[:200]}") from exc
 
 
-def login(base: str) -> str:
+def login(base: str, tenant_code: str | None = None) -> str:
     body = json.dumps({
+        "tenant_code": tenant_code if tenant_code is not None else os.environ.get("JJTV_TENANT_CODE") or "jjtv",
         "username": os.environ.get("ADMIN_USER", "admin"),
         "password": os.environ.get("ADMIN_PASS", "admin-1234"),
     }).encode()
@@ -129,13 +133,14 @@ def main() -> None:
     parser.add_argument("--publish", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--api", default=os.environ.get("MINITV_API", API_DEFAULT))
+    parser.add_argument("--tenant-code", default=os.environ.get("JJTV_TENANT_CODE") or "jjtv", help="tenant code (JJTV_TENANT_CODE or jjtv); ADMIN_USER/ADMIN_PASS must be tenant account credentials")
     args = parser.parse_args()
 
     key = os.environ["BUNNY_STREAM_API_KEY"]
     manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
     by_title = {item["title_en"]: item for item in manifest}
 
-    token = login(args.api)
+    token = login(args.api, args.tenant_code)
     drafts: list[dict] = []
     page = 1
     while True:
@@ -191,6 +196,7 @@ def main() -> None:
         synopsis.write_text(entry["synopsis_en"], encoding="utf-8")
         command = [
             sys.executable, "-u", str(IMPORTER),
+            "--tenant-code", args.tenant_code,
             "--dir", str(folder),
             "--title-en", entry["title_en"],
             "--synopsis-file", str(synopsis),

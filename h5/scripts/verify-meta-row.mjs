@@ -1,11 +1,10 @@
 // Verifies the For You overlay: title and Episodes pill share one row, EP chip never wraps.
-import { createRequire } from "node:module";
+import {chromium} from "playwright-core";
+import os from "node:os";
+import path from "node:path";
 
-const require = createRequire("/opt/homebrew/lib/node_modules/");
-const { chromium } = require("playwright");
-
-const BASE = process.env.BASE_URL || "http://127.0.0.1:5175";
-const OUT = process.env.OUT_DIR || "/tmp/h5-meta";
+const BASE = process.env.BASE_URL || "https://jjtv-h5.8jj.net";
+const OUT = process.env.OUT_DIR || path.join(os.tmpdir(), "h5-meta");
 
 const cases = [
   { width: 360, locale: "en" },
@@ -15,7 +14,7 @@ const cases = [
   { width: 320, locale: "zh" },
 ];
 
-const browser = await chromium.launch({ channel: "chrome" });
+const browser = await chromium.launch(process.env.CHROME_PATH ? {executablePath: process.env.CHROME_PATH} : {channel: "chrome"});
 const report = [];
 
 for (const c of cases) {

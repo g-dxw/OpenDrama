@@ -1,11 +1,11 @@
-import { createRequire } from "node:module";
-const require = createRequire("/opt/homebrew/lib/node_modules/");
-const { chromium } = require("playwright");
+import {chromium} from "playwright-core";
+import os from "node:os";
+import path from "node:path";
 
-const URL = "http://127.0.0.1:5175/";
-const OUT = "/tmp/h5v";
+const URL = process.env.BASE_URL || "https://jjtv-h5.8jj.net/";
+const OUT = process.env.OUT_DIR || path.join(os.tmpdir(), "h5v");
 
-const browser = await chromium.launch({ channel: "chrome" });
+const browser = await chromium.launch(process.env.CHROME_PATH ? {executablePath: process.env.CHROME_PATH} : {channel: "chrome"});
 const page = await browser.newPage({
   viewport: { width: 390, height: 844 },
   deviceScaleFactor: 3,
@@ -73,7 +73,7 @@ const playing = await page.evaluate(async () => {
     duration: video?.duration ?? null,
     paused: video?.paused ?? null,
     width: video?.videoWidth ?? null,
-    epBar: document.querySelector(".ep-bar")?.textContent ?? null,
+    epBar: document.querySelector('.player-page .rail button[aria-label^="Episodes ·"], .player-page .rail button[aria-label^="选集 ·"]')?.textContent ?? null,
     title: document.querySelector(".meta h2")?.textContent ?? null,
     synLines: document.querySelector(".syn")?.getBoundingClientRect().height ?? null,
   };
@@ -84,7 +84,10 @@ await page.waitForTimeout(800);
 await page.screenshot({ path: `${OUT}-play.png` });
 
 // open the episode sheet
-await page.locator(".ep-bar").click();
+// Keyboard focus reveals the player's transient chrome before opening it.
+const playbackVideo = page.locator("video");
+if (await playbackVideo.count()) await playbackVideo.press("Tab");
+await page.getByRole("button", { name: /^(Episodes|选集) ·/ }).click();
 await page.waitForTimeout(600);
 const sheet = await page.evaluate(() => ({
   open: !!document.querySelector(".sheet"),

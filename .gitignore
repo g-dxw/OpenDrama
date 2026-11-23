@@ -49,3 +49,7 @@ data/litetv-catalog-20261013/
 
 # macOS
 .DS_Store
+
+# Isolated multisite validation logs and local browser evidence.
+/output-multisite-*.log
+/output/acceptance-multisite/

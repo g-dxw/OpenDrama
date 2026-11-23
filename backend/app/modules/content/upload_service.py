@@ -26,7 +26,10 @@ class UploadRejected(Exception):
 
 
 def callback_secret() -> bytes:
-    return os.environ.get("BUNNY_CALLBACK_SECRET", "local-dev-callback").encode()
+    configured = os.environ.get("BUNNY_CALLBACK_SECRET", "").strip()
+    if os.environ.get("APP_ENV") == "production" and not configured:
+        raise UploadRejected("media callback is not configured")
+    return (configured or "local-dev-callback").encode()
 
 
 def sign_callback(body: bytes) -> str:
@@ -50,6 +53,8 @@ def create_upload_session(
     height: int,
     duration_seconds: int = 0,
 ) -> dict:
+    from app.modules.library.service import assert_site_media_editable
+    assert_site_media_editable(episode)
     if mime not in ALLOWED_MIME:
         raise UploadRejected("only MP4 or MOV is accepted")
     if size_bytes > MAX_BYTES:
@@ -125,7 +130,7 @@ def create_upload_session(
     }
 
 
-def apply_callback(session: Session, *, body: bytes, signature: str, video_id: str, outcome: str) -> dict:
+def _apply_verified_callback(session: Session, *, body: bytes, signature: str, video_id: str, outcome: str) -> dict:
     expected = sign_callback(body)
     if not hmac.compare_digest(expected, signature or ""):
         session.add(
@@ -170,3 +175,20 @@ def apply_callback(session: Session, *, body: bytes, signature: str, video_id: s
                 episode.duration_seconds = length
     session.commit()
     return {"status": episode.status, "replayed": False, "video_id": video_id}
+
+
+def apply_callback(session: Session, *, body: bytes, signature: str, video_id: str, outcome: str) -> dict:
+    # Only a valid provider signature may resolve an upload across native tenants.
+    if not hmac.compare_digest(sign_callback(body), signature or ""):
+        return _apply_verified_callback(session, body=body, signature=signature, video_id=video_id, outcome=outcome)
+    upload = session.scalar(select(MediaUpload).where(MediaUpload.video_id == video_id).execution_options(include_all_tenants=True))
+    if upload is None:
+        raise UploadRejected("unknown video")
+    owner = session.scalar(select(Episode.tenant_id).where(Episode.id == upload.episode_id).execution_options(include_all_tenants=True))
+    if owner is None:
+        raise UploadRejected("episode missing")
+    # Resolve globally only after verification, then apply both read and write
+    # guards in the immutable owner scope instead of disabling one guard.
+    from app.modules.tenancy.consumer_scope import site_context
+    with site_context(session, owner):
+        return _apply_verified_callback(session, body=body, signature=signature, video_id=video_id, outcome=outcome)

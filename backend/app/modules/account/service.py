@@ -6,6 +6,7 @@ Verification codes are stored as hashes. The plaintext is never logged or return
 from __future__ import annotations
 
 import hashlib
+import json
 import hmac
 import os
 import secrets
@@ -18,11 +19,13 @@ from sqlalchemy.orm import Session
 from app.modules.account.facebook import FacebookAuthError, verify as verify_facebook
 from app.modules.account.google import GoogleAuthError, GoogleIdentity, verify_id_token
 from app.modules.account.mail import MailError, send_email
+from app.modules.ops.managed_settings import managed_provider
 from app.modules.account.models import ThirdPartyIdentity, User, VerificationCode
 from app.modules.common.models import AuditLog
 from app.modules.ops.config_models import AdClaim, Checkin, RewardConfig
 from app.modules.ops.service import get_redis
 from app.modules.wallet.models import CoinLedgerEntry, WalletAccount
+from app.modules.tenancy.consumer_scope import current_site, require_owned
 
 LA = ZoneInfo("America/Los_Angeles")
 USER_SESSION_PREFIX = "minitv_user_session:"
@@ -123,11 +126,12 @@ class AccountError(Exception):
         super().__init__(detail)
 
 
-def la_today(now: datetime | None = None) -> date:
+def la_today(now: datetime | None = None, *, db=None) -> date:
     now = now or datetime.now(timezone.utc)
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
-    return now.astimezone(LA).date()
+    from app.modules.tenancy.consumer_scope import site_timezone
+    return now.astimezone(site_timezone(db)).date()
 
 
 def generate_code() -> str:
@@ -170,11 +174,12 @@ def _consume_code(session: Session, *, email: str, purpose: str, code: str) -> N
     session.delete(row)
 
 
+@managed_provider('email')
 def issue_code(session: Session, *, email: str, purpose: str) -> str:
     purpose = normalize_purpose(purpose)
     email = _normalize_email(email)
     client = get_redis()
-    key = f"code_rate:{purpose}:{email}"
+    key = f"code_rate:{current_site(session)}:{purpose}:{email}"
     count = client.incr(key)
     if count == 1:
         client.expire(key, 3600)
@@ -201,39 +206,46 @@ def issue_code(session: Session, *, email: str, purpose: str) -> str:
 def send_verification_code(*, to: str, code: str, purpose: str) -> str:
     """Send a one-time code. The plaintext is only in this message, never logged."""
     subject = {
-        "register": "Your MiniTV verification code",
-        "login": "Your MiniTV sign-in code",
-        "bind": "Your MiniTV email binding code",
-    }.get(purpose, "Your MiniTV verification code")
-    text = f"Your MiniTV code is {code}. It expires in 10 minutes. If you did not request it, ignore this email."
+        "register": "Your verification code",
+        "login": "Your sign-in code",
+        "bind": "Your email binding code",
+    }.get(purpose, "Your verification code")
+    text = f"Your code is {code}. It expires in 10 minutes. If you did not request it, ignore this email."
     html = (
-        f"<p>Your MiniTV code is <strong>{code}</strong>.</p>"
+        f"<p>Your code is <strong>{code}</strong>.</p>"
         "<p>It expires in 10 minutes. If you did not request it, ignore this email.</p>"
     )
     return send_email(to=to, subject=subject, text=text, html=html)
 
 
 def _credit(session: Session, user_id: int, amount: int, biz_type: str, biz_key: str) -> int:
-    wallet = session.get(WalletAccount, user_id, with_for_update=True)
-    if wallet is None:
-        wallet = WalletAccount(user_id=user_id, balance=0)
-        session.add(wallet)
-        session.flush()
-    wallet.balance += amount
-    session.add(
-        CoinLedgerEntry(
-            user_id=user_id,
-            amount=amount,
-            balance_after=wallet.balance,
-            biz_type=biz_type,
-            biz_key=biz_key,
-        )
-    )
-    return wallet.balance
+    from app.modules.billing.commerce import wallet_lock, ensure_sources, allocate_spend
+    from app.modules.billing.commerce_models import CoinSource
+    wallet=wallet_lock(session,user_id)
+    ensure_sources(session,wallet)
+    after=wallet.balance+amount
+    ledger=CoinLedgerEntry(user_id=user_id,amount=amount,balance_after=after,biz_type=biz_type,biz_key=biz_key)
+    session.add(ledger);session.flush()
+    if amount<0:allocate_spend(session,wallet,ledger,-amount)
+    elif amount>0:session.add(CoinSource(user_id=user_id,original=amount,remaining=amount,reserved=0))
+    wallet.balance=after
+    return after
+
+
+def rewards_enabled(session: Session) -> bool:
+    from app.modules.sites.service import features_for
+    from app.modules.tenancy.models import Tenant
+    tenant = session.get(Tenant, current_site(session))
+    return tenant is not None and features_for(session, tenant).get("rewards", False)
+
+
+def require_rewards(session: Session) -> None:
+    if not rewards_enabled(session):
+        raise AccountError(403, "Rewards are disabled for this site")
 
 
 def _active_amount(session: Session, code: str, today: date | None = None) -> int:
-    today = today or la_today()
+    today = today or la_today(db=session)
     row = session.scalar(
         select(RewardConfig)
         .where(RewardConfig.code == code, RewardConfig.effective_on <= today)
@@ -243,6 +255,7 @@ def _active_amount(session: Session, code: str, today: date | None = None) -> in
     return int(amounts[0])
 
 
+@managed_provider('email')
 def register(session: Session, *, email: str, code: str) -> tuple[User, str]:
     email = _normalize_email(email)
     _consume_code(session, email=email, purpose="register", code=code)
@@ -260,14 +273,14 @@ def _normalize_email(email: str) -> str:
 
 def _issue_session(user: User) -> str:
     token = secrets.token_urlsafe(32)
-    get_redis().set(USER_SESSION_PREFIX + token, str(user.id), ex=60 * 60 * 24 * 30)
+    get_redis().set(USER_SESSION_PREFIX + token, json.dumps(dict(v=2, uid=user.id, tenant_id=user.tenant_id)), ex=60 * 60 * 24 * 30)
     return token
 
 
 def _new_user(session: Session, *, email: str | None, display_name: str, avatar_url: str = "") -> User:
     user = User(
         email=email,
-        display_name=(display_name or (email.split("@")[0] if email else "MiniTV"))[:64],
+        display_name=(display_name or (email.split("@")[0] if email else "JJTV"))[:64],
         avatar_url=avatar_url[:500],
         public_id=str(secrets.randbelow(9_000_000_000) + 1_000_000_000),
     )
@@ -275,10 +288,12 @@ def _new_user(session: Session, *, email: str | None, display_name: str, avatar_
     session.flush()
     session.add(WalletAccount(user_id=user.id, balance=0))
     session.flush()
-    _credit(session, user.id, _active_amount(session, "register"), "register_reward", f"register:{user.id}")
+    if rewards_enabled(session):
+        _credit(session, user.id, _active_amount(session, "register"), "register_reward", f"register:{user.id}")
     return user
 
 
+@managed_provider('email')
 def login_with_code(session: Session, *, email: str, code: str) -> tuple[User, str]:
     """Sign in an existing user. A missing account is a registration, not a login."""
     email = _normalize_email(email)
@@ -291,6 +306,7 @@ def login_with_code(session: Session, *, email: str, code: str) -> tuple[User, s
     return user, token
 
 
+@managed_provider('email')
 def login_or_register_with_code(session: Session, *, email: str, code: str) -> tuple[User, str, bool]:
     """One door for the client: the same code signs in, or signs up.
 
@@ -310,6 +326,7 @@ def login_or_register_with_code(session: Session, *, email: str, code: str) -> t
     return user, token, created
 
 
+@managed_provider('google')
 def login_with_google(session: Session, *, id_token: str) -> tuple[User, str, bool]:
     """Sign in with Google and merge onto the same user when the email matches.
 
@@ -334,6 +351,7 @@ def link_google_identity(session: Session, identity: GoogleIdentity) -> tuple[Us
     )
 
 
+@managed_provider('facebook')
 def login_with_facebook(
     session: Session, *, access_token: str | None = None, id_token: str | None = None
 ) -> tuple[User, str, bool]:
@@ -418,10 +436,17 @@ def _link_identity(
 def resolve_user(session: Session, token: str | None) -> User | None:
     if not token:
         return None
-    user_id = get_redis().get(USER_SESSION_PREFIX + token)
-    if user_id is None:
-        return None
-    return session.get(User, int(user_id))
+    raw = get_redis().get(USER_SESSION_PREFIX + token)
+    if raw is None: return None
+    try:
+        data=json.loads(raw)
+        if isinstance(data,dict):
+            if data.get('v')!=2 or data.get('tenant_id')!=current_site(session) or type(data.get('uid')) is not int:return None
+            user_id=data['uid']
+        else:
+            user_id=int(data)
+        return require_owned(session,User,user_id,missing_ok=True)
+    except (TypeError,ValueError,UnicodeError): return None
 
 
 def oauth_login(session: Session, *, provider: str) -> None:
@@ -435,7 +460,8 @@ def oauth_login(session: Session, *, provider: str) -> None:
 
 
 def check_in(session: Session, user: User, *, today: date | None = None) -> dict:
-    today = today or la_today()
+    require_rewards(session)
+    today = today or la_today(db=session)
     existing = session.scalar(select(Checkin).where(Checkin.user_id == user.id, Checkin.day == today))
     if existing is not None:
         return {"streak": existing.streak, "amount": 0, "replayed": True, "balance": session.get(WalletAccount, user.id).balance}
@@ -457,7 +483,8 @@ def check_in(session: Session, user: User, *, today: date | None = None) -> dict
 
 
 def claim_ad(session: Session, user: User, *, today: date | None = None) -> dict:
-    today = today or la_today()
+    require_rewards(session)
+    today = today or la_today(db=session)
     existing = session.scalar(select(AdClaim).where(AdClaim.user_id == user.id, AdClaim.day == today))
     if existing is not None:
         raise AccountError(409, "ad reward already claimed")
@@ -487,7 +514,7 @@ def validate_reward_amounts(code: str, amounts: list[int]) -> list[int]:
 
 def reward_config_overview(session: Session, *, today: date | None = None) -> dict:
     """Current + pending (next-day) reward config for every task."""
-    today = today or la_today()
+    today = today or la_today(db=session)
     items = []
     for task in REWARD_TASKS:
         rows = session.scalars(
@@ -549,7 +576,7 @@ def recent_reward_changes(session: Session, *, limit: int = 10) -> list[dict]:
 
 def save_reward_config(session: Session, *, code: str, amounts: list[int], today: date | None = None) -> RewardConfig:
     """Queue a next-day config change; a same-day re-save updates that pending row."""
-    today = today or la_today()
+    today = today or la_today(db=session)
     cleaned = validate_reward_amounts(code, list(amounts))
     effective_on = today + timedelta(days=1)
     row = session.scalar(
@@ -577,7 +604,7 @@ def bind_provider(session: Session, user: User, *, provider: str, provider_user_
     session.add(ThirdPartyIdentity(user_id=user.id, provider=provider, provider_user_id=provider_user_id))
     code = "bind_facebook" if provider == "facebook" else "bind_email" if provider == "email" else None
     rewarded = False
-    if code:
+    if code and rewards_enabled(session):
         _credit(session, user.id, _active_amount(session, code), code, f"{code}:{user.id}")
         rewarded = True
     session.commit()

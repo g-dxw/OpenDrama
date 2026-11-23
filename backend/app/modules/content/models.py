@@ -15,6 +15,8 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
+    CheckConstraint,
     Index,
     Integer,
     SmallInteger,
@@ -34,13 +36,21 @@ EPISODE_STATUSES = ("not_uploaded", "transcoding", "transcode_failed", "in_revie
 
 class Drama(Base):
     __tablename__ = "dramas"
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), nullable=False, default="jjtv", server_default="jjtv", index=True)
+    library_title_id: Mapped[int | None] = mapped_column(ForeignKey('library_titles.id', ondelete='RESTRICT'), nullable=True)
+    distribution_grant_id: Mapped[int | None] = mapped_column(ForeignKey('distribution_grants.id', ondelete='RESTRICT'), nullable=True)
+    library_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     title: Mapped[str] = mapped_column(String(200), nullable=False)
+    language: Mapped[str] = mapped_column(String(16), nullable=False, default='', server_default='')
     synopsis: Mapped[str] = mapped_column(Text, nullable=False, default="")
     cover_url: Mapped[str] = mapped_column(String(500), nullable=False, default="")
     free_episode_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     coin_price_per_episode: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    access_mode: Mapped[str] = mapped_column(String(16), nullable=False, default='public', server_default='public')
+    member_pays_coins: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default='false')
+    non_member_free_episodes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="draft")
     country_allowlist: Mapped[str] = mapped_column(
         String(200), nullable=False, default=""
@@ -67,6 +77,11 @@ class Drama(Base):
     reviewed_by: Mapped[int | None] = mapped_column(ForeignKey("admin_users.id"), nullable=True)
 
     __table_args__ = (
+        UniqueConstraint('tenant_id', 'library_title_id', 'library_version', name='uq_drama_site_library_title_version'),
+        ForeignKeyConstraint(['tenant_id','distribution_grant_id','library_title_id','library_version'],
+            ['distribution_grants.tenant_id','distribution_grants.id','distribution_grants.library_title_id','distribution_grants.title_version'], name='fk_drama_distribution_site_source'),
+        CheckConstraint('(library_title_id IS NULL AND distribution_grant_id IS NULL AND library_version IS NULL) OR (library_title_id IS NOT NULL AND distribution_grant_id IS NOT NULL AND library_version IS NOT NULL)', name='ck_drama_distribution_complete'),
+        UniqueConstraint("tenant_id", "id", name="uq_dramas_tenant_id"),
         Index("ix_dramas_status", "status"),
         Index("ix_dramas_supplier_status", "supplier_id", "status"),
         Index(
@@ -74,17 +89,19 @@ class Drama(Base):
             "review_state",
             postgresql_where=text("review_state = 'pending'"),
         ),
-        # Titles are unique per tenant, not globally: two suppliers may both
+        # Titles are unique within each native tenant: two suppliers may both
         # carry a "替身新娘". Self-operated rows (supplier_id IS NULL) keep the
-        # old global uniqueness.
+        # self-operated title uniqueness within that tenant.
         Index(
             "uq_dramas_title_self",
+            "tenant_id",
             "title",
             unique=True,
             postgresql_where=text("supplier_id IS NULL"),
         ),
         Index(
             "uq_dramas_title_supplier",
+            "tenant_id",
             "supplier_id",
             "title",
             unique=True,
@@ -95,13 +112,17 @@ class Drama(Base):
 
 class Episode(Base):
     __tablename__ = "episodes"
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), nullable=False, default="jjtv", server_default="jjtv", index=True)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     drama_id: Mapped[int] = mapped_column(ForeignKey("dramas.id"), nullable=False)
+    library_episode_id: Mapped[int | None] = mapped_column(ForeignKey('library_episodes.id', ondelete='RESTRICT'), nullable=True)
+    media_asset_id: Mapped[int | None] = mapped_column(ForeignKey('library_media_assets.id', ondelete='RESTRICT'), nullable=True)
     episode_number: Mapped[int] = mapped_column(Integer, nullable=False)
     title: Mapped[str] = mapped_column(String(200), nullable=False, default="")
     duration_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     bunny_video_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")  # filled in stage 3
+    coin_price: Mapped[int | None] = mapped_column(Integer, nullable=True)
     subtitle_url: Mapped[str] = mapped_column(String(500), nullable=False, default="")
     width: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     height: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -116,6 +137,8 @@ class Episode(Base):
     )
 
     __table_args__ = (
+        ForeignKeyConstraint(['library_episode_id','media_asset_id'], ['library_media_assets.library_episode_id','library_media_assets.id'], name='fk_episode_library_asset'),
+        CheckConstraint('(library_episode_id IS NULL AND media_asset_id IS NULL) OR (library_episode_id IS NOT NULL AND media_asset_id IS NOT NULL)', name='ck_episode_library_source_complete'),
         UniqueConstraint("drama_id", "episode_number", name="uq_episodes_drama_number"),
         Index("ix_episodes_drama_status", "drama_id", "status"),
     )
@@ -123,6 +146,9 @@ class Episode(Base):
 
 class Tag(Base):
     __tablename__ = "tags"
+    # Internal seed identity survives operator renames; never an API authority.
+    default_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), nullable=False, default="jjtv", server_default="jjtv", index=True)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     name_en: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -133,7 +159,11 @@ class Tag(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
-    __table_args__ = (UniqueConstraint("name_en", name="uq_tags_name_en"),)
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "name_en", name="uq_tags_tenant_name_en"),
+        UniqueConstraint("tenant_id", "id", name="uq_tags_tenant_id"),
+        UniqueConstraint("tenant_id", "default_key", name="uq_tags_tenant_default_key"),
+    )
 
 
 class DramaTag(Base):
@@ -151,6 +181,12 @@ class HomeGroup(Base):
     content service from stage 6, as is position semantics."""
 
     __tablename__ = "home_groups"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "id", name="uq_home_groups_tenant_id"),
+        UniqueConstraint("tenant_id", "default_key", name="uq_home_groups_tenant_default_key"),
+    )
+    default_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), nullable=False, default="jjtv", server_default="jjtv", index=True)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -218,3 +254,11 @@ class CdnPurge(Base):
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+class EpisodeSubtitle(Base):
+    __tablename__ = 'episode_subtitles'
+    episode_id: Mapped[int] = mapped_column(ForeignKey('episodes.id', ondelete='CASCADE'), primary_key=True)
+    language: Mapped[str] = mapped_column(String(35), primary_key=True)
+    label: Mapped[str] = mapped_column(String(80), nullable=False)
+    url: Mapped[str] = mapped_column(String(500), nullable=False)
+    is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

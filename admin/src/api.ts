@@ -1,20 +1,21 @@
-const TOKEN_KEY = "minitv_admin_token";
+import { tenantHeaders } from "./tenant-scope";
+import { CURRENT_ENTRY, entryToken, storeToken, removeToken, loginUrl } from "./entry";
 /** Why the last session ended; the login page turns it into a hint. */
-const LOGOUT_REASON_KEY = "minitv_admin_logout_reason";
+const LOGOUT_REASON_KEY = "jjtv_logout_reason:" + CURRENT_ENTRY.kind + ":" + (CURRENT_ENTRY.code || "platform");
 
 /** Production builds set VITE_API_BASE; local Vite dev leaves it empty and uses the proxy. */
 export const API_BASE = (import.meta.env.VITE_API_BASE ?? "").replace(/\/$/, "");
 
 export function getToken(): string | null {
-  return localStorage.getItem(TOKEN_KEY);
+  return entryToken();
 }
 
 export function setToken(token: string): void {
-  localStorage.setItem(TOKEN_KEY, token);
+  storeToken(token);
 }
 
 export function clearToken(): void {
-  localStorage.removeItem(TOKEN_KEY);
+  removeToken();
 }
 
 /**
@@ -66,14 +67,25 @@ export function forceReauth(reason = "expired"): void {
   } catch {
     /* private mode: the hint is nice-to-have, the redirect is not */
   }
-  // Already on the login screen: clearing the token is all that is needed, and
-  // the form must keep working (a failed login also answers 401).
-  if (window.location.pathname.startsWith("/login")) return;
+  const target = loginUrl();
+  if (CURRENT_ENTRY.kind === 'support') {
+    if (reauthInFlight) return;
+    reauthInFlight = true;
+    window.location.replace(target + '?notice=support-ended');
+    return;
+  }
+  if (window.location.pathname === target || reauthInFlight) return;
+  reauthInFlight = true;
+  const here = window.location.pathname + window.location.search;
+  window.location.replace(target + '?reason=' + encodeURIComponent(reason) + '&next=' + encodeURIComponent(here));
+}
+
+export function completeLogout(): void {
+  clearToken();
+  try { sessionStorage.removeItem(LOGOUT_REASON_KEY); } catch { /* Optional local hint. */ }
   if (reauthInFlight) return;
   reauthInFlight = true;
-  const here = `${window.location.pathname}${window.location.search}`;
-  const query = reason === "manual" ? "" : "expired=1&";
-  window.location.replace(`/login?${query}next=${encodeURIComponent(here)}`);
+  window.location.replace(loginUrl() + (CURRENT_ENTRY.kind === 'support' ? '?notice=support-ended' : ''));
 }
 
 export class ApiError extends Error {
@@ -90,6 +102,7 @@ export class ApiError extends Error {
 export function errorText(e: any): string {
   const detail = e?.detail;
   if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) return detail.map(item => typeof item?.msg === "string" ? item.msg : "请求参数无效").join("；");
   if (detail && typeof detail === "object") {
     if (typeof detail.message === "string") return detail.message;
     return JSON.stringify(detail);
@@ -103,10 +116,11 @@ export async function api<T = any>(path: string, options: RequestInit = {}): Pro
   const isFormData = typeof FormData !== "undefined" && options.body instanceof FormData;
   const headers: Record<string, string> = {
     ...(isFormData ? {} : { "Content-Type": "application/json" }),
+    ...tenantHeaders(path),
     ...((options.headers as Record<string, string>) ?? {}),
   };
   const token = getToken();
-  if (token) headers["Authorization"] = `Bearer ${token}`;
+  if (token && !path.includes("/auth/login")) headers["Authorization"] = `Bearer ${token}`;
   const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
   if (!res.ok) {
     let detail: any = null;
@@ -120,7 +134,7 @@ export async function api<T = any>(path: string, options: RequestInit = {}): Pro
     // 一排看不懂的红色 toast，必须同样清 token 回登录页。
     // 登录接口自己的 401 是「密码错了」，不是会话失效，不走这条路。
     const isLoginCall = path.includes("/auth/login");
-    if (token && !isLoginCall && isDeadCredential(res.status, payload)) {
+    if (token && token === getToken() && !isLoginCall && isDeadCredential(res.status, payload)) {
       forceReauth(typeof payload?.code === "string" ? payload.code : "expired");
     }
     throw new ApiError(res.status, payload);

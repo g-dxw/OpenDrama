@@ -2,14 +2,41 @@
   "compilerOptions": {
     "target": "ES2020",
     "useDefineForClassFields": true,
-    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "lib": [
+      "ES2021",
+      "DOM",
+      "DOM.Iterable"
+    ],
     "module": "ESNext",
     "skipLibCheck": true,
     "moduleResolution": "bundler",
     "isolatedModules": true,
     "noEmit": true,
     "jsx": "react-jsx",
-    "strict": true
+    "strict": true,
+    "baseUrl": ".",
+    "paths": {
+      "react": [
+        "node_modules/@types/react/index.d.ts"
+      ],
+      "react/jsx-runtime": [
+        "node_modules/@types/react/jsx-runtime.d.ts"
+      ],
+      "react/jsx-dev-runtime": [
+        "node_modules/@types/react/jsx-dev-runtime.d.ts"
+      ],
+      "react-dom": [
+        "node_modules/@types/react-dom/index.d.ts"
+      ],
+      "react-dom/client": [
+        "node_modules/@types/react-dom/client.d.ts"
+      ],
+      "hls.js": [
+        "node_modules/hls.js/dist/hls.d.ts"
+      ]
+    }
   },
-  "include": ["src"]
+  "include": [
+    "src"
+  ]
 }

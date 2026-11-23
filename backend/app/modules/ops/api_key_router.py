@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
@@ -18,10 +18,27 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.modules.ops import api_keys as service
 from app.modules.ops.models import STATUS_ACTIVE, AdminApiKey, AdminUser, ApiKeyEvent
-from app.modules.ops.router import require_admin, require_admin_role
+from app.modules.ops.router import require_admin
+from app.modules.tenancy.permissions import require_permission
 
 router = APIRouter(prefix="/admin/v1", tags=["admin-api-keys"])
 
+
+def _context_tenant(request: Request) -> str:
+    principal = getattr(request.state, 'principal', None)
+    if principal is None or not principal.tenant_id:
+        raise HTTPException(403, detail=dict(code='tenant_context_required', message='密钥管理需要当前租户上下文'))
+    return principal.tenant_id
+
+def require_key_reader(request: Request, actor: AdminUser = Depends(require_admin)) -> AdminUser:
+    _context_tenant(request)
+    require_permission(request, 'api_keys.view')
+    return actor
+
+def require_key_manager(request: Request, actor: AdminUser = Depends(require_admin)) -> AdminUser:
+    _context_tenant(request)
+    require_permission(request, 'api_keys.manage')
+    return actor
 
 # ---- schemas ----
 
@@ -60,6 +77,8 @@ def _key_out(key: AdminApiKey, user: AdminUser | None) -> dict:
     """Never serialise key_hash — not even a prefix of it."""
     return {
         "id": key.id,
+        "account_scope": key.account_scope,
+        "tenant_id": key.tenant_id,
         "name": key.name,
         "user_id": key.admin_user_id,
         "username": user.username if user else None,
@@ -81,8 +100,8 @@ def _issue_out(key: AdminApiKey, user: AdminUser | None, plaintext: str) -> dict
     return {**_key_out(key, user), "key": plaintext}
 
 
-def _get_or_404(db: Session, key_id: int) -> AdminApiKey:
-    key = db.get(AdminApiKey, key_id)
+def _get_or_404(db: Session, key_id: int, tenant_id: str) -> AdminApiKey:
+    key = db.scalar(select(AdminApiKey).where(AdminApiKey.id == key_id, AdminApiKey.account_scope == "tenant", AdminApiKey.tenant_id == tenant_id))
     if key is None:
         raise HTTPException(
             status_code=404, detail={"code": "key_not_found", "message": "密钥不存在"}
@@ -95,16 +114,17 @@ def _get_or_404(db: Session, key_id: int) -> AdminApiKey:
 
 @router.get("/api-keys")
 def list_keys(
+    request: Request,
     user_id: int | None = None,
     status: str | None = None,
     q: str | None = None,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
-    actor: AdminUser = Depends(require_admin_role),
+    actor: AdminUser = Depends(require_key_reader),
 ):
     """Global key list. ``state`` carries the four-way status the UI paints."""
-    conditions = []
+    conditions = [AdminApiKey.account_scope == "tenant", AdminApiKey.tenant_id == _context_tenant(request)]
     if user_id is not None:
         conditions.append(AdminApiKey.admin_user_id == user_id)
     if status in ("active", "revoked"):
@@ -137,7 +157,7 @@ def list_keys(
 
     # Global counts, unaffected by filters (same idea as the drama list header).
     summary = {"active": 0, "expiring": 0, "expired": 0, "revoked": 0}
-    for row in db.scalars(select(AdminApiKey)):
+    for row in db.scalars(select(AdminApiKey).where(AdminApiKey.account_scope == "tenant", AdminApiKey.tenant_id == _context_tenant(request))):
         summary[service.key_state(row)] += 1
 
     return {
@@ -151,12 +171,13 @@ def list_keys(
 
 @router.get("/api-keys/{key_id}/events")
 def list_key_events(
+    request: Request,
     key_id: int,
     limit: int = Query(default=50, ge=1, le=200),
     db: Session = Depends(get_db),
-    actor: AdminUser = Depends(require_admin_role),
+    actor: AdminUser = Depends(require_key_reader),
 ):
-    _get_or_404(db, key_id)
+    _get_or_404(db, key_id, _context_tenant(request))
     rows = db.scalars(
         select(ApiKeyEvent)
         .where(ApiKeyEvent.key_id == key_id)
@@ -180,13 +201,16 @@ def list_key_events(
 
 @router.get("/auth/keys")
 def list_own_keys(
+    request: Request,
     db: Session = Depends(get_db),
     actor: AdminUser = Depends(require_admin),
 ):
     """Self-service view: a staff member can audit their own credentials."""
+    tenant_id = _context_tenant(request)
+    if actor.account_scope != 'tenant' or actor.tenant_id != tenant_id: return {'items': []}
     rows = db.scalars(
         select(AdminApiKey)
-        .where(AdminApiKey.admin_user_id == actor.id)
+        .where(AdminApiKey.admin_user_id == actor.id, AdminApiKey.account_scope == 'tenant', AdminApiKey.tenant_id == tenant_id)
         .order_by(AdminApiKey.id.desc())
     ).all()
     return {"items": [_key_out(key, actor) for key in rows]}
@@ -197,10 +221,14 @@ def list_own_keys(
 
 @router.post("/api-keys", status_code=201)
 def create_key(
+    request: Request,
     body: KeyCreateIn,
     db: Session = Depends(get_db),
-    actor: AdminUser = Depends(require_admin_role),
+    actor: AdminUser = Depends(require_key_manager),
 ):
+    owner = db.get(AdminUser, body.user_id)
+    if owner is None or owner.account_scope != 'tenant' or owner.tenant_id != _context_tenant(request):
+        raise HTTPException(404, detail=dict(code='staff_not_found', message='当前租户不存在此员工'))
     key, plaintext = service.create_key(
         db,
         admin_user_id=body.user_id,
@@ -214,12 +242,13 @@ def create_key(
 
 @router.patch("/api-keys/{key_id}")
 def update_key(
+    request: Request,
     key_id: int,
     body: KeyUpdateIn,
     db: Session = Depends(get_db),
-    actor: AdminUser = Depends(require_admin_role),
+    actor: AdminUser = Depends(require_key_manager),
 ):
-    key = _get_or_404(db, key_id)
+    key = _get_or_404(db, key_id, _context_tenant(request))
     data = body.model_dump(exclude_unset=True)
     key = service.update_key(
         db,
@@ -236,12 +265,13 @@ def update_key(
 
 @router.post("/api-keys/{key_id}/revoke")
 def revoke_key(
+    request: Request,
     key_id: int,
     body: RevokeIn | None = None,
     db: Session = Depends(get_db),
-    actor: AdminUser = Depends(require_admin_role),
+    actor: AdminUser = Depends(require_key_manager),
 ):
-    key = _get_or_404(db, key_id)
+    key = _get_or_404(db, key_id, _context_tenant(request))
     key = service.revoke_key(
         db, key, reason=body.reason if body else None, actor_id=actor.id
     )
@@ -250,12 +280,13 @@ def revoke_key(
 
 @router.post("/api-keys/{key_id}/rotate", status_code=201)
 def rotate_key(
+    request: Request,
     key_id: int,
     body: RotateIn | None = None,
     db: Session = Depends(get_db),
-    actor: AdminUser = Depends(require_admin_role),
+    actor: AdminUser = Depends(require_key_manager),
 ):
-    key = _get_or_404(db, key_id)
+    key = _get_or_404(db, key_id, _context_tenant(request))
     fresh, plaintext = service.rotate_key(
         db,
         key,
@@ -267,10 +298,19 @@ def rotate_key(
 
 @router.delete("/api-keys/{key_id}", status_code=204)
 def delete_key(
+    request: Request,
     key_id: int,
     db: Session = Depends(get_db),
-    actor: AdminUser = Depends(require_admin_role),
+    actor: AdminUser = Depends(require_key_manager),
 ):
-    key = _get_or_404(db, key_id)
+    key = _get_or_404(db, key_id, _context_tenant(request))
     service.delete_key(db, key, actor_id=actor.id)
     return Response(status_code=204)
+
+# A second mount preserves endpoint behaviour while the original admin routes
+# remain explicit compatibility aliases. Root's request guard binds the tenant.
+tenant_router = APIRouter(prefix='/tenant/v1', tags=['tenant-api-keys'])
+for _route in router.routes:
+    tenant_router.add_api_route(_route.path.removeprefix('/admin/v1'), _route.endpoint,
+        methods=list(_route.methods), status_code=_route.status_code, response_model=_route.response_model,
+        response_class=_route.response_class, name=_route.name, include_in_schema=_route.include_in_schema)

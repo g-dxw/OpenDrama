@@ -1,0 +1,15 @@
+# Files executed or consumed directly on Linux must stay LF in git archive.
+/deploy/selfhost/** text eol=lf
+/cli/opendrama text eol=lf
+/cli/install.sh text eol=lf
+
+/deploy/selfhost/** text eol=lf
+
+# Source archives exclude operational data and third-party catalog samples.
+data export-ignore
+output export-ignore
+outputs export-ignore
+generated-images export-ignore
+deployments export-ignore
+*.pptx export-ignore
+*.miora export-ignore

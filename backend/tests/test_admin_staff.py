@@ -22,7 +22,7 @@ def client(session):
 
 
 def _login(client: TestClient, username: str, password: str = "pass-1234") -> dict:
-    r = client.post("/admin/v1/auth/login", json={"username": username, "password": password})
+    r = client.post("/admin/v1/auth/login", json={"tenant_code": "jjtv", "username": username, "password": password})
     assert r.status_code == 200, r.text
     return {"Authorization": f"Bearer {r.json()['token']}"}
 
@@ -58,6 +58,9 @@ def test_list_staff_omits_password_hash(make, session, client):
     assert {row["username"] for row in items} == {actor.username, "ops-lily"}
     for row in items:
         assert "password_hash" not in row
+        assert "temporary_password" not in row
+        assert row["account_scope"] == "tenant"
+        assert row["tenant_id"] == "jjtv"
         assert set(row) == {
             "id",
             "username",
@@ -68,7 +71,13 @@ def test_list_staff_omits_password_hash(make, session, client):
             "supplier_id",
             "last_login_at",
             "created_at",
-            "updated_at",
+            "account_scope",
+            "tenant_id",
+            "role_id",
+            "role_name",
+            "is_tenant_admin",
+            "is_partner",
+            "must_change_password",
         }
 
 
@@ -182,14 +191,17 @@ def test_rename_and_change_role(make, session, client):
     )
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["before"] == {"display_name": "李莉", "role": "ops"}
+    assert body["before"]["display_name"] == "李莉"
+    assert body["before"]["role"] == "ops"
+    assert body["before"]["tenant_id"] == "jjtv"
+    assert body["before"]["role_id"] != body["after"]["role_id"]
     assert body["after"]["display_name"] == "李莉（财务）"
     assert body["after"]["role"] == "finance"
 
-    # No-op patch stays a 200 and writes nothing.
+    # No-op patch keeps the same tenant-bound account state.
     r = client.patch(f"/admin/v1/staff/{created['id']}", json={"role": "finance"}, headers=headers)
     assert r.status_code == 200
-    assert r.json()["before"] == {}
+    assert r.json()["before"] == r.json()["after"]
 
 
 def test_cannot_change_own_role(make, session, client):
@@ -205,7 +217,10 @@ def test_cannot_change_own_role(make, session, client):
 def test_disable_kills_the_live_session(make, session, client):
     headers, _ = _admin_headers(make, client)
     created = _create(client, headers)
-    target = _login(client, "ops-lily", "lily-pass-1234")
+    initial = _login(client, "ops-lily", "lily-pass-1234")
+    changed = client.post("/tenant/v1/auth/password", json={"old_password": "lily-pass-1234", "new_password": "lily-onboarded-1234"}, headers=initial)
+    assert changed.status_code == 200, changed.text
+    target = _login(client, "ops-lily", "lily-onboarded-1234")
     assert client.get("/admin/v1/staff", headers=target).status_code == 403  # ops cannot list
     assert client.get("/admin/v1/dramas", headers=target).status_code == 200
 
@@ -223,7 +238,7 @@ def test_disable_kills_the_live_session(make, session, client):
     assert client.get("/admin/v1/dramas", headers=target).status_code == 401
     # And the account cannot sign in again.
     r = client.post(
-        "/admin/v1/auth/login", json={"username": "ops-lily", "password": "lily-pass-1234"}
+        "/admin/v1/auth/login", json={"tenant_code": "jjtv", "username": "ops-lily", "password": "lily-onboarded-1234"}
     )
     assert r.status_code == 401
 
@@ -293,7 +308,7 @@ def test_reset_password_revokes_sessions_and_swaps_credentials(make, session, cl
     assert client.get("/admin/v1/dramas", headers=victim).status_code == 401
     assert (
         client.post(
-            "/admin/v1/auth/login", json={"username": "ops-lily", "password": "lily-pass-1234"}
+            "/admin/v1/auth/login", json={"tenant_code": "jjtv", "username": "ops-lily", "password": "lily-pass-1234"}
         ).status_code
         == 401
     )
@@ -327,13 +342,13 @@ def test_self_change_revokes_every_session(make, session, client):
     assert (
         client.post(
             "/admin/v1/auth/login",
-            json={"username": account.username, "password": "pass-1234"},
+            json={"tenant_code": "jjtv", "username": account.username, "password": "pass-1234"},
         ).status_code
         == 401
     )
     fresh = client.post(
         "/admin/v1/auth/login",
-        json={"username": account.username, "password": "my-new-pass-9"},
+        json={"tenant_code": "jjtv", "username": account.username, "password": "my-new-pass-9"},
     )
     assert fresh.status_code == 200
 
@@ -361,9 +376,24 @@ def test_audit_log_records_actions_without_secrets(make, session, client):
     session.expire_all()
     rows = session.query(AuditLog).filter(AuditLog.target_type == "admin_user").all()
     actions = sorted({row.action for row in rows})
-    assert actions == ["staff_create", "staff_disable", "staff_enable", "staff_password_reset"]
+    assert actions == ["tenant.staff.create", "tenant.staff.password_reset", "tenant.staff.update"]
+    updates = [row.payload for row in rows if row.action == "tenant.staff.update"]
+    assert {value["after_status"] for value in updates} == {"active", "disabled"}
+    assert any(value["disable_reason"] == "离职" for value in updates)
+    assert all(row.tenant_id == "jjtv" and row.actor_scope == "tenant" for row in rows)
 
     raw = json.dumps([row.payload for row in rows], ensure_ascii=False)
     assert "secret-pass-2026" not in raw
     assert "lily-pass-1234" not in raw
     assert "password" not in raw
+
+
+def test_self_change_rejects_reusing_current_password(make, session, client):
+    headers, _ = _admin_headers(make, client)
+    result = client.post(
+        "/admin/v1/auth/password",
+        json={"old_password": "pass-1234", "new_password": "pass-1234"},
+        headers=headers,
+    )
+    assert result.status_code == 422, result.text
+    assert client.get("/admin/v1/auth/me", headers=headers).status_code == 200

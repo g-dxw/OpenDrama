@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""LiteTV 统一发布工具（多 Agent 安全，一个版本一个版本上线）。
+"""JJTV 统一发布工具（多 Agent 安全，一个版本一个版本上线）。
 
 规则与流程见 docs/release-process.md；Agent 强制纪律见 AGENTS.md。
 
@@ -251,13 +251,25 @@ def next_version() -> str:
             m = VERSION_RE.match(f.stem)
             if m:
                 max_n = max(max_n, int(m.group(4)))
+    # Failed releases delete their tag, and another worktree may not contain
+    # their ledger yet. Shared committed history still reserves those numbers,
+    # including commits retained only by a reflog after a branch reset/deletion.
+    history = git("log", "--all", "--reflog", "--format=", "--name-only", "--",
+                  f"deployments/releases/{prefix}*.json")
+    record_prefix = "deployments/releases/"
+    for line in history.splitlines():
+        if not line.startswith(record_prefix) or not line.endswith(".json"):
+            continue
+        m = VERSION_RE.match(line[len(record_prefix):-5])
+        if m and f"{m.group(1)}.{m.group(2)}.{m.group(3)}" == today:
+            max_n = max(max_n, int(m.group(4)))
     return f"{prefix}{max_n + 1}"
 
 
 def create_tag(version: str, sha: str, target: str) -> None:
     if git("tag", "-l", version):
         raise ReleaseError(f"tag {version} 已存在（不应发生，请人工检查）")
-    git("tag", "-a", version, "-m", f"LiteTV {target} release {version}", sha)
+    git("tag", "-a", version, "-m", f"JJTV {target} release {version}", sha)
 
 
 def delete_tag(version: str) -> None:
@@ -963,7 +975,7 @@ def cmd_rollback(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="release.py", description="LiteTV 统一发布工具（多 Agent 安全）")
+    parser = argparse.ArgumentParser(prog="release.py", description="JJTV 统一发布工具（多 Agent 安全）")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_status = sub.add_parser("status", help="查看锁 / 最近发布 / 线上当前版本")

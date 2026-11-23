@@ -28,7 +28,8 @@ import {
   VideoCameraOutlined,
 } from "@ant-design/icons";
 import { api, errorText } from "../api";
-import { useCanWriteContent } from "../me";
+import EpisodeAssets from './EpisodeAssets';
+import { usePermission } from "../me";
 import {
   MAX_UPLOAD_BYTES,
   directUpload,
@@ -49,6 +50,7 @@ type EpisodeRow = {
   status: string;
   duration_seconds: number;
   bunny_video_id: string;
+  coin_price?: number | null;
 };
 
 const STATUS_META: Record<string, { text: string; color: string }> = {
@@ -242,6 +244,8 @@ function EpisodeEditorModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const canEdit = usePermission("dramas.edit");
+  const canUpload = usePermission("dramas.upload");
   const [form] = Form.useForm<{ episode_number: number; title: string }>();
   const pick = useVideoPick();
   const resetPick = pick.reset;
@@ -325,7 +329,7 @@ function EpisodeEditorModal({
   const busy = phase !== "idle";
   /** Only the byte upload locks the dialog; transcoding runs in the background. */
   const locked = phase === "uploading";
-  const canReplaceVideo = editing === null || editing.status !== "transcoding";
+  const canReplaceVideo = canUpload && (editing === null || editing.status !== "transcoding");
 
   const nextNumber = useMemo(
     () => episodes.reduce((max, row) => Math.max(max, row.episode_number), 0) + 1,
@@ -347,9 +351,10 @@ function EpisodeEditorModal({
   }, [open, editing, nextNumber, form, resetPick]);
 
   const save = async () => {
+    if ((isCreate && !canEdit) || (!canEdit && !pick.file) || (pick.file && !canUpload)) return;
     const values = await form.validateFields().catch(() => null);
     if (!values) return;
-    if (isCreate && !(pick.file && pick.meta)) {
+    if (isCreate && canUpload && !(pick.file && pick.meta)) {
       setError("请先选择要上传的视频文件");
       return;
     }
@@ -372,7 +377,7 @@ function EpisodeEditorModal({
         });
         targetId = created.id;
         setEpisodeId(targetId);
-      } else {
+      } else if (canEdit) {
         // Metadata edits (title / number) are a plain PATCH; the video file,
         // when picked, is swapped in afterwards through the upload session.
         await api(`/admin/v1/episodes/${targetId}`, {
@@ -419,7 +424,7 @@ function EpisodeEditorModal({
           message.info("视频已上传，Bunny 仍在转码；稍后可在列表点「同步状态」");
         }
       } else {
-        message.success("分集已更新");
+        message.success(isCreate ? "分集已创建，可由上传人员补充视频" : "分集已更新");
       }
       onSaved();
       onClose();
@@ -450,7 +455,7 @@ function EpisodeEditorModal({
   };
 
   const primaryLabel = isCreate
-    ? "开始上传"
+    ? canUpload ? "开始上传" : "创建分集"
     : pick.file
       ? editing?.bunny_video_id
         ? "保存并替换视频"
@@ -472,7 +477,7 @@ function EpisodeEditorModal({
   const infoSection = (
     <section className="ep-section">
       <div className="ep-kicker">基本信息</div>
-      <Form form={form} layout="vertical" disabled={busy}>
+      <Form form={form} layout="vertical" disabled={busy || !canEdit}>
         <div className="ep-fields">
           <Form.Item
             label="集数"
@@ -500,7 +505,7 @@ function EpisodeEditorModal({
       <div className="ep-section-head">
         <div className="ep-kicker">
           视频
-          {isCreate && <span className="ep-req">必填</span>}
+          {isCreate && canUpload && <span className="ep-req">必填</span>}
         </div>
         {hasVideo && replacing && canReplaceVideo && phase === "idle" && (
           <Button type="link" size="small" className="ep-text-btn" onClick={stopReplacing}>
@@ -509,7 +514,7 @@ function EpisodeEditorModal({
         )}
       </div>
 
-      {!canReplaceVideo && (
+      {canUpload && !canReplaceVideo && (
         <div className="ep-note">转码进行中，完成前不能替换视频。标题和集数可以先保存。</div>
       )}
 
@@ -623,7 +628,7 @@ function EpisodeEditorModal({
                 <Button
                   type="primary"
                   loading={phase === "saving"}
-                  disabled={pick.probing || (isCreate && !pick.file)}
+                  disabled={pick.probing || (isCreate && (!canEdit || (canUpload && !pick.file))) || (!canEdit && !pick.file)}
                   onClick={save}
                 >
                   {primaryLabel}
@@ -698,7 +703,10 @@ export default function EpisodesPanel({ dramaId }: { dramaId: string }) {
   const [selectedKeys, setSelectedKeys] = useState<number[]>([]);
   const [bulkBusy, setBulkBusy] = useState(false);
   const [batchOpen, setBatchOpen] = useState(false);
-  const canWrite = useCanWriteContent();
+  const canEdit = usePermission("dramas.edit");
+  const canUpload = usePermission("dramas.upload");
+  const canPublish = usePermission("dramas.publish");
+  const canDelete = usePermission("episodes.delete");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -738,6 +746,7 @@ export default function EpisodesPanel({ dramaId }: { dramaId: string }) {
   }, [load]);
 
   const openEditor = (row: EpisodeRow | null) => {
+    if (row ? !(canEdit || canUpload) : !canEdit) return;
     setEditing(row);
     setEditorNonce((nonce) => nonce + 1);
     setEditorOpen(true);
@@ -753,6 +762,7 @@ export default function EpisodesPanel({ dramaId }: { dramaId: string }) {
   };
 
   const syncStatus = async (row: EpisodeRow) => {
+    if (!canUpload) return;
     try {
       const res = await api<{ status: string }>(`/admin/v1/episodes/${row.id}/sync-status`, { method: "POST" });
       const meta = STATUS_META[res.status];
@@ -764,6 +774,7 @@ export default function EpisodesPanel({ dramaId }: { dramaId: string }) {
   };
 
   const publish = async (row: EpisodeRow) => {
+    if (!canPublish) return;
     try {
       await api(`/admin/v1/episodes/${row.id}/publish`, { method: "POST" });
       message.success(`第 ${row.episode_number} 集已上架`);
@@ -774,6 +785,7 @@ export default function EpisodesPanel({ dramaId }: { dramaId: string }) {
   };
 
   const unpublish = async (row: EpisodeRow) => {
+    if (!canPublish) return;
     try {
       await api(`/admin/v1/episodes/${row.id}/unpublish`, { method: "POST" });
       message.success(`第 ${row.episode_number} 集已下架`);
@@ -784,7 +796,7 @@ export default function EpisodesPanel({ dramaId }: { dramaId: string }) {
   };
 
   const bulkStatus = async (action: "publish" | "unpublish") => {
-    if (selectedKeys.length === 0) return;
+    if (!canPublish || selectedKeys.length === 0) return;
     setBulkBusy(true);
     const label = action === "publish" ? "上架" : "下架";
     try {
@@ -811,16 +823,16 @@ export default function EpisodesPanel({ dramaId }: { dramaId: string }) {
   return (
     <Space direction="vertical" style={{ width: "100%" }}>
       <Space wrap size="middle">
-        {canWrite && (
+        {canEdit && (
           <Button
             type="primary"
             icon={<PlusOutlined />}
             onClick={() => openEditor(null)}
           >
-            上传新分集
+            {canUpload ? "上传新分集" : "新增分集"}
           </Button>
         )}
-        {canWrite && <BatchUploadButton onClick={() => setBatchOpen(true)} />}
+        {canEdit && canUpload && <BatchUploadButton onClick={() => setBatchOpen(true)} />}
         <Select
           allowClear
           placeholder="状态筛选"
@@ -833,12 +845,12 @@ export default function EpisodesPanel({ dramaId }: { dramaId: string }) {
           刷新
         </Button>
         <Typography.Text type="secondary">共 {rows.length} 集</Typography.Text>
-        {selectedKeys.length > 0 && (
+        {canPublish && selectedKeys.length > 0 && (
           <>
             <Typography.Text>已选 {selectedKeys.length} 集</Typography.Text>
             <Button
               type="primary"
-              disabled={!canWrite}
+              disabled={!canPublish}
               loading={bulkBusy}
               onClick={() => bulkStatus("publish")}
             >
@@ -846,7 +858,7 @@ export default function EpisodesPanel({ dramaId }: { dramaId: string }) {
             </Button>
             <Button
               danger
-              disabled={!canWrite}
+              disabled={!canPublish}
               loading={bulkBusy}
               onClick={() => bulkStatus("unpublish")}
             >
@@ -865,15 +877,16 @@ export default function EpisodesPanel({ dramaId }: { dramaId: string }) {
         dataSource={rows}
         pagination={{ pageSize: 20 }}
         scroll={{ x: 720 }}
-        rowSelection={{
+        rowSelection={canPublish ? {
           selectedRowKeys: selectedKeys,
           onChange: (keys) => setSelectedKeys(keys as number[]),
           getCheckboxProps: (row) => ({
             // Nothing to take down/publish while a placeholder has no video.
             disabled: !row.bunny_video_id,
           }),
-        }}
+        } : undefined}
         columns={[
+          {title:'字幕 / 定价',key:'assets',width:126,render:(_value:unknown,row:EpisodeRow)=><EpisodeAssets episodeId={row.id} episodeNumber={row.episode_number} price={row.coin_price} onSaved={load}/>},
           { title: "集", dataIndex: "episode_number", width: 70 },
           {
             title: "标题",
@@ -902,12 +915,12 @@ export default function EpisodesPanel({ dramaId }: { dramaId: string }) {
                     预览
                   </Button>
                 )}
-                {row.status === "transcoding" && (
+                {canUpload && row.status === "transcoding" && (
                   <Button size="small" type="link" style={{ padding: 0 }} icon={<SyncOutlined />} onClick={() => syncStatus(row)}>
                     同步状态
                   </Button>
                 )}
-                {canWrite && (!row.bunny_video_id || row.status === "transcode_failed") && (
+                {canUpload && (!row.bunny_video_id || row.status === "transcode_failed") && (
                   <Button
                     size="small"
                     type={row.status === "transcode_failed" ? "link" : "primary"}
@@ -918,26 +931,30 @@ export default function EpisodesPanel({ dramaId }: { dramaId: string }) {
                     {row.status === "transcode_failed" ? "重新上传" : "上传"}
                   </Button>
                 )}
-                {canWrite && (
+                {(canEdit || canUpload) && (
                   <Button size="small" type="link" style={{ padding: 0 }} onClick={() => openEditor(row)}>
-                    编辑
+                    {canEdit ? "编辑" : "替换视频"}
                   </Button>
                 )}
-                {row.status === "in_review" && canWrite && (
+                {row.status === "in_review" && canPublish && (
                   <Popconfirm title={`上架第 ${row.episode_number} 集？`} onConfirm={() => publish(row)}>
                     <Button size="small" type="link" style={{ padding: 0 }}>
                       上架
                     </Button>
                   </Popconfirm>
                 )}
-                {row.status === "unpublished" && canWrite && (
+                {row.status === "unpublished" && canPublish && (
                   <Popconfirm title={`重新上架第 ${row.episode_number} 集？`} onConfirm={() => publish(row)}>
                     <Button size="small" type="link" style={{ padding: 0 }}>
                       上架
                     </Button>
                   </Popconfirm>
                 )}
-                {row.status === "published" && canWrite && (
+                {canDelete && ["not_uploaded", "transcode_failed"].includes(row.status) && <Popconfirm title={`删除第 ${row.episode_number} 集？`} description="仅可删除未上传或转码失败的分集空壳。" onConfirm={async () => {
+                  if (!canDelete) return;
+                  try { await api(`/admin/v1/episodes/${row.id}`, { method: "DELETE" }); message.success("分集已删除"); load(); } catch (e) { message.error(`删除失败：${errorText(e)}`); }
+                }}><Button size="small" type="link" danger>删除分集</Button></Popconfirm>}
+                {row.status === "published" && canPublish && (
                   <Popconfirm title={`下架第 ${row.episode_number} 集？`} onConfirm={() => unpublish(row)}>
                     <Button size="small" type="link" danger style={{ padding: 0 }}>
                       下架
@@ -989,7 +1006,7 @@ export default function EpisodesPanel({ dramaId }: { dramaId: string }) {
         existingNumbers={rows.map((row) => row.episode_number)}
       />
 
-      <BatchUploadPill dramaId={dramaId} hidden={batchOpen} onOpen={() => setBatchOpen(true)} />
+      <BatchUploadPill dramaId={dramaId} hidden={batchOpen || !(canEdit && canUpload)} onOpen={() => setBatchOpen(true)} />
     </Space>
   );
 }

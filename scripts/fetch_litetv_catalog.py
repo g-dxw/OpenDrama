@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""从 lite.tv 抓取 MiniTV 项目开发用的内容准备数据。
+"""从 lite.tv 抓取 JJTV 项目开发用的内容准备数据。
 
 数据来源
     https://www.lite.tv          （站点的前端 SPA）
@@ -1178,7 +1178,7 @@ def write_outputs(client: LiteTVClient, ctx: dict, out_dir: Path, target: int) -
         for p in out_dir.rglob("*") if p.is_file() and p.name != "manifest.json"
     )
     manifest = {
-        "name": "LiteTV 内容准备数据（MiniTV 项目）",
+        "name": "LiteTV 内容准备数据（JJTV 项目）",
         "generated_at": fetched_at,
         "source_site": SITE_ROOT,
         "source_genre_page": f"{SITE_ROOT}/genre",
@@ -1228,7 +1228,7 @@ def write_outputs(client: LiteTVClient, ctx: dict, out_dir: Path, target: int) -
 def write_readme(out_dir: Path, manifest: dict) -> None:
     cov = manifest["category_coverage"]
     top = "、".join(f"{k} {v}" for k, v in list(cov.items())[:12])
-    readme = f"""# LiteTV 内容准备数据（MiniTV 项目）
+    readme = f"""# LiteTV 内容准备数据（JJTV 项目）
 
 抓取时间：{manifest['generated_at']}
 数据来源：[lite.tv 分类页]({manifest['source_genre_page']}) 及其同站公开接口 `{manifest['source_api']}`
@@ -1236,7 +1236,7 @@ def write_readme(out_dir: Path, manifest: dict) -> None:
 
 ## 1. 这批数据解决什么问题
 
-MiniTV 的开发、联调和演示需要真实形态的剧集数据：竖版封面、英文剧名与简介、
+JJTV 的开发、联调和演示需要真实形态的剧集数据：竖版封面、英文剧名与简介、
 分类标签、总集数与已发布集数、免费集与金币解锁规则、单集时长、字幕语言。
 本目录一次性备齐这些字段，后端可以直接导入作为种子数据，前端可以直接渲染列表和详情页。
 

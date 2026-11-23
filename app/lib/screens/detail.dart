@@ -23,7 +23,7 @@ const _qualityKey = 'minitv_app_quality';
 const _debugQuality = String.fromEnvironment('DEBUG_QUALITY', defaultValue: '');
 
 /// Where the share sheet points — the H5 viewer is the public watch page.
-const shareBaseUrl = 'https://h5.minitv.us';
+const shareBaseUrl = 'https://jjtv-h5.8jj.net';
 
 /// The drama's play page (design draft P8 播放态 + P9 选集面板).
 ///
@@ -225,7 +225,7 @@ class _DetailScreenState extends State<DetailScreen> {
   }
 
   void _share() {
-    final title = drama['title'] as String? ?? 'MiniTV';
+    final title = drama['title'] as String? ?? 'JJTV';
     SharePlus.instance.share(ShareParams(text: '$title\n$shareBaseUrl', subject: title));
   }
 

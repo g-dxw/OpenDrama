@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+from app.modules.ops.managed_settings import config_value
 import urllib.error
 import urllib.request
 
@@ -23,12 +24,12 @@ class MailError(Exception):
 
 
 def configured() -> bool:
-    return bool(os.environ.get("RESEND_API_KEY", "").strip() and os.environ.get("RESEND_FROM", "").strip())
+    return bool(config_value("RESEND_API_KEY", "").strip() and config_value("RESEND_FROM", "").strip())
 
 
 def send_email(*, to: str, subject: str, text: str, html: str | None = None) -> str:
-    api_key = os.environ.get("RESEND_API_KEY", "").strip()
-    sender = os.environ.get("RESEND_FROM", "").strip()
+    api_key = config_value("RESEND_API_KEY", "").strip()
+    sender = config_value("RESEND_FROM", "").strip()
     if not api_key or not sender:
         raise MailError("RESEND_API_KEY and RESEND_FROM must both be set")
     payload: dict[str, object] = {

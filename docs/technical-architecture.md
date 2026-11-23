@@ -1,4 +1,4 @@
-# MiniTV 技术架构
+# JJTV 技术架构
 
 状态：已采纳  
 日期：2026-10-13  
@@ -7,7 +7,7 @@
 
 ## 1. 技术结论
 
-MiniTV 的技术架构按四层固定：
+JJTV 的技术架构按四层固定：
 
 | 层 | 选型 | 部署位置 |
 |---|---|---|
@@ -213,7 +213,7 @@ Flutter 的界面由自有渲染引擎绘制，竖滑切集、选集 Sheet、字
 
 AI 友好度上，React Native 的公开语料更多，但不代表对本项目更友好。Flutter 的 Widget 树、强类型和声明式界面更完整，AI 一次改动可以同时覆盖双端，也更容易通过类型和分析器检查。FastAPI 的 OpenAPI 仍可生成 Dart 客户端，类型联动不是 Flutter 的障碍。
 
-因此，MiniTV 这种以竖屏视频交互为核心的产品，Flutter 的综合优势大于 React Native。
+因此，JJTV 这种以竖屏视频交互为核心的产品，Flutter 的综合优势大于 React Native。
 
 增加 TikTok 小程序后，这个结论不变。TikTok Minis 是 Web 应用，必须使用官方 VePlayer；App 使用 Bunny HLS 和原生播放器。两边不能共用播放器、播放凭证和竖滑交互实现。
 

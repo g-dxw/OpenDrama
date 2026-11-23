@@ -43,9 +43,9 @@ const _tasks = {
 const _plans = {
   'billing_mode': 'subscription',
   'items': [
-    {'code': 'weekly', 'name_en': 'MiniTV Weekly', 'name_zh': 'MiniTV 周卡', 'price_cents': 999, 'currency': 'USD', 'version': 2, 'version_id': 3, 'benefits': {'items': ['Every episode unlocked', 'No ads']}},
-    {'code': 'monthly', 'name_en': 'MiniTV Monthly', 'name_zh': 'MiniTV 月卡', 'price_cents': 2999, 'currency': 'USD', 'version': 2, 'version_id': 4, 'benefits': {'best': true, 'items': ['Every episode unlocked', 'No ads', '1080p']}},
-    {'code': 'yearly', 'name_en': 'MiniTV Yearly', 'name_zh': 'MiniTV 年卡', 'price_cents': 9999, 'currency': 'USD', 'version': 2, 'version_id': 5, 'benefits': {'items': ['Every episode unlocked']}},
+    {'code': 'weekly', 'name_en': 'JJTV Weekly', 'name_zh': 'JJTV 周卡', 'price_cents': 999, 'currency': 'USD', 'version': 2, 'version_id': 3, 'benefits': {'items': ['Every episode unlocked', 'No ads']}},
+    {'code': 'monthly', 'name_en': 'JJTV Monthly', 'name_zh': 'JJTV 月卡', 'price_cents': 2999, 'currency': 'USD', 'version': 2, 'version_id': 4, 'benefits': {'best': true, 'items': ['Every episode unlocked', 'No ads', '1080p']}},
+    {'code': 'yearly', 'name_en': 'JJTV Yearly', 'name_zh': 'JJTV 年卡', 'price_cents': 9999, 'currency': 'USD', 'version': 2, 'version_id': 5, 'benefits': {'items': ['Every episode unlocked']}},
   ],
 };
 
@@ -76,7 +76,7 @@ const _comments = {
 
 const _orders = {
   'items': [
-    {'order_no': 'MO123', 'plan_code': 'monthly', 'plan_name_en': 'MiniTV Monthly', 'plan_name_zh': 'MiniTV 月卡', 'amount_cents': 2999, 'currency': 'USD', 'billing_mode': 'subscription', 'status': 'paid', 'paid_at': '2026-10-19T12:00:00Z', 'created_at': '2026-10-19T11:59:00Z'},
+    {'order_no': 'MO123', 'plan_code': 'monthly', 'plan_name_en': 'JJTV Monthly', 'plan_name_zh': 'JJTV 月卡', 'amount_cents': 2999, 'currency': 'USD', 'billing_mode': 'subscription', 'status': 'paid', 'paid_at': '2026-10-19T12:00:00Z', 'created_at': '2026-10-19T11:59:00Z'},
   ],
   'has_more': false,
 };
@@ -223,7 +223,7 @@ void main() {
     final session = await _signedInSession();
     await tester.pumpWidget(_frame(PremiumSheet(session: session, language: 'en', onClose: () {})));
     await tester.pumpAndSettle();
-    expect(find.text('MiniTV Monthly'), findsOneWidget);
+    expect(find.text('JJTV Monthly'), findsOneWidget);
     expect(find.text('Most popular'), findsOneWidget);
     await expectLater(find.byType(PremiumSheet), matchesGoldenFile('premium_sheet.png'));
   });

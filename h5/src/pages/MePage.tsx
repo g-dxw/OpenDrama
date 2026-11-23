@@ -1,3 +1,4 @@
+import { getSite, siteName, siteFeature } from "../../../shared/site";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   checkin as postCheckin,
@@ -37,6 +38,7 @@ import { Sheet } from "../ui/Sheet";
 import { PremiumSheet } from "../ui/PremiumSheet";
 import { OrdersSheet } from "../ui/OrdersSheet";
 import { toast } from "../ui/toast";
+import { replaceMobileHash } from "../routes";
 
 type MeTab = "history" | "favorites" | "likes";
 type SheetId = "edit" | "ledger" | "messages" | "settings" | "premium" | "orders" | "signout";
@@ -59,14 +61,18 @@ export function MePage({
   locale,
   onLocale,
   onOpen,
+  initialTab = "history",
+  initialSheet = null,
 }: {
   locale: Locale;
   onLocale: (locale: Locale) => void;
   onOpen: (id: number) => void;
+  initialTab?: MeTab;
+  initialSheet?: SheetId | null;
 }) {
   const { status, user, openLogin, requireAuth, refresh, logout } = useAuth();
-  const [tab, setTab] = useState<MeTab>("history");
-  const [sheet, setSheet] = useState<SheetId | null>(null);
+  const [tab, setTab] = useState<MeTab>(initialTab);
+  const [sheet, setSheetState] = useState<SheetId | null>(initialSheet);
   const [history, setHistory] = useState<HistoryItem[] | null>(null);
   const [favorites, setFavorites] = useState<FavoritesPayload | null>(null);
   const [likes, setLikes] = useState<DramaLite[] | null>(null);
@@ -78,6 +84,22 @@ export function MePage({
   const [unread, setUnread] = useState(0);
   const [checkedToday, setCheckedToday] = useState(() => localStorage.getItem(CHECKIN_KEY) === localDay());
   const contentRef = useRef<HTMLDivElement | null>(null);
+  const mounted = useRef(true);
+  useEffect(() => {mounted.current=true;return()=>{mounted.current=false;};}, []);
+  useEffect(() => {setTab(initialTab);setSheetState(initialSheet);}, [initialTab,initialSheet]);
+  const syncRoute = (nextTab:MeTab,nextSheet:SheetId|null) => {
+    const params = new URLSearchParams(window.location.hash.split("?")[1] || "");
+    const base = /^#\/?me(?:\/|\?|$)/.test(window.location.hash) ? "me" : "account";
+    let path = base + "/" + nextTab;
+    const back = params.get("return");
+    params.delete("sheet");params.delete("return");params.delete("library");
+    if (nextSheet === "premium") {path="price";params.set("return",base+"/"+nextTab);}
+    else if(nextSheet){path=base+"/"+(nextSheet==="edit"?"profile":nextSheet==="signout"?"settings":nextSheet);if(nextTab!=="history")params.set("library",nextTab);if(nextSheet==="signout")params.set("sheet","signout");}
+    else if(back && /^(me|account)\/(history|favorites|likes)$/.test(back))path=back;
+    replaceMobileHash(path+(params.size?"?"+params.toString():""));
+  };
+  const setSheet = (next:SheetId|null) => {if(!mounted.current)return;setSheetState(next);syncRoute(tab,next);};
+
 
   const setTabState = useCallback((target: MeTab, value: LoadState) => {
     setStates((prev) => ({ ...prev, [target]: value }));
@@ -145,7 +167,9 @@ export function MePage({
   }, [status, tab, states.likes, loadLikes]);
 
   const jumpTo = (next: MeTab) => {
+    if (!mounted.current) return;
     setTab(next);
+    syncRoute(next,null);
     contentRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
@@ -276,7 +300,7 @@ export function MePage({
         </div>
       )}
 
-      {user?.membership?.active ? (
+      {(siteFeature("membership") || user?.membership?.active) && (user?.membership?.active ? (
         <button
           type="button"
           className="me-premium active"
@@ -289,7 +313,7 @@ export function MePage({
             <i>
               {t(locale, user.membership.canceling ? "premium_ends_on" : "premium_active_until", {
                 date: user.membership.until
-                  ? new Date(user.membership.until).toLocaleDateString(locale === "zh" ? "zh-CN" : "en-US", {
+                  ? new Date(user.membership.until).toLocaleDateString(locale === "zh" ? "zh-CN" : "en-US", { timeZone:getSite().tenant.timezone,
                       month: "short",
                       day: "numeric",
                       year: "numeric",
@@ -313,7 +337,7 @@ export function MePage({
           </span>
           <span className="me-premium-go">{t(locale, "premium_strip_cta")}</span>
         </button>
-      )}
+      ))}
 
       <div className="me-quick">
         <button type="button" className="me-quick-item" onClick={() => openTab("history")}>
@@ -442,14 +466,14 @@ export function MePage({
           onSaved={() => void refresh()}
         />
       )}
-      {sheet === "ledger" && (
+      {siteFeature("coins") && sheet === "ledger" && (
         <LedgerSheet locale={locale} balance={user?.coins ?? 0} onClose={() => setSheet(null)} />
       )}
       {sheet === "messages" && (
         <MessagesSheet locale={locale} onClose={() => setSheet(null)} onRead={handleRead} />
       )}
       {sheet === "orders" && <OrdersSheet locale={locale} onClose={() => setSheet(null)} />}
-      {sheet === "premium" && (
+      {sheet === "premium" && (siteFeature("membership") || user?.membership?.active) && (
         <PremiumSheet
           locale={locale}
           membership={user?.membership}
@@ -839,7 +863,7 @@ function LedgerSheet({
 function formatWhen(value: string, locale: Locale): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleString(locale === "zh" ? "zh-CN" : "en-US", {
+  return date.toLocaleString(locale === "zh" ? "zh-CN" : "en-US", { timeZone:getSite().tenant.timezone,
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
@@ -986,7 +1010,7 @@ function SettingsSheet({
         <div className="me-set-list">
           <div className="me-set-item">
             <span className="me-set-label">{t(locale, "me_set_version")}</span>
-            <span className="me-set-value">MiniTV · H5</span>
+            <span className="me-set-value">{siteName()} · H5</span>
           </div>
         </div>
       </section>

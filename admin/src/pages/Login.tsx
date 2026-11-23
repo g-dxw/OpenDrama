@@ -1,99 +1,45 @@
-import { useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
-import { Alert, Button, Card, Form, Input, message } from "antd";
-import { api, setToken, takeLogoutReason } from "../api";
-
-// 本地开发才预填默认账号，方便反复登录；生产构建里这个常量会被 Vite 直接裁掉，
-// 不会再随 JS 下发明文口令（旧版本把 admin/admin-1234 打进了线上包）。
-const PRESET_LOGIN = import.meta.env.DEV
-  ? { username: "admin", password: "admin-1234" }
-  : undefined;
-
-/** 后端 detail.code / 本地原因 -> 一句人话，解释「为什么被踢回来了」。 */
-const REASON_TEXT: Record<string, string> = {
-  expired: "登录状态已过期（后台会话有效期 8 小时），请重新登录。",
-  invalid_session: "登录状态已失效（会话已过期或已在别处退出），请重新登录。",
-  missing_credential: "登录状态已失效，请重新登录。",
-  account_disabled: "该账号已被停用，请联系平台管理员。",
-  key_revoked: "该 API 密钥已被吊销，请用账号密码登录。",
-  key_expired: "该 API 密钥已过期，请用账号密码登录。",
-  invalid_key: "凭据无效，请用账号密码登录。",
-};
-
-/**
- * 上一次为什么被踢回来：只在文档加载时读一次（读完即清），不要放进
- * useState 初始化器 —— StrictMode 会调用两次，第二次就已经读不到了。
- */
-const LOGOUT_REASON = takeLogoutReason();
-
-export default function Login() {
+import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { Alert, Button, Form, Input } from 'antd';
+import { LockOutlined, UserOutlined } from '@ant-design/icons';
+import AuthLayout from '../components/AuthLayout';
+import { api, setToken, takeLogoutReason, errorText } from '../api';
+import { CURRENT_ENTRY, contextApi, tenantEntryUrl } from '../entry';
+import TenantLoginSelector, { useTenantLoginOptions } from '../components/TenantLoginSelector';
+import type { Identity, LoginResult } from '../identity';
+const REASON = takeLogoutReason();
+export default function Login({ onLogin }: { onLogin: (context: Identity) => void }) {
   const navigate = useNavigate();
-  const [params] = useSearchParams();
+  const platform = CURRENT_ENTRY.kind === 'platform';
+  const directory = useTenantLoginOptions(!platform);
   const [loading, setLoading] = useState(false);
-  const expired = params.get("expired") === "1";
-  const hint = LOGOUT_REASON
-    ? REASON_TEXT[LOGOUT_REASON] ?? null
-    : expired
-      ? REASON_TEXT.expired
-      : null;
-
+  const [error, setError] = useState('');
   const onFinish = async (values: { username: string; password: string }) => {
-    setLoading(true);
+    setLoading(true); setError('');
     try {
-      const res = await api<{ token: string; user?: { role?: string } }>("/admin/v1/auth/login", {
-        method: "POST",
-        body: JSON.stringify(values),
-      });
-      setToken(res.token);
-      // 用登录响应里的角色决定落地页：以前固定跳 /dramas，上剧方账号会先到
-      // 员工页吃一次 403 才被重定向回来。
-      if (res.user?.role === "partner") {
-        navigate("/partner/dramas", { replace: true });
-        return;
-      }
-      // 会话过期抛出来的 next 优先，但必须是站内路径。
-      const next = params.get("next");
-      const safeNext = next && next.startsWith("/") && !next.startsWith("//") ? next : "/dramas";
-      navigate(safeNext, { replace: true });
-    } catch (err: any) {
-      message.error(err?.status === 401 ? "账号或密码错误" : `登录失败：${err?.message ?? err}`);
-    } finally {
-      setLoading(false);
-    }
+      const result = await api<LoginResult>(contextApi() + '/auth/login', { method: 'POST', body: JSON.stringify({ ...values, ...(platform ? {} : { tenant_code: CURRENT_ENTRY.code }) }) });
+      setToken(result.token); onLogin(result.context); navigate('/', { replace: true });
+    } catch (e: any) { setError(e?.status === 401 ? '账号或密码不正确' : errorText(e)); }
+    finally { setLoading(false); }
   };
-
-  return (
-    <div
-      style={{
-        minHeight: "100vh",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: 16,
-        background: "#0C0A0B",
-      }}
-    >
-      <Card title="MiniTV 管理后台登录" style={{ width: "100%", maxWidth: 360 }}>
-        {hint && (
-          <Alert
-            type={LOGOUT_REASON === "account_disabled" ? "error" : "warning"}
-            showIcon
-            message={hint}
-            style={{ marginBottom: 16 }}
-          />
-        )}
-        <Form layout="vertical" onFinish={onFinish} initialValues={PRESET_LOGIN}>
-          <Form.Item name="username" label="账号" rules={[{ required: true, message: "请输入账号" }]}>
-            <Input placeholder="如 ops / admin" autoComplete="username" />
-          </Form.Item>
-          <Form.Item name="password" label="密码" rules={[{ required: true, message: "请输入密码" }]}>
-            <Input.Password autoComplete="current-password" />
-          </Form.Item>
-          <Button type="primary" htmlType="submit" block loading={loading}>
-            登录
-          </Button>
-        </Form>
-      </Card>
+  return <AuthLayout systemLogin={platform}>
+    <span className="auth-eyebrow">{platform ? '管理系统' : '平台工作台'}</span>
+    <h1 className="auth-title">欢迎回来</h1>
+    <p className="auth-description">{platform ? '统一管理内容、平台与团队，开启高效协作。' : '登录你的运营空间，让每一个好故事被看见。'}</p>
+    <div className="auth-notices">
+      {REASON && <Alert showIcon type="info" message="登录状态已失效，请重新登录当前入口。" />}
+      {error && <Alert showIcon type="error" message={error} />}
     </div>
-  );
+    <Form data-testid="auth-login-form" layout="vertical" onFinish={onFinish} initialValues={platform && import.meta.env.DEV ? { username: 'admin', password: 'admin-1234' } : undefined}>
+      {!platform && <Form.Item label="选择平台"><TenantLoginSelector directory={directory} value={CURRENT_ENTRY.code} onChange={code => { if (code !== CURRENT_ENTRY.code) window.location.assign(tenantEntryUrl(code) + '/login'); }} /></Form.Item>}
+      <Form.Item name="username" label="账号" rules={[{ required: true, message: '请输入账号' }]}>
+        <Input size="large" autoComplete="username" prefix={<UserOutlined aria-hidden />} placeholder={platform ? '请输入管理员账号' : '请输入该平台的员工账号'} />
+      </Form.Item>
+      <Form.Item name="password" label="密码" rules={[{ required: true, message: '请输入密码' }]}>
+        <Input.Password size="large" prefix={<LockOutlined aria-hidden />} placeholder="请输入密码" autoComplete="current-password" maxLength={128} />
+      </Form.Item>
+      <Button className="auth-submit" type="primary" size="large" htmlType="submit" block loading={loading} aria-label={platform ? '登录管理系统' : '登录所选平台'}>{loading ? '正在登录…' : '登录'}</Button>
+    </Form>
+    <p className="auth-help">{platform ? '管理系统仅供管理员使用，其他成员请选择所属平台。' : '如需开通账号或找回密码，请联系你的管理员。'}</p>
+  </AuthLayout>;
 }

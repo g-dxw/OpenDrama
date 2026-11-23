@@ -7,10 +7,12 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
+    "test:unit": "node --test tests/*.test.mjs src/player/*.test.mjs",
     "verify:home": "node scripts/verify-home.mjs",
     "verify:auth": "node scripts/verify-auth.mjs",
     "verify:me": "node scripts/verify-me.mjs",
-    "verify:rewards": "node scripts/verify-rewards.mjs"
+    "verify:rewards": "node scripts/verify-rewards.mjs",
+    "verify:consumer": "node scripts/verify-consumer.mjs"
   },
   "dependencies": {
     "hls.js": "^1.6.16",
@@ -21,6 +23,7 @@
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.0",
+    "playwright-core": "1.56.1",
     "typescript": "^5.5.0",
     "vite": "^5.4.0"
   }

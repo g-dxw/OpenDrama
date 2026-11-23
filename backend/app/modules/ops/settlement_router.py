@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -19,8 +19,8 @@ router = APIRouter(prefix="/admin/v1", tags=["settlements"])
 MONEY_ROLES = (ROLE_FINANCE, ROLE_ADMIN)
 
 
-def _require_money(user: AdminUser = Depends(require_admin)) -> AdminUser:
-    if user.role not in MONEY_ROLES:
+def _require_money(request: Request, user: AdminUser = Depends(require_admin)) -> AdminUser:
+    if not getattr(request.state,'tenant_business_authorized',False):
         raise HTTPException(status_code=403, detail="role cannot access settlements")
     return user
 

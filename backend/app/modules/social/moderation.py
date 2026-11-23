@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CATEGORIES = ["sexual", "violence", "hate", "harassment", "spam", "privacy", "illegal"]
 
-DEFAULT_SYSTEM_PROMPT = """You are the comment moderator for MiniTV, a short-drama streaming app.
+DEFAULT_SYSTEM_PROMPT = """You are the comment moderator for JJTV, a short-drama streaming app.
 Classify the user comment and return JSON only:
 {"verdict": "allow" | "review" | "block", "score": 0.0-1.0, "reason": "at most 20 words"}
 
@@ -181,11 +181,22 @@ def clear_api_key(settings: ModerationSettings) -> None:
 
 
 def get_settings(db: Session) -> ModerationSettings:
-    """Return the singleton row, creating defaults on first read."""
-    row = db.get(ModerationSettings, 1)
+    """Return this site's singleton row, creating its own defaults if needed."""
+    from app.modules.tenancy.consumer_scope import current_site
+    tenant_id = current_site(db)
+    query = select(ModerationSettings).where(ModerationSettings.tenant_id == tenant_id)
+    row = db.scalar(query)
     if row is None:
+        from sqlalchemy import func,text
+        db.execute(text("SELECT pg_advisory_xact_lock(hashtext('site-moderation-settings'))"))
+        # Another reader may have initialized this site while the lock waited.
+        row = db.scalar(query)
+        if row is not None:
+            return row
+        identifier=(db.scalar(select(func.max(ModerationSettings.id)).execution_options(include_all_tenants=True)) or 0)+1
         row = ModerationSettings(
-            id=1,
+            tenant_id=tenant_id,
+            id=identifier,
             enabled=False,
             base_url=default_base_url(),
             model=DEFAULT_MODEL,
@@ -364,6 +375,24 @@ def queue_state(db: Session) -> str | None:
     return "queued"
 
 
+def _site_allows_moderation(db: Session, tenant_id: str) -> bool:
+    from app.modules.tenancy.models import Tenant
+    from app.modules.tenancy.modules import enabled_modules
+    from app.modules.sites.models import SiteSettings
+    tenant = db.get(Tenant,tenant_id)
+    if tenant is None or tenant.kind != "native" or tenant.status != "active":
+        return False
+    if not {"comments","moderation"} <= enabled_modules(db,tenant):
+        return False
+    features = db.scalar(select(SiteSettings.features).where(SiteSettings.tenant_id == tenant_id)) or {}
+    return features.get("comments") is not False
+
+
+def _worker_policy_enabled(db: Session, tenant_id: str) -> bool:
+    return _site_allows_moderation(db,tenant_id) and bool(db.scalar(
+        select(ModerationSettings.enabled).where(ModerationSettings.tenant_id == tenant_id)))
+
+
 def process_comment(comment_id: int) -> None:
     """Claim one comment, classify it without holding a DB connection, write back.
 
@@ -373,10 +402,18 @@ def process_comment(comment_id: int) -> None:
     factory = _sessions()
     stale = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=QUEUE_STALE_SECONDS)
     with factory() as db:
+        # Job discovery is global, but no policy/body/credential may be read
+        # until the real persisted owner has bound this new worker session.
+        tenant_id = db.scalar(select(Comment.tenant_id).where(Comment.id == comment_id)
+                              .execution_options(include_all_tenants=True))
+        if not tenant_id:
+            return
+        db.info["content_tenant_id"] = tenant_id
         claimed = db.execute(
             update(Comment)
             .where(
                 Comment.id == comment_id,
+                Comment.tenant_id == tenant_id,
                 or_(
                     Comment.moderation_state == "queued",
                     and_(
@@ -397,15 +434,16 @@ def process_comment(comment_id: int) -> None:
             return
         body = claimed.body
         attempts = claimed.moderation_attempts
-        settings = get_settings(db)
-        enabled = settings.enabled
+        settings = get_settings(db) if _site_allows_moderation(db,tenant_id) else None
+        enabled = settings is not None and settings.enabled
 
     # Session closed here: the HTTP call below must not pin a pool connection.
     if not enabled:
         with factory() as db:
+            db.info["content_tenant_id"] = tenant_id
             db.execute(
                 update(Comment)
-                .where(Comment.id == comment_id, Comment.moderation_state == "running")
+                .where(Comment.id == comment_id, Comment.tenant_id == tenant_id, Comment.moderation_state == "running")
                 .values(moderation_state="canceled", moderation_claimed_at=None)
             )
             db.commit()
@@ -419,9 +457,12 @@ def process_comment(comment_id: int) -> None:
         )
         state = "queued" if attempts < MAX_ATTEMPTS else "failed"
         with factory() as db:
+            db.info["content_tenant_id"] = tenant_id
+            if not _worker_policy_enabled(db,tenant_id):
+                state = "canceled"
             db.execute(
                 update(Comment)
-                .where(Comment.id == comment_id, Comment.moderation_state == "running")
+                .where(Comment.id == comment_id, Comment.tenant_id == tenant_id, Comment.moderation_state == "running")
                 .values(
                     moderation_state=state,
                     moderation_error=str(exc)[:200],
@@ -433,9 +474,16 @@ def process_comment(comment_id: int) -> None:
 
     status = decide(result.verdict, result.score, settings)
     with factory() as db:
+        db.info["content_tenant_id"] = tenant_id
+        if not _worker_policy_enabled(db,tenant_id):
+            db.execute(update(Comment).where(Comment.id == comment_id,Comment.tenant_id == tenant_id,
+                        Comment.moderation_state == "running")
+                       .values(moderation_state="canceled",moderation_claimed_at=None))
+            db.commit()
+            return
         db.execute(
             update(Comment)
-            .where(Comment.id == comment_id, Comment.moderation_state == "running")
+            .where(Comment.id == comment_id, Comment.tenant_id == tenant_id, Comment.moderation_state == "running")
             .values(
                 moderation_state="done",
                 moderation_verdict=result.verdict,
@@ -469,6 +517,7 @@ def process_pending_batch(limit: int = 10) -> int:
                 )
                 .order_by(Comment.id)
                 .limit(limit)
+                .execution_options(include_all_tenants=True)
             )
         )
     for comment_id in ids:

@@ -390,7 +390,7 @@ def cmd_build(args) -> int:
 
 def write_readme(out_dir: Path, manifest: dict, args) -> None:
     stats = manifest["stats"]
-    readme = f"""# MiniTV 本地合成视频库
+    readme = f"""# JJTV 本地合成视频库
 
 生成时间：{manifest['generated_at']}
 生成脚本：[scripts/build_local_video_library.py](../../scripts/build_local_video_library.py)
@@ -509,7 +509,7 @@ def cmd_verify(args) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="合成 MiniTV 本地视频库")
+    parser = argparse.ArgumentParser(description="合成 JJTV 本地视频库")
     parser.add_argument("command", choices=["preview", "build", "verify"])
     parser.add_argument("--out", default=str(DEFAULT_OUT))
     parser.add_argument("--scope", choices=["free", "all"], default="free",

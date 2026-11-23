@@ -1,3 +1,4 @@
+import { getSite, siteMoney } from "../../../shared/site";
 import { useEffect, useState } from "react";
 import { getOrders, type OrderItem } from "../api";
 import type { Locale } from "../copy";
@@ -13,7 +14,7 @@ const STATUS_KEY: Record<string, string> = {
 
 function formatWhen(iso: string, locale: Locale): string {
   const date = new Date(iso);
-  return date.toLocaleString(locale === "zh" ? "zh-CN" : "en-US", {
+  return date.toLocaleString(locale === "zh" ? "zh-CN" : "en-US", { timeZone:getSite().tenant.timezone,
     month: "short",
     day: "numeric",
     hour: "2-digit",
@@ -64,7 +65,7 @@ export function OrdersSheet({ locale, onClose }: { locale: Locale; onClose: () =
                 </i>
               </div>
               <div className="orders-side">
-                <b>${(order.amount_cents / 100).toFixed(2)}</b>
+                <b>{siteMoney(order.amount_cents,locale,(order as {currency?:string}).currency||getSite().tenant.currency)}</b>
                 <span className={`orders-status ${order.status}`}>
                   {t(locale, STATUS_KEY[order.status] ?? "orders_pending")}
                 </span>

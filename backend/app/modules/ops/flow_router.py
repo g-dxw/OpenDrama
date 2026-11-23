@@ -10,7 +10,7 @@ from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import case, delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -352,6 +352,7 @@ def list_episodes(
     db: Session = Depends(get_db),
     user: AdminUser = Depends(require_admin),
 ):
+    _drama_or_404(db, drama_id)
     stmt = select(Episode).where(Episode.drama_id == drama_id)
     if status:
         stmt = stmt.where(Episode.status == status)
@@ -414,8 +415,18 @@ def episode_preview_url(
         raise HTTPException(status_code=404, detail="episode not found")
     if not episode.bunny_video_id:
         raise HTTPException(status_code=409, detail="episode has no Bunny video")
+    ttl = 3600
+    if episode.media_asset_id is not None:
+        from app.modules.library.service import assert_distribution_allowed, playback_ttl
+        drama = db.get(Drama, episode.drama_id)
+        if drama is None:
+            raise HTTPException(status_code=404, detail='drama not found')
+        grant = assert_distribution_allowed(db, drama, purpose='preview', episode=episode)
+        ttl = playback_ttl(grant)
+        if ttl <= 0:
+            raise HTTPException(status_code=403, detail='内容播放授权已到期')
     try:
-        signed = bunny.stream_embed_url(episode.bunny_video_id, ttl=3600)
+        signed = bunny.stream_embed_url(episode.bunny_video_id, ttl=ttl)
     except bunny.BunnyError as exc:
         raise HTTPException(status_code=503, detail=f"preview signing unavailable: {exc}") from exc
     return {
@@ -1148,36 +1159,19 @@ def delete_cover(
 
 
 @router.post("/episodes/{episode_id}/subtitle")
-async def upload_subtitle(
-    episode_id: int,
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db),
-    user: AdminUser = Depends(require_content_writer),
-):
-    episode = db.get(Episode, episode_id)
-    if episode is None:
-        raise HTTPException(status_code=404, detail="episode not found")
-    if not bunny.live():
-        raise HTTPException(status_code=503, detail="bunny storage not configured (BUNNY_MODE=fake)")
-    data = await file.read()
-    if not data or len(data) > SUBTITLE_MAX_BYTES:
-        raise HTTPException(status_code=422, detail="subtitle must be between 1 byte and 2MB")
-    name = os.path.basename(file.filename or "subtitle.vtt")
-    ext = os.path.splitext(name)[1].lower()
-    if ext not in {".vtt", ".srt"}:
-        raise HTTPException(status_code=422, detail="subtitle must be .vtt or .srt")
-    remote_path = f"subs/{episode.id}/sub{ext}"
-    try:
-        bunny.storage_upload(remote_path, data, "text/vtt" if ext == ".vtt" else "application/x-subrip")
-    except bunny.BunnyError as exc:
-        raise HTTPException(status_code=502, detail=f"bunny storage: {exc}") from exc
-    episode.subtitle_url = remote_path
-    db.commit()
-    return {"subtitle_url": remote_path}
+async def upload_subtitle(episode_id:int,file:UploadFile=File(...),db:Session=Depends(get_db),user:AdminUser=Depends(require_content_writer)):
+    # Old clients update the selected default track, preserving its language.
+    from app.modules.content.models import EpisodeSubtitle
+    from app.modules.content.enhancements import upload_subtitle as upload_track
+    current=db.scalar(select(EpisodeSubtitle).where(EpisodeSubtitle.episode_id==episode_id,EpisodeSubtitle.is_default.is_(True)))
+    result=await upload_track(episode_id=episode_id,language=current.language if current else 'und',label=current.label if current else 'Default',is_default=True,file=file,db=db,user=user)
+    return {'subtitle_url':result['url']}
 
 
 @router.post("/dramas/{drama_id}/status")
-def drama_status(drama_id: int, body: StatusIn, db: Session = Depends(get_db), user: AdminUser = Depends(require_content_writer)):
+def drama_status(drama_id: int, body: StatusIn, request: Request, db: Session = Depends(get_db), user: AdminUser = Depends(require_content_writer)):
+    from app.modules.tenancy.permissions import require_permission
+    require_permission(request, 'dramas.publish' if body.to_status in {'published','unpublished'} else 'dramas.edit')
     drama = _drama_or_404(db, drama_id)
     try:
         change_drama_status(db, drama, body.to_status, actor_id=user.id)
@@ -1228,6 +1222,7 @@ def preview(drama_id: int, episode_id: int | None = None, db: Session = Depends(
             "number": episode.episode_number,
             "title": episode.title,
             "subtitle_url": episode.subtitle_url,
+            "coin_price": episode.coin_price,
         },
         "episodes": [{"id": ep.id, "number": ep.episode_number, "status": ep.status} for ep in episodes],
         "playback": playback,
@@ -1429,7 +1424,7 @@ class TabUpdateIn(BaseModel):
 
 @router.get("/tabs")
 def list_tabs(db: Session = Depends(get_db), user: AdminUser = Depends(require_admin)):
-    rows = db.scalars(select(ChannelTab).order_by(ChannelTab.position, ChannelTab.id)).all()
+    rows = db.scalars(select(ChannelTab).order_by(case((ChannelTab.code == DISCOVER_CODE, 0), else_=1), ChannelTab.position, ChannelTab.id)).all()
     return {"items": [_tab_out(row) for row in rows]}
 
 
@@ -2028,28 +2023,18 @@ def update_user(
 def adjust(user_id: int, body: AdjustIn, db: Session = Depends(get_db), actor: AdminUser = Depends(require_admin_role)):
     if db.get(User, user_id) is None:
         raise HTTPException(status_code=404, detail="user not found")
-    wallet = db.get(WalletAccount, user_id, with_for_update=True)
-    if wallet is None:
-        # Legacy rows may predate the wallet table; create it on demand so the
-        # operator does not have to run a migration just to grant coins.
-        wallet = WalletAccount(user_id=user_id, balance=0)
-        db.add(wallet)
-        db.flush()
-    before = wallet.balance
-    after = before + body.delta
-    if after < 0:
-        raise HTTPException(status_code=409, detail="balance cannot be negative")
-    wallet.balance = after
-    db.add(
-        CoinLedgerEntry(
-            user_id=user_id,
-            amount=body.delta,
-            balance_after=after,
-            biz_type="adjustment",
-            biz_key=f"adjust:{actor.id}:{user_id}:{before}:{body.delta}:{datetime.now(timezone.utc).timestamp()}",
-            note=body.reason,
-        )
-    )
+    from app.modules.billing.commerce import wallet_lock, ensure_sources, allocate_spend
+    from app.modules.billing.commerce_models import CoinSource
+    wallet=wallet_lock(db,user_id)
+    before=wallet.balance
+    after=before+body.delta
+    if after<0:raise HTTPException(status_code=409,detail="balance cannot be negative")
+    ensure_sources(db,wallet)
+    ledger=CoinLedgerEntry(user_id=user_id,amount=body.delta,balance_after=after,biz_type="adjustment",biz_key=f"adjust:{actor.id}:{user_id}:{before}:{body.delta}:{datetime.now(timezone.utc).timestamp()}",note=body.reason)
+    db.add(ledger);db.flush()
+    if body.delta<0:allocate_spend(db,wallet,ledger,-body.delta)
+    elif body.delta>0:db.add(CoinSource(user_id=user_id,original=body.delta,remaining=body.delta,reserved=0))
+    wallet.balance=after
     db.add(
         AuditLog(
             actor_type="admin",
@@ -2366,7 +2351,7 @@ def dashboard(
     """Aggregates for one business day (dashboard timezone) plus the trend window."""
     from app.modules.account.service import la_today
 
-    target = day or la_today()
+    target = day or la_today(db=db)
     data = build_dashboard(db, target, days=days)
     data["recent_orders"] = finance_orders(page=1, page_size=5, db=db, user=user)["items"]
     return data
@@ -2388,7 +2373,7 @@ def list_pushes(db: Session = Depends(get_db), user: AdminUser = Depends(require
 
 @router.post("/legal/{slug}")
 def save_legal(slug: str, title: str, body: str = "", db: Session = Depends(get_db), user: AdminUser = Depends(require_content_writer)):
-    row = db.get(LegalPage, slug)
+    row = db.scalar(select(LegalPage).where(LegalPage.slug == slug))
     if row is None:
         row = LegalPage(slug=slug, title=title, body=body)
         db.add(row)

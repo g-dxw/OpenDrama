@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import os
+from app.modules.ops.managed_settings import config_value
 import time
 import urllib.error
 import urllib.parse
@@ -55,11 +56,11 @@ class FacebookIdentity:
 
 
 def app_id() -> str:
-    return os.environ.get("FACEBOOK_APP_ID", "").strip()
+    return config_value("FACEBOOK_APP_ID", "").strip()
 
 
 def app_secret() -> str:
-    return os.environ.get("FACEBOOK_APP_SECRET", "").strip()
+    return config_value("FACEBOOK_APP_SECRET", "").strip()
 
 
 def configured() -> bool:

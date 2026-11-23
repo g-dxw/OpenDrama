@@ -120,7 +120,7 @@ def test_members_have_active_subscription_and_paid_order(session):
 def test_member_flag_matches_admin_payload(session, client, make):
     seed_users(session)
     admin = make.admin(role="admin")
-    token = client.post("/admin/v1/auth/login", json={"username": admin.username, "password": "pass-1234"}).json()["token"]
+    token = client.post("/admin/v1/auth/login", json={"tenant_code": "jjtv", "username": admin.username, "password": "pass-1234"}).json()["token"]
     r = client.get("/admin/v1/users", headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 200, r.text
 
@@ -141,7 +141,7 @@ def test_admin_can_adjust_coins_on_a_seeded_user(session, client, make):
     before = session.get(WalletAccount, user.id).balance
 
     admin = make.admin(role="admin")
-    token = client.post("/admin/v1/auth/login", json={"username": admin.username, "password": "pass-1234"}).json()["token"]
+    token = client.post("/admin/v1/auth/login", json={"tenant_code": "jjtv", "username": admin.username, "password": "pass-1234"}).json()["token"]
     r = client.post(
         f"/admin/v1/users/{user.id}/coins",
         json={"delta": 100, "reason": "manual top-up"},

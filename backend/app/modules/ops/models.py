@@ -14,10 +14,12 @@ import datetime
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     Date,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     SmallInteger,
@@ -99,6 +101,13 @@ class SupplierShareHistory(Base):
 class AdminUser(Base):
     __tablename__ = "admin_users"
     __table_args__ = (
+        CheckConstraint("account_scope IN ('platform','tenant')", name="ck_admin_users_account_scope"),
+        CheckConstraint("(account_scope = 'platform' AND tenant_id IS NULL) OR (account_scope = 'tenant' AND tenant_id IS NOT NULL)", name="ck_admin_users_account_tenant"),
+        CheckConstraint("auth_version >= 1", name="ck_admin_users_auth_version"),
+        UniqueConstraint("tenant_id", "id", name="uq_admin_users_tenant_id"),
+        UniqueConstraint("id", "account_scope", name="uq_admin_users_id_scope"),
+        Index("uq_admin_users_platform_username", "username", unique=True, postgresql_where=text("account_scope = 'platform'")),
+        Index("uq_admin_users_tenant_username", "tenant_id", "username", unique=True, postgresql_where=text("account_scope = 'tenant'")),
         CheckConstraint(
             "role IN ('ops', 'finance', 'admin', 'partner')", name="ck_admin_users_role"
         ),
@@ -116,7 +125,11 @@ class AdminUser(Base):
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    username: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    account_scope: Mapped[str] = mapped_column(String(16), nullable=False, default="tenant", server_default="tenant")
+    tenant_id: Mapped[str | None] = mapped_column(ForeignKey("tenants.id", ondelete="RESTRICT"), nullable=True)
+    auth_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    must_change_password: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    username: Mapped[str] = mapped_column(String(64), nullable=False)
     password_hash: Mapped[str] = mapped_column(String(256), nullable=False)
     display_name: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     role: Mapped[str] = mapped_column(String(16), nullable=False, default=ROLE_OPS)
@@ -191,6 +204,10 @@ class AdminApiKey(Base):
 
     __tablename__ = "admin_api_keys"
     __table_args__ = (
+        CheckConstraint("account_scope IN ('platform','tenant')", name="ck_admin_api_keys_account_scope"),
+        CheckConstraint("(account_scope = 'platform' AND tenant_id IS NULL) OR (account_scope = 'tenant' AND tenant_id IS NOT NULL)", name="ck_admin_api_keys_account_tenant"),
+        ForeignKeyConstraint(["admin_user_id", "account_scope"], ["admin_users.id", "admin_users.account_scope"], name="fk_admin_api_keys_owner_scope"),
+        ForeignKeyConstraint(["tenant_id", "admin_user_id"], ["admin_users.tenant_id", "admin_users.id"], name="fk_admin_api_keys_owner_tenant"),
         CheckConstraint(
             "status IN ('active', 'revoked')", name="ck_admin_api_keys_status"
         ),
@@ -209,6 +226,8 @@ class AdminApiKey(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     admin_user_id: Mapped[int] = mapped_column(ForeignKey("admin_users.id"), nullable=False)
+    account_scope: Mapped[str] = mapped_column(String(16), nullable=False, default="tenant", server_default="tenant")
+    tenant_id: Mapped[str | None] = mapped_column(ForeignKey("tenants.id", ondelete="RESTRICT"), nullable=True)
     name: Mapped[str] = mapped_column(String(64), nullable=False)
     # "mk_live_" + 8 hex chars. Displayed in the list, used as the lookup hit.
     key_prefix: Mapped[str] = mapped_column(String(24), nullable=False)

@@ -11,6 +11,9 @@ Usage::
     python3 scripts/publish_ready_dramas.py --min-id 116 --loop 180
 """
 
+# Authentication uses a tenant-local account selected by --tenant-code or
+# JJTV_TENANT_CODE (default jjtv). Set ADMIN_USER and ADMIN_PASS to that tenant
+# account; platform administrator credentials cannot access business operations.
 from __future__ import annotations
 
 import argparse
@@ -22,7 +25,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-API_DEFAULT = "https://api.minitv.us"
+API_DEFAULT = os.environ.get("API_BASE_URL", "https://api.example.com")
 UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
@@ -46,8 +49,9 @@ def api(token: str, base: str, method: str, path: str, payload: dict | None = No
         raise RuntimeError(f"HTTP {exc.code}: {exc.read().decode('utf-8', 'replace')[:200]}") from exc
 
 
-def login(base: str) -> str:
+def login(base: str, tenant_code: str | None = None) -> str:
     body = json.dumps({
+        "tenant_code": tenant_code if tenant_code is not None else os.environ.get("JJTV_TENANT_CODE") or "jjtv",
         "username": os.environ.get("ADMIN_USER", "admin"),
         "password": os.environ.get("ADMIN_PASS", "admin-1234"),
     }).encode()
@@ -97,13 +101,14 @@ def publish_ready(token: str, base: str, min_id: int) -> list[str]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--api", default=os.environ.get("MINITV_API", API_DEFAULT))
+    parser.add_argument("--tenant-code", default=os.environ.get("JJTV_TENANT_CODE") or "jjtv", help="tenant code (JJTV_TENANT_CODE or jjtv); ADMIN_USER/ADMIN_PASS must be tenant account credentials")
     parser.add_argument("--min-id", type=int, default=116)
     parser.add_argument("--loop", type=int, default=0, help="seconds between passes; 0 runs once")
     args = parser.parse_args()
 
     while True:
         try:
-            token = login(args.api)
+            token = login(args.api, args.tenant_code)
             stamp = datetime.datetime.now().strftime("%H:%M:%S")
             published = publish_ready(token, args.api, args.min_id)
             if not published:

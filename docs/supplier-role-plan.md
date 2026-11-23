@@ -261,7 +261,7 @@ POST /v1/billing/checkout
 
 ### 5.4 API Key 与 CLI（上剧方自动化上片）
 
-现有基础可以直接复用：`admin_api_keys`（绑 `admin_users`、只存 sha256、`mk_live_` 前缀、scopes 只能收窄、`api_key_events` 记写操作）+ `cli/minitv` 0.3.0（47 条命令、TUS 断点续传）。partner 账号本身就是一行 `admin_users`，**不需要新表**，要加的是三样：角色闸门、scope 白名单、CLI 双 surface。
+现有基础可以直接复用：`admin_api_keys`（绑 `admin_users`、只存 sha256、`mk_live_` 前缀、scopes 只能收窄、`api_key_events` 记写操作）+ `cli/opendrama` 0.3.0（47 条命令、TUS 断点续传）。partner 账号本身就是一行 `admin_users`，**不需要新表**，要加的是三样：角色闸门、scope 白名单、CLI 双 surface。
 
 #### 5.4.1 角色闸门（最关键）
 
@@ -307,7 +307,7 @@ POST /v1/billing/checkout
 
 #### 5.4.5 CLI
 
-同一份 `cli/minitv`，不发布第二个二进制。版本目标 **0.4.0**。
+同一份 `cli/opendrama`，不发布第二个二进制。版本目标 **0.4.0**。
 
 - `config set-key` 先试 `GET /admin/v1/auth/me`，403 再试 `GET /partner/v1/me`，把 `surface: staff|partner` 写进 profile；`whoami` 显示角色与 scopes。
 - 命令树按 surface 裁剪：partner 执行 staff 命令时给中文提示（「当前密钥是上剧方身份，不能发布剧集」），不是甩一段 403 JSON。

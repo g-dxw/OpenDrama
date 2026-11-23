@@ -1,4 +1,4 @@
-"""Database engine and declarative base for MiniTV."""
+"""Database engine and declarative base for JJTV."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from pathlib import Path
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
+from fastapi import Request
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -58,10 +59,18 @@ def get_engine():
     return _engine
 
 
-def get_db():
+def get_db(request: Request):
     factory = make_session_factory(get_engine())
     db = factory()
     try:
+        path = request.url.path
+        is_webhook = path in {"/v1/billing/webhook", "/v1/billing/stripe/webhook"} or (
+            path.startswith(("/v1/billing/stripe/accounts/", "/v1/billing/epay/accounts/", "/v1/billing/creem/accounts/",
+                             "/v1/billing/waffo-pancake/accounts/", "/v1/billing/waffo/accounts/"))
+            and path.endswith("/webhook"))
+        if path.startswith("/v1/") and not is_webhook:
+            from app.modules.sites.service import resolve_public_site
+            resolve_public_site(db, request)
         yield db
     finally:
         db.close()

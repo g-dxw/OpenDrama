@@ -12,6 +12,7 @@ import {
   Typography,
   message,
 } from "antd";
+import { usePermission } from "../me";
 import { api, errorText } from "../api";
 import { formatTime, useLoad } from "../hooks";
 
@@ -42,6 +43,8 @@ const TABS = [
 ];
 
 export default function Reviews() {
+  const canDecide = usePermission("reviews.decide");
+  const canPublish = usePermission("dramas.publish");
   const [state, setState] = useState("pending");
   const [page, setPage] = useState(1);
   const { data, loading, reload } = useLoad<Payload>(
@@ -63,6 +66,7 @@ export default function Reviews() {
   };
 
   const decide = async (ids: number[], decision: "approve" | "reject", note = "") => {
+    if (!canDecide) return;
     try {
       const result = await api<{ done: number; skipped: { id: number; reason: string }[] }>(
         "/admin/v1/reviews/batch",
@@ -101,6 +105,7 @@ export default function Reviews() {
   };
 
   const publish = (row: ReviewRow) => {
+    if (!canPublish) return;
     Modal.confirm({
       title: `上架《${row.title}》`,
       content: `${row.episode_count} 集将同时对用户可见，确认上架？`,
@@ -126,7 +131,7 @@ export default function Reviews() {
         <Typography.Text type="secondary">
           通过只代表内容合格；「待上架」里再点发布才会对用户可见。
         </Typography.Text>
-        {state === "pending" && selected.length > 0 && (
+        {canDecide && state === "pending" && selected.length > 0 && (
           <>
             <span style={{ flex: 1 }} />
             <Button type="primary" onClick={() => decide(selected, "approve")}>
@@ -165,7 +170,7 @@ export default function Reviews() {
         }}
         scroll={{ x: 980 }}
         rowSelection={
-          state === "pending"
+          state === "pending" && canDecide
             ? {
                 selectedRowKeys: selected,
                 onChange: (keys) => setSelected(keys as number[]),
@@ -220,24 +225,24 @@ export default function Reviews() {
             render: (_, row) =>
               state === "pending" ? (
                 <Space size={4}>
-                  <Button type="link" size="small" onClick={() => decide([row.id], "approve")}>
+                  {canDecide && <Button type="link" size="small" onClick={() => decide([row.id], "approve")}>
                     通过
-                  </Button>
-                  <Button
+                  </Button>}
+                  {canDecide && <Button
                     type="link"
                     size="small"
                     danger
                     onClick={() => openReject([row.id])}
                   >
                     驳回
-                  </Button>
+                  </Button>}
                   <Link to={`/dramas/${row.id}`}>查看</Link>
                 </Space>
               ) : state === "approved" ? (
                 <Space size={4}>
-                  <Button type="link" size="small" onClick={() => publish(row)}>
+                  {canPublish && <Button type="link" size="small" onClick={() => publish(row)}>
                     上架
-                  </Button>
+                  </Button>}
                   <Link to={`/dramas/${row.id}`}>查看</Link>
                 </Space>
               ) : (
@@ -253,7 +258,7 @@ export default function Reviews() {
         onCancel={() => setRejectOpen(false)}
         onOk={() => form.submit()}
         okText="确认驳回"
-        okButtonProps={{ danger: true }}
+        okButtonProps={{ danger: true, disabled: !canDecide }}
         forceRender
       >
         <Form

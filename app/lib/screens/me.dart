@@ -1023,7 +1023,7 @@ class _SettingsSheet extends StatelessWidget {
                 child: Text(copy.t('sign_out'), style: const TextStyle(color: Colors.white70)),
               ),
             const SizedBox(height: 12),
-            Text('MiniTV · App', style: const TextStyle(color: Colors.white24, fontSize: 11)),
+            Text('JJTV · App', style: const TextStyle(color: Colors.white24, fontSize: 11)),
           ],
         ),
       ),

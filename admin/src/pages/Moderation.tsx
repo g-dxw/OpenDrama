@@ -28,6 +28,7 @@ import {
 } from "@ant-design/icons";
 import { api, errorText } from "../api";
 import { useConfirm } from "../confirm";
+import { usePermission } from "../me";
 
 /**
  * 自动审核配置：用 OpenAI 模型在评论落库前给出 allow / review / block 判定。
@@ -106,6 +107,9 @@ const STATUS_LABEL: Record<string, string> = {
 const SAMPLE = "Best episode yet! Where can I watch the next one?";
 
 export default function Moderation() {
+  const isAdmin = usePermission("moderation.manage");
+  const canManage = usePermission("moderation.manage") && isAdmin;
+  const canTest = usePermission("moderation.view");
   const [form] = Form.useForm<Settings>();
   const { confirm, confirmModal } = useConfirm();
   const [data, setData] = useState<Settings | null>(null);
@@ -143,6 +147,7 @@ export default function Moderation() {
   }, []);
 
   const save = async (values: Settings) => {
+    if (!canManage) return;
     setSaving(true);
     try {
       const next = await api<Settings>("/admin/v1/moderation/settings", {
@@ -171,6 +176,7 @@ export default function Moderation() {
   };
 
   const runTest = async () => {
+    if (!canTest) return;
     if (!testText.trim()) {
       message.warning("先输入一段评论文本");
       return;
@@ -210,7 +216,7 @@ export default function Moderation() {
   };
 
   const submitKey = async (payload: { api_key?: string; clear_api_key?: boolean }) => {
-    if (!data) return;
+    if (!data || !canManage) return;
     setKeySaving(true);
     try {
       const next = await api<Settings>("/admin/v1/moderation/settings", {
@@ -232,6 +238,7 @@ export default function Moderation() {
   };
 
   const saveKey = () => {
+    if (!canManage) return;
     const value = keyDraft.trim();
     if (value.length < 8) {
       message.warning("密钥至少 8 位，且不能包含空格");
@@ -241,6 +248,7 @@ export default function Moderation() {
   };
 
   const clearKey = () => {
+    if (!canManage) return;
     confirm({
       title: "清除后台保存的密钥",
       content: data?.key_env_configured
@@ -254,6 +262,7 @@ export default function Moderation() {
 
   /** Verify the pasted key with a sample comment; nothing is written. */
   const checkKey = async () => {
+    if (!canTest) return;
     const value = keyDraft.trim();
     if (value.length < 8) {
       message.warning("先粘贴要验证的密钥");
@@ -297,7 +306,7 @@ export default function Moderation() {
           </Typography.Text>
         </Space>
         <Space>
-          <Button icon={<ExperimentOutlined />} onClick={() => setTestOpen(true)}>
+          <Button icon={<ExperimentOutlined />} disabled={!canTest} onClick={() => setTestOpen(true)}>
             测试判定
           </Button>
           <Button icon={<ReloadOutlined />} onClick={() => void load()} loading={loading}>
@@ -314,10 +323,10 @@ export default function Moderation() {
           message={`审核密钥已配置（${key.masked} · ${
             key.source === "database" ? "后台配置，加密存储" : "服务器环境变量"
           }）`}
-          description="更换或清除密钥可直接在右侧操作，保存后立即生效、无需重启；完整密钥不会回显。"
+          description={canManage ? "更换或清除密钥可直接在右侧操作，保存后立即生效、无需重启；完整密钥不会回显。" : "当前配置只读，仍可试运行判定或验证密钥；完整密钥不会回显。"}
           action={
-            <Button size="small" icon={<KeyOutlined />} onClick={() => setKeyOpen(true)}>
-              更换密钥
+            <Button size="small" disabled={!canTest} icon={<KeyOutlined />} onClick={() => setKeyOpen(true)}>
+              {canManage ? "更换密钥" : "验证密钥"}
             </Button>
           }
           style={{ borderRadius: 8 }}
@@ -328,17 +337,17 @@ export default function Moderation() {
           showIcon
           icon={<KeyOutlined />}
           message="未配置自动审核密钥"
-          description="自动审核无法调用模型，评论会按降级策略处理。点右侧填写密钥（加密存库），或写入服务器 /opt/minitv/.env 的 OPENAI_API_KEY。"
+          description="自动审核无法调用模型，评论会按降级策略处理。点右侧填写密钥（加密存库），或写入服务器 /opt/jjtv/shared/.env 的 OPENAI_API_KEY。"
           action={
-            <Button size="small" type="primary" icon={<KeyOutlined />} onClick={() => setKeyOpen(true)}>
-              配置密钥
+            <Button size="small" type="primary" disabled={!canTest} icon={<KeyOutlined />} onClick={() => setKeyOpen(true)}>
+              {canManage ? "配置密钥" : "验证密钥"}
             </Button>
           }
           style={{ borderRadius: 8 }}
         />
       )}
 
-      <Form form={form} layout="vertical" onFinish={save} initialValues={{ enabled: false }}>
+      <Form form={form} disabled={!canManage} layout="vertical" onFinish={save} initialValues={{ enabled: false }}>
         <Space direction="vertical" style={{ width: "100%" }} size={16}>
           <Card
             size="small"
@@ -418,6 +427,7 @@ export default function Moderation() {
             extra={
               <Button
                 size="small"
+                disabled={!canManage}
                 onClick={() => form.setFieldValue("system_prompt", data?.default_prompt ?? "")}
               >
                 恢复默认规则
@@ -479,7 +489,7 @@ export default function Moderation() {
         </Space>
 
         <Space style={{ marginTop: 20 }}>
-          <Button type="primary" htmlType="submit" icon={<SaveOutlined />} loading={saving}>
+          <Button type="primary" htmlType="submit" disabled={!canManage} icon={<SaveOutlined />} loading={saving}>
             保存配置
           </Button>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
@@ -496,6 +506,7 @@ export default function Moderation() {
         okText="开始测试"
         cancelText="关闭"
         confirmLoading={testing}
+        okButtonProps={{ disabled: !canTest }}
         onOk={() => void runTest()}
         onCancel={() => setTestOpen(false)}
         width={620}
@@ -545,7 +556,7 @@ export default function Moderation() {
         footer={
           <Space>
             {data?.key_from_database && (
-              <Button danger type="text" onClick={clearKey} loading={keySaving}>
+              <Button danger type="text" disabled={!canManage} onClick={clearKey} loading={keySaving}>
                 清除后台密钥
               </Button>
             )}
@@ -554,7 +565,7 @@ export default function Moderation() {
               type="primary"
               onClick={saveKey}
               loading={keySaving}
-              disabled={keyDraft.trim().length < 8}
+              disabled={keyDraft.trim().length < 8 || !canManage}
             >
               保存密钥
             </Button>
@@ -573,7 +584,7 @@ export default function Moderation() {
             prefix={<KeyOutlined style={{ color: "#bfbfbf" }} />}
           />
           <Space wrap size={8}>
-            <Button size="small" onClick={() => void checkKey()} loading={keyChecking}>
+            <Button size="small" disabled={!canTest} onClick={() => void checkKey()} loading={keyChecking}>
               验证密钥
             </Button>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>

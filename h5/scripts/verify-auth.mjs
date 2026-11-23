@@ -1,10 +1,10 @@
-import { createRequire } from "node:module";
+import {chromium} from "playwright-core";
+import os from "node:os";
+import path from "node:path";
+import { respondSiteBootstrap } from "../../tests/frontend-site-fixture.mjs";
 
-const require = createRequire("/opt/homebrew/lib/node_modules/");
-const { chromium } = require("playwright");
-
-const APP_URL = "http://127.0.0.1:5175/";
-const OUT = "/tmp/h5auth";
+const APP_URL = process.env.BASE_URL || "https://jjtv-h5.8jj.net/";
+const OUT = process.env.OUT_DIR || path.join(os.tmpdir(), "h5auth");
 const TOKEN = "test-token-42";
 const EMAIL = "viewer@example.com";
 
@@ -45,8 +45,9 @@ const playPayload = {
       episode_number: 1,
       title: "EP1",
       duration_seconds: 90,
-      free: false,
-      locked: true,
+      // The reaction rail is intentionally hidden on locked episodes.
+      free: true,
+      locked: false,
       progress_seconds: 0,
       unlock: { coin_price: 60 },
     },
@@ -79,6 +80,7 @@ function json(route, status, body) {
 
 function buildRoutes(calls, options) {
   return async (route) => {
+    if (await respondSiteBootstrap(route)) return;
     const request = route.request();
     const path = new URL(request.url()).pathname;
     const method = request.method();
@@ -166,7 +168,7 @@ function check(ok, label) {
   console.log(`${ok ? "PASS" : "FAIL"}  ${label}`);
 }
 
-const browser = await chromium.launch({ channel: "chrome" });
+const browser = await chromium.launch(process.env.CHROME_PATH ? {executablePath: process.env.CHROME_PATH} : {channel: "chrome"});
 
 async function newPage(options = {}) {
   const context = await browser.newContext({
@@ -253,7 +255,11 @@ async function newPage(options = {}) {
   await page.waitForSelector("#auth-email", { timeout: 5000 });
   await page.getByRole("button", { name: "Send code" }).click();
   await page.waitForSelector(".auth-code", { timeout: 8000 });
-  await page.locator(".auth-box").first().pressSequentially("123456");
+  await page.locator(".auth-box").first().pressSequentially("123456", {delay:20});
+  // Cross the former 60 ms focus callback while typing; digits must not be lost.
+  const enteredCode = await page.locator(".auth-box").evaluateAll(inputs => inputs.map(input => input.value).join(""));
+  check(enteredCode === "123456", "OTP focus does not steal digits during retry typing");
+  if (enteredCode !== "123456") throw new Error("OTP input lost digits: " + enteredCode);
   await page.getByRole("button", { name: "Verify and sign in" }).click();
   await page.waitForSelector('[data-testid="login-sheet"]', { state: "detached", timeout: 8000 });
 
@@ -276,17 +282,22 @@ async function newPage(options = {}) {
   );
   await page.screenshot({ path: `${OUT}-play-signed-in.png` });
 
+  const savedDramaHash = new URL(page.url()).hash;
   await page.reload({ waitUntil: "networkidle" });
+  await page.waitForSelector(".play .back-btn", { timeout: 10000 });
+  const restoredDramaLink = new URL(page.url()).hash === savedDramaHash;
+  await page.locator(".play .back-btn").click();
   await page.waitForSelector('[data-tab="me"]', { timeout: 10000 });
   await page.locator('[data-tab="me"]').click();
   await page.waitForSelector(".me-hero h2", { timeout: 8000 });
-  check((await page.locator(".me-hero h2").innerText()).trim() === "viewer", "reload keeps the session and renders the profile");
+  check(restoredDramaLink && (await page.locator(".me-hero h2").innerText()).trim() === "viewer", "reload preserves the drama link and session, then renders the profile");
   check((await page.locator('[data-testid="me-coins"]').innerText()).trim() === "80", "profile shows the coin balance");
   await page.screenshot({ path: `${OUT}-me.png` });
 
   await page.getByRole("button", { name: "Settings" }).click();
   await page.waitForSelector('[data-testid="settings-sheet"]', { timeout: 5000 });
   await page.getByRole("button", { name: "Sign out" }).click();
+  await page.getByTestId("signout-confirm").click();
   await page.waitForSelector(".me-cta", { timeout: 5000 });
   check((await page.evaluate(() => localStorage.getItem("minitv_h5_token"))) === null, "sign out clears the token");
   check((await page.locator(".me-hero h2").innerText()).includes("Sign in"), "sign out returns the guest state");

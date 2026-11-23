@@ -52,6 +52,9 @@ def _apply(transitions: dict[str, frozenset[str]], entity: str, obj, to_status: 
 
 
 def transition_drama(session: Session, drama: Drama, to_status: str) -> Drama:
+    if to_status == 'published' and drama.library_title_id is not None:
+        from app.modules.library.service import assert_distribution_allowed
+        assert_distribution_allowed(session, drama, purpose='publish')
     if to_status not in DRAMA_STATUSES:
         raise InvalidTransition("drama", drama.status, to_status)
     _apply(DRAMA_TRANSITIONS, "drama", drama, to_status)
@@ -60,6 +63,15 @@ def transition_drama(session: Session, drama: Drama, to_status: str) -> Drama:
 
 
 def transition_episode(session: Session, episode: Episode, to_status: str) -> Episode:
+    if episode.media_asset_id is not None:
+        from app.modules.library.service import assert_distribution_allowed, assert_site_media_editable
+        if to_status in {'not_uploaded', 'transcoding', 'transcode_failed'}:
+            assert_site_media_editable(episode)
+        if to_status == 'published':
+            drama = session.get(Drama, episode.drama_id)
+            if drama is None:
+                raise InvalidTransition('episode', episode.status, to_status)
+            assert_distribution_allowed(session, drama, purpose='publish', episode=episode)
     if to_status not in EPISODE_STATUSES:
         raise InvalidTransition("episode", episode.status, to_status)
     _apply(EPISODE_TRANSITIONS, "episode", episode, to_status)

@@ -67,31 +67,38 @@ def _bearer_token(request: Request) -> str:
     return auth[len("Bearer "):]
 
 
-def _resolve(request: Request, db: Session) -> tuple[AdminUser, AdminApiKey | None]:
-    credential = _bearer_token(request)
+def _resolve(request: Request,db: Session) -> tuple[AdminUser,AdminApiKey|None]:
+    from app.modules.tenancy.identity import SessionPrincipal
+    from app.modules.tenancy.models import Tenant
+    from app.modules.tenancy.modules import enabled_modules
+    credential=_bearer_token(request)
+    key=None
     if api_key_service.looks_like_key(credential):
-        user, key = api_key_service.resolve_credential(db, credential)
-        # Defence in depth: even if a future dependency forgets a role check,
-        # a partner key can never leave its own surface.
-        if user.role == ROLE_PARTNER and not request.url.path.startswith("/partner/v1/"):
-            raise HTTPException(
-                status_code=403,
-                detail={"code": "partner_scope_denied", "message": "上剧方密钥只能访问合作方接口"},
-            )
-        request.state.api_key_id = key.id
-        request.state.api_key_staff_id = user.id
-        return user, key
-    try:
-        user = ops_service.resolve_session_token(db, credential)
-    except ops_service.SessionStoreUnavailable as exc:
-        raise HTTPException(status_code=503, detail="会话存储不可用") from exc
-    if user is None:
-        raise HTTPException(
-            status_code=401,
-            detail={"code": "invalid_session", "message": "会话无效或已过期"},
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    return user, None
+        user,key=api_key_service.resolve_credential(db,credential)
+        request.state.api_key_id=key.id; request.state.api_key_staff_id=user.id
+        principal=SessionPrincipal(user,key.account_scope,key.tenant_id,'api_key',user.auth_version)
+    else:
+        try: principal=ops_service.resolve_principal(db,credential)
+        except ops_service.SessionStoreUnavailable as exc: raise HTTPException(503,detail='会话存储不可用') from exc
+        if principal is None: raise HTTPException(401,detail=dict(code='invalid_session',message='会话无效或已过期'),headers={'WWW-Authenticate':'Bearer'})
+        user=principal.user
+    if principal.account_scope!='tenant' or not binding or principal.tenant_id!=binding.tenant_id or user.tenant_id!=principal.tenant_id:
+        raise HTTPException(403,detail=dict(code='partner_scope_denied',message='该合作方账号不能访问此业务'))
+    selected=request.headers.get('X-OpenDrama-Tenant')
+    if selected and selected!=principal.tenant_id: raise HTTPException(403,detail=dict(code='tenant_scope_mismatch',message='账号不能切换租户'))
+    tenant=db.get(Tenant,principal.tenant_id)
+    from app.modules.tenancy.domains import validate_entry_origin
+    validate_entry_origin(request,db,tenant)
+    modules=enabled_modules(db,tenant)
+    path=request.url.path
+    module='tags' if path.endswith('/tags') else 'settlements' if '/settlements' in path else 'suppliers' if '/stats' in path else 'dramas'
+    own_credential=path.endswith('/me') or '/auth/' in path or '/api-keys' in path
+    if not own_credential and module not in modules: raise HTTPException(403,detail='该租户未开通此功能')
+    if user.must_change_password and not path.endswith(('/me','/auth/password','/auth/logout')):
+        raise HTTPException(403,detail=dict(code='password_change_required',message='请先修改初始密码'))
+    request.state.principal=principal; request.state.tenant_id=tenant.id
+    db.info['content_tenant_id']=tenant.id; db.info['actor_scope']='tenant'
+    return user,key
 
 
 def _require_supplier(db: Session, user: AdminUser) -> Supplier:
@@ -340,15 +347,23 @@ def me(user: AdminUser = Depends(require_partner), db: Session = Depends(get_db)
 @router.post("/auth/password")
 def change_password(
     body: PartnerPasswordIn,
+    request: Request,
     user: AdminUser = Depends(require_partner_session),
     db: Session = Depends(get_db),
 ):
+    from app.modules.ops.router import lock_password_account, _validate_password
+    principal=request.state.principal
+    user=lock_password_account(db,user,principal)
     if not ops_service.verify_password(body.old_password, user.password_hash):
         raise HTTPException(status_code=400, detail="原密码不正确")
     if body.new_password == body.old_password:
         raise HTTPException(status_code=422, detail="新密码不能与原密码相同")
+    _validate_password(body.new_password,user.username)
     killed = ops_service.revoke_user_sessions(user.id)
     user.password_hash = ops_service.hash_password(body.new_password)
+    user.auth_version += 1
+    user.must_change_password = False
+    db.add(AuditLog(actor_type='admin',actor_id=user.id,actor_scope='tenant',tenant_id=principal.tenant_id,action='staff_password_change',target_type='admin_user',target_id=user.id,payload={'revoked_sessions':killed}))
     db.commit()
     return {"revoked_sessions": killed}
 

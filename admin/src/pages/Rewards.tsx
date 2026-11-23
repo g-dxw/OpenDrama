@@ -47,6 +47,7 @@ import {
   UserAddOutlined,
 } from "@ant-design/icons";
 import { api, errorText } from "../api";
+import { usePermission } from "../me";
 
 /**
  * 金币与任务配置：维护 7 天签到梯度、注册奖励、绑定邮箱、绑定 Facebook、每日广告奖励。
@@ -202,6 +203,7 @@ const CHECKIN_PRESETS = [
 ];
 
 export default function Rewards() {
+  const canManage = usePermission("rewards.manage");
   const [overview, setOverview] = useState<Overview | null>(null);
   const [drafts, setDrafts] = useState<Record<string, number[]>>({});
   const [loading, setLoading] = useState(false);
@@ -275,6 +277,7 @@ export default function Rewards() {
   }, [dirtyItems.length]);
 
   const setDraftValue = (code: string, index: number, value: number | null) => {
+    if (!canManage) return;
     setDrafts((prev) => {
       const next = { ...prev, [code]: [...(prev[code] ?? [])] };
       next[code][index] = value === null ? Number.NaN : value;
@@ -283,11 +286,13 @@ export default function Rewards() {
   };
 
   const resetDraft = (item: RewardItem) => {
+    if (!canManage) return;
     setDrafts((prev) => ({ ...prev, [item.code]: [...baseline(item)] }));
     message.info(`已撤回【${item.name}】的未保存修改`);
   };
 
   const resetAllDrafts = () => {
+    if (!canManage) return;
     setDrafts(
       Object.fromEntries(
         items.map((item) => [item.code, [...baseline(item)]])
@@ -298,6 +303,7 @@ export default function Rewards() {
 
   // 保存单项
   const saveOne = async (item: RewardItem) => {
+    if (!canManage) return;
     const draft = drafts[item.code] ?? [];
     if (
       draft.length !== item.size ||
@@ -336,6 +342,7 @@ export default function Rewards() {
 
   // 一键批量保存全部已修改项
   const saveAllDirty = async () => {
+    if (!canManage) return;
     if (dirtyItems.length === 0) return;
     for (const item of dirtyItems) {
       const draft = drafts[item.code] ?? [];
@@ -425,7 +432,7 @@ export default function Rewards() {
         </Space>
       ),
       onClick: () => {
-        if (!checkin) return;
+        if (!canManage || !checkin) return;
         setDrafts((prev) => ({ ...prev, [checkin.code]: [...p.values] }));
         message.info(`已应用预设：${p.label}`);
       },
@@ -444,6 +451,7 @@ export default function Rewards() {
           </Space>
         ),
         onClick: () => {
+          if (!canManage) return;
           setDrafts((prev) => ({ ...prev, [checkin.code]: [...checkin.default_amounts] }));
           message.info("已重置为系统内置默认梯度");
         },
@@ -451,7 +459,7 @@ export default function Rewards() {
     }
 
     return list;
-  }, [checkin]);
+  }, [checkin, canManage]);
 
   // 过滤后的单项任务
   const filteredSingles = useMemo(() => {
@@ -639,7 +647,7 @@ export default function Rewards() {
                 suffix={<span style={{ color: "#8c8c8c", fontSize: 12 }}>金币</span>}
                 value={Number.isFinite(draftVal) ? draftVal : null}
                 onChange={(value) => setDraftValue(item.code, 0, value)}
-                disabled={isSaving}
+                disabled={!canManage || isSaving}
               />
               {changed && diff !== 0 && (
                 <div
@@ -677,13 +685,13 @@ export default function Rewards() {
               onConfirm={() => saveOne(item)}
               okText="确认提交"
               cancelText="取消"
-              disabled={!changed}
+              disabled={!canManage || !changed}
             >
               <Button
                 type={changed ? "primary" : "default"}
                 size="middle"
                 icon={<SaveOutlined />}
-                disabled={!changed}
+                disabled={!canManage || !changed}
                 loading={isSaving}
                 style={
                   changed
@@ -703,7 +711,7 @@ export default function Rewards() {
                 <Button
                   size="middle"
                   icon={<RollbackOutlined />}
-                  disabled={isSaving}
+                  disabled={!canManage || isSaving}
                   onClick={() => resetDraft(item)}
                 />
               </Tooltip>
@@ -763,7 +771,7 @@ export default function Rewards() {
                     金币与任务奖励配置
                   </Typography.Title>
                   <Tag color="red" bordered={false} style={{ fontWeight: 600 }}>
-                    MiniTV 激励体系
+                    JJTV 激励体系
                   </Tag>
                 </Space>
                 <Typography.Text type="secondary" style={{ fontSize: 13 }}>
@@ -787,7 +795,7 @@ export default function Rewards() {
               {dirtyItems.length > 0 ? (
                 <>
                   <Col>
-                    <Button onClick={resetAllDrafts} disabled={batchSaving}>
+                    <Button onClick={resetAllDrafts} disabled={!canManage || batchSaving}>
                       放弃全部改动
                     </Button>
                   </Col>
@@ -798,12 +806,14 @@ export default function Rewards() {
                         overview?.next_effective_on ?? "次日"
                       }（洛杉矶时间）生效。`}
                       onConfirm={saveAllDirty}
+                      disabled={!canManage}
                       okText="确认全部保存"
                       cancelText="取消"
                     >
                       <Button
                         type="primary"
                         loading={batchSaving}
+                        disabled={!canManage}
                         icon={<SaveOutlined />}
                         style={{
                           background: BRAND_RED,
@@ -1094,7 +1104,7 @@ export default function Rewards() {
                         }
                         value={Number.isFinite(val) ? val : null}
                         onChange={(next) => setDraftValue(checkin.code, idx, next)}
-                        disabled={isSaving}
+                        disabled={!canManage || isSaving}
                       />
                     </div>
 
@@ -1142,8 +1152,8 @@ export default function Rewards() {
             <Row justify="space-between" align="middle" gutter={[12, 12]}>
               <Col>
                 <Space wrap size={10}>
-                  <Dropdown menu={{ items: presetMenuItems }}>
-                    <Button icon={<ThunderboltOutlined />}>
+                  <Dropdown disabled={!canManage} menu={{ items: presetMenuItems }}>
+                    <Button disabled={!canManage} icon={<ThunderboltOutlined />}>
                       快速应用梯度预设 <ArrowDownOutlined style={{ fontSize: 10 }} />
                     </Button>
                   </Dropdown>
@@ -1167,7 +1177,7 @@ export default function Rewards() {
               <Col>
                 <Space size={8}>
                   <Button
-                    disabled={!isDirty(checkin) || savingCodes.has(checkin.code) || batchSaving}
+                    disabled={!canManage || !isDirty(checkin) || savingCodes.has(checkin.code) || batchSaving}
                     onClick={() => resetDraft(checkin)}
                   >
                     撤回未保存修改
@@ -1180,11 +1190,11 @@ export default function Rewards() {
                     onConfirm={() => saveOne(checkin)}
                     okText="确认保存"
                     cancelText="取消"
-                    disabled={!isDirty(checkin)}
+                    disabled={!canManage || !isDirty(checkin)}
                   >
                     <Button
                       type="primary"
-                      disabled={!isDirty(checkin)}
+                      disabled={!canManage || !isDirty(checkin)}
                       loading={savingCodes.has(checkin.code) || batchSaving}
                       icon={<SaveOutlined />}
                       style={
