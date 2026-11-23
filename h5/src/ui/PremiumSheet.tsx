@@ -1,12 +1,22 @@
 import { RightsNotice } from "./RightsNotice";
 import type {ContentRights} from "../../../shared/consumer/types";
 import { getSite, siteMoney, siteFeature } from "../../../shared/site";
+import {
+  isReconciledProvider,
+  paymentChannelOptions,
+  selectedPaymentChannel,
+  paymentChannelKey,
+  recordCheckoutReturn,
+  type PaymentChannel,
+} from "../../../shared/consumer/payment-channels";
 import { useEffect, useRef, useState } from "react";
 import {
   ApiError,
   authToken,
   cancelSubscription,
+  cancelPendingMembershipOrder,
   getPlans,
+  getPaymentChannels,
   startCheckout,
   membershipCheckoutIntent,
   replaceExpiredMembershipIntent,
@@ -31,6 +41,8 @@ type TerminalCheckout = {
   intent: string;
   message: string;
   paidOrderNo?: string;
+  channel?: PaymentChannel;
+  pending?: { orderNo: string; checkoutUrl?: string; provider: string; canCancel: boolean };
 };
 
 function formatDay(iso: string | null, locale: Locale): string {
@@ -64,6 +76,8 @@ export function PremiumSheet({
   const { requireAuth, loginOpen, status } = useAuth();
   const [plans, setPlans] = useState<Plan[]>([]);
   const [mode, setMode] = useState<BillingMode>("one_time");
+  const [channels, setChannels] = useState<PaymentChannel[] | null>(null);
+  const [channelKeys, setChannelKeys] = useState<Record<string, string>>({});
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   const [showPlans, setShowPlans] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
@@ -141,14 +155,49 @@ export function PremiumSheet({
   const isPass = membership?.billing_mode === "one_time";
   const showActive = active && (!purchasesEnabled || !showPlans);
 
+  const channelChoices = paymentChannelOptions(channels ?? [], mode, "membership", plans);
+  const paymentsUnavailable = channels !== null && !channelChoices.available;
+  function channelPreference(code: string) {
+    const key = channelChoices.common ? "" : code;
+    const options = channelChoices.common ?? channelChoices.byProduct.get(code) ?? [];
+    return {key, options, selected: selectedPaymentChannel(options, channelKeys[key])};
+  }
+  function channelPicker(planCode = "") {
+    const {key, options, selected} = channelPreference(planCode);
+    if (options.length < 2) {
+      return selected && isReconciledProvider(selected.provider)
+        ? <p className="premium-note">{t(locale, "premium_payment_option")} · {selected.name}</p>
+        : null;
+    }
+    return (
+      <label className="premium-payment-channel">
+        {t(locale, "premium_payment_option")}
+        <select
+          value={selected && paymentChannelKey(selected)}
+          disabled={busy !== null || !!ownedExpired}
+          onChange={(event) => {
+            const value = event.target.value;
+            setChannelKeys((previous) => ({...previous, [key]: value}));
+          }}
+        >
+          {options.map((channel) => {
+            const channelKey = paymentChannelKey(channel);
+            return <option key={channelKey} value={channelKey}>{channel.name}</option>;
+          })}
+        </select>
+      </label>
+    );
+  }
+
   useEffect(() => {
     let alive = true;
     if (!purchasesEnabled) { setPlans([]); setState("ready"); return; }
-    getPlans()
-      .then((payload) => {
+    Promise.all([getPlans(), getPaymentChannels().catch(() => null)])
+      .then(([payload, available]) => {
         if (!alive) return;
         setPlans(payload.items);
         setMode(payload.billing_mode ?? "subscription");
+        setChannels(available?.items ?? null);
         setState("ready");
       })
       .catch(() => {
@@ -160,12 +209,13 @@ export function PremiumSheet({
   }, [purchasesEnabled]);
 
   const subscribe = (code: string) => {
-    if (!purchasesEnabled || !mounted.current || ownedExpired) return;
+    const {selected: channel} = channelPreference(code);
+    if (!purchasesEnabled || !mounted.current || ownedExpired || (channels !== null && !channel)) return;
     awaitingAuth.current = status !== "user";
     setMobileCheckoutActive(pinOwner.current, true);
     requireAuth(() => {
       awaitingAuth.current = false;
-      if (mounted.current) void startSubscription(code);
+      if (mounted.current) void startSubscription(code, channel);
       else setMobileCheckoutActive(pinOwner.current, false);
     });
   };
@@ -174,11 +224,12 @@ export function PremiumSheet({
     code: string,
     intent: string,
     orderNo: string,
+    channel?: PaymentChannel,
   ): Promise<"paid" | "created" | "stale"> {
     const result = await getCheckoutOrder(orderNo);
     if (!isCurrent(request)) return "stale";
     if (
-      !matchesMembershipCheckoutIntent(code, intent, request.token) ||
+      !matchesMembershipCheckoutIntent(code, intent, request.token, channel) ||
       result.order.order_no !== orderNo ||
       result.order.product_type !== "membership" ||
       result.order.product_code !== code
@@ -192,6 +243,7 @@ export function PremiumSheet({
         ownerToken: request.token,
         code,
         intent,
+        channel,
         paidOrderNo: orderNo,
         message:
           result.order.status === "refunded"
@@ -209,13 +261,13 @@ export function PremiumSheet({
       throw new Error("Payment needs confirmation");
     return "created";
   }
-  async function startSubscription(code: string) {
+  async function startSubscription(code: string, channel?: PaymentChannel) {
     const request = beginRequest(code);
     if (!request) return;
     let intent = "";
     try {
-      intent = membershipCheckoutIntent(code);
-      const result = await startCheckout(code, intent);
+      intent = membershipCheckoutIntent(code, channel);
+      const result = await startCheckout(code, intent, channel);
       if (!isCurrent(request)) {
         finishRequest(request);
         return;
@@ -225,6 +277,7 @@ export function PremiumSheet({
         code,
         intent,
         result.order_no,
+        channel,
       );
       if (reconciled === "paid") return;
       if (reconciled === "stale") {
@@ -236,9 +289,9 @@ export function PremiumSheet({
         finishRequest(request);
         return;
       }
-      if (!matchesMembershipCheckoutIntent(code, intent, request.token))
+      if (!matchesMembershipCheckoutIntent(code, intent, request.token, channel))
         throw new Error("Checkout identity changed");
-      sessionStorage.setItem("jjtv_h5_checkout_order", result.order_no);
+      recordCheckoutReturn("jjtv_h5_checkout_order", result.order_no, channel?.provider);
       // Keep the owning mobile tree pinned until the checkout navigation unmounts it.
       window.location.assign(result.url);
     } catch (err) {
@@ -259,6 +312,36 @@ export function PremiumSheet({
         detail &&
         typeof detail === "object" &&
         "code" in detail &&
+        detail.code === "pending_subscription_checkout" &&
+        "action" in detail && (
+          detail.action === "resume_only" ||
+          (detail.action === "resume_or_cancel" && "provider" in detail &&
+            typeof detail.provider === "string" && isReconciledProvider(detail.provider))
+        ) &&
+        "order_no" in detail && typeof detail.order_no === "string" && detail.order_no
+      ) {
+        updateExpired({
+          ownerToken: request.token,
+          code,
+          intent,
+          channel,
+          message: t(locale, "premium_subscription_pending"),
+          pending: {
+            orderNo: detail.order_no,
+            canCancel: detail.action === "resume_or_cancel",
+            checkoutUrl: "checkout_url" in detail && typeof detail.checkout_url === "string" ? detail.checkout_url : undefined,
+            provider: "provider" in detail && typeof detail.provider === "string" ? detail.provider : "creem",
+          },
+        });
+        finishRequest(request, true);
+        return;
+      }
+      if (
+        err instanceof ApiError &&
+        err.status === 409 &&
+        detail &&
+        typeof detail === "object" &&
+        "code" in detail &&
         detail.code === "checkout_expired" &&
         "action" in detail &&
         detail.action === "new_purchase"
@@ -267,6 +350,7 @@ export function PremiumSheet({
           ownerToken: request.token,
           code,
           intent,
+          channel,
           message: err.message,
         });
         finishRequest(request, true);
@@ -291,6 +375,7 @@ export function PremiumSheet({
             code,
             intent,
             detail.order_no,
+            channel,
           );
           if (reconciled === "paid") return;
         } catch {
@@ -304,14 +389,56 @@ export function PremiumSheet({
       finishRequest(request);
       if (err instanceof ApiError && err.status === 401)
         setError(t(locale, "premium_need_sign_in"));
-      else if (err instanceof ApiError && err.message.includes("0.50"))
+      else if (!isReconciledProvider(channel?.provider) && err instanceof ApiError && err.message.includes("0.50"))
         setError(t(locale, "premium_min_price"));
       else setError(t(locale, "premium_failed"));
     }
   }
+  const resumeExistingCheckout = () => {
+    const recovery = expiredRef.current;
+    const resume = recovery?.pending;
+    if (!mounted.current || !recovery || !resume?.checkoutUrl || busy !== null) return;
+    try {
+      if (!matchesMembershipCheckoutIntent(recovery.code, recovery.intent, recovery.ownerToken, recovery.channel)) {
+        throw new Error("Checkout identity changed");
+      }
+      recordCheckoutReturn("jjtv_h5_checkout_order", resume.orderNo, resume.provider);
+      window.location.assign(resume.checkoutUrl);
+    } catch {
+      setError(t(locale, "premium_failed"));
+    }
+  };
+  const cancelPendingCheckout = async () => {
+    const recovery = expiredRef.current;
+    const pending = recovery?.pending;
+    if (!recovery || !pending?.canCancel || busy !== null) return;
+    if (!matchesMembershipCheckoutIntent(recovery.code, recovery.intent, recovery.ownerToken, recovery.channel)) {
+      setError(t(locale, "premium_failed"));
+      return;
+    }
+    const request = beginRequest("cancel-checkout");
+    if (!request) return;
+    try {
+      const result = await cancelPendingMembershipOrder(pending.orderNo);
+      if (!isCurrent(request)) {
+        finishRequest(request);
+        return;
+      }
+      if (result.order_no !== pending.orderNo || result.canceled !== true) {
+        throw new Error("Cancellation not confirmed");
+      }
+      updateExpired(null);
+      finishRequest(request);
+      toast(t(locale, "premium_pending_canceled"));
+    } catch {
+      const current = isCurrent(request);
+      finishRequest(request, current);
+      if (current) setError(t(locale, "premium_pending_cancel_failed"));
+    }
+  };
   const startNewCheckout = () => {
     const recovery = expiredRef.current;
-    if (!mounted.current || !recovery || busy !== null) return;
+    if (!mounted.current || !recovery || recovery.pending || busy !== null) return;
     try {
       if (authToken() !== recovery.ownerToken) {
         updateExpired(null);
@@ -323,7 +450,7 @@ export function PremiumSheet({
           recovery.paidOrderNo
             ? replacePaidMembershipIntent
             : replaceExpiredMembershipIntent
-        )(recovery.code, recovery.intent, recovery.ownerToken)
+        )(recovery.code, recovery.intent, recovery.ownerToken, recovery.channel)
       ) {
         updateExpired(null);
         setMobileCheckoutActive(pinOwner.current, false);
@@ -335,7 +462,7 @@ export function PremiumSheet({
         return;
       }
       updateExpired(null);
-      void startSubscription(recovery.code);
+      void startSubscription(recovery.code, recovery.channel);
     } catch {
       setError(t(locale, "premium_failed"));
     }
@@ -468,6 +595,10 @@ export function PremiumSheet({
               <p>{t(locale, "err_generic")}</p>
             </div>
           )}
+          {channelChoices.common && channelPicker()}
+          {paymentsUnavailable && plans.length > 0 && (
+            <p className="premium-note" role="status">{t(locale, "premium_payment_unavailable")}</p>
+          )}
           <div className="premium-plans">
             {plans.map((plan) => (
               <div
@@ -497,10 +628,11 @@ export function PremiumSheet({
                     <li key={item}>{item}</li>
                   ))}
                 </ul>
+                {!channelChoices.common && channelPicker(plan.code)}
                 <button
                   type="button"
                   className="premium-cta"
-                  disabled={busy !== null || !!ownedExpired}
+                  disabled={busy !== null || !!ownedExpired || (channels !== null && !channelPreference(plan.code).selected)}
                   onClick={() => subscribe(plan.code)}
                   data-testid={`premium-buy-${plan.code}`}
                 >
@@ -518,16 +650,18 @@ export function PremiumSheet({
               className="premium-error"
               role="alert"
               data-testid={
-                ownedExpired.paidOrderNo
-                  ? "premium-paid-checkout"
-                  : "premium-expired-checkout"
+                ownedExpired.pending
+                  ? "premium-pending-checkout"
+                  : ownedExpired.paidOrderNo
+                    ? "premium-paid-checkout"
+                    : "premium-expired-checkout"
               }
             >
               <p>{ownedExpired.message}</p>
-              {ownedExpired.paidOrderNo && (
+              {(ownedExpired.paidOrderNo || ownedExpired.pending) && (
                 <button
                   className="premium-secondary"
-                  data-testid="premium-paid-view-orders"
+                  data-testid={ownedExpired.pending ? "premium-pending-view-orders" : "premium-paid-view-orders"}
                   onClick={() => {
                     onClose();
                     window.location.hash = "account/orders";
@@ -536,7 +670,27 @@ export function PremiumSheet({
                   {locale === "zh" ? "查看订单" : "View orders"}
                 </button>
               )}
-              <button
+              {ownedExpired.pending?.checkoutUrl && (
+                <button
+                  className="premium-cta"
+                  data-testid="premium-resume-checkout"
+                  onClick={resumeExistingCheckout}
+                  disabled={busy !== null}
+                >
+                  {t(locale, "premium_resume_checkout")}
+                </button>
+              )}
+              {ownedExpired.pending?.canCancel && (
+                <button
+                  className="premium-secondary"
+                  data-testid="premium-cancel-pending-checkout"
+                  onClick={() => void cancelPendingCheckout()}
+                  disabled={busy !== null}
+                >
+                  {t(locale, busy === "cancel-checkout" ? "premium_pending_cancelling" : "premium_cancel_pending_checkout")}
+                </button>
+              )}
+              {!ownedExpired.pending && <button
                 className="premium-cta"
                 data-testid={
                   ownedExpired.paidOrderNo
@@ -553,7 +707,7 @@ export function PremiumSheet({
                   : locale === "zh"
                     ? "重新发起支付"
                     : "Start new checkout"}
-              </button>
+              </button>}
             </div>
           )}
           {error && <p className="premium-error">{error}</p>}

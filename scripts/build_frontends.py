@@ -14,7 +14,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
 FRONTENDS = ("web", "h5", "admin")
-API_BASE = ""
+API_BASE = os.environ.get("API_BASE_URL", "https://api.example.com")
 
 
 def git(root: Path, *args: str) -> str:

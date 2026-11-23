@@ -67,7 +67,12 @@ let privateComments = false,
   oldCommentsStarted;
 let checkoutConflictCode = null,
   cancelConflictCode = null,
-  checkoutConflictSequence = [];
+  checkoutConflictSequence = [],
+  epayAvailable = false,
+  creemAvailable = false,
+  creemResumeOnly = false,
+  pancakeAvailable = false,
+  waffoAvailable = false;
 const conflictMessages = {
   pending_subscription_checkout: "Resume or cancel your existing checkout.",
   checkout_payment_pending:
@@ -484,7 +489,7 @@ page.on("request", async (req) => {
       } else result = { items: [], total: 0, next_cursor: null };
     } else if (p === "/v1/plans")
       result = {
-        billing_mode: "one_time",
+        billing_mode: epayAvailable || waffoAvailable ? "subscription" : "one_time",
         items: [
           {
             code: "weekly",
@@ -524,6 +529,11 @@ page.on("request", async (req) => {
             coins: 330,
             version_id: 1,
           },
+          ...(creemAvailable || pancakeAvailable || waffoAvailable ? [{
+            code: "extra", name_en: "Extra coins", name_zh: "额外金币",
+            price_cents: 599, currency: "USD", base_coins: 600, bonus_coins: 0,
+            coins: 600, version_id: 2,
+          }] : []),
         ],
       };
     else if (p === "/v1/billing/channels")
@@ -535,6 +545,28 @@ page.on("request", async (req) => {
             provider: "stripe",
             enabled: true,
           },
+          ...(epayAvailable ? ["alipay", "wxpay"].map((method) => ({
+            code: "epay-fixture",
+            name: "Epay " + method,
+            provider: "epay",
+            enabled: true,
+            method,
+            billing_modes: ["one_time"],
+          })) : []),
+          ...(creemAvailable ? [{
+            code: "creem-fixture", name: "Creem fixture", provider: "creem", enabled: true,
+            billing_modes: ["one_time"],
+            products: [{product_type: "coin_pack", product_code: "starter", billing_mode: "one_time"}],
+          }] : []),
+          ...(pancakeAvailable ? [{
+            code: "pancake-fixture", name: "Waffo Pancake fixture", provider: "waffo_pancake", enabled: true,
+            billing_modes: ["one_time"],
+            products: [{product_type: "coin_pack", product_code: "starter", billing_mode: "one_time"}],
+          }] : []),
+          ...(waffoAvailable ? [{
+            code: "waffo-fixture", name: "Waffo fixture", provider: "waffo", enabled: true,
+            billing_modes: ["one_time"],
+          }] : []),
         ],
       };
     else if (p === "/v1/commerce/checkout") {
@@ -546,13 +578,60 @@ page.on("request", async (req) => {
         result = { detail: "Temporary checkout gateway unavailable" };
       } else if (code) {
         status = 409;
-        result = fixtureConflict(code);
+        result = creemResumeOnly
+          ? {detail: {
+              code: "pending_subscription_checkout", action: "resume_only", provider: "creem",
+              message: "Continue your existing Creem checkout.", order_no: "CREEM-PC-RETURN",
+              checkout_url: origin + "/?checkout=success&payment_provider=creem&order_no=CREEM-PC-RETURN#account/orders",
+            }}
+          : fixtureConflict(code);
+      } else if (body.provider === "epay") {
+        result = {
+          url: origin + "/?checkout=success&payment_provider=epay&order_no=EPAY-PC-RETURN&pid=merchant-id&out_trade_no=IGNORED#account/orders",
+          session_id: "",
+          order_no: "EPAY-PC-ORIGINAL",
+        };
+      } else if (body.provider === "creem") {
+        result = {
+          url: origin + "/?checkout=success&payment_provider=creem&order_no=CREEM-PC-RETURN&checkout_id=ch_fixture&signature=fixture&customer_id=cus_fixture#account/orders",
+          session_id: "ch_fixture", order_no: "CREEM-PC-RETURN",
+        };
+      } else if (body.provider === "waffo_pancake") {
+        result = {
+          url: origin + "/?checkout=success&payment_provider=waffo_pancake&order_no=PANCAKE-PC-RETURN&sessionId=other_session#account/orders",
+          session_id: "cs_fixture", order_no: "PANCAKE-PC-RETURN",
+        };
+      } else if (body.provider === "waffo") {
+        result = {
+          url: origin + "/?checkout=success&payment_provider=waffo&order_no=WAFFO-PC-RETURN&hosted_return=keep#account/orders",
+          session_id: "waffo_fixture", order_no: "WAFFO-PC-RETURN",
+        };
       } else
         result = {
           url: origin + "/?checkout=success#account/orders",
           session_id: "fixture-session",
           order_no: "ORDER-FIXTURE",
         };
+    } else if (p === "/v1/commerce/orders/EPAY-PC-RETURN" || p === "/v1/commerce/orders/EPAY-PC-RETURN/reconcile") {
+      result = {
+        order: { order_no: "EPAY-PC-RETURN", product_type: "coin_pack", product_code: "starter", status: "paid" },
+        settled: req.method() === "GET",
+      };
+    } else if (p === "/v1/commerce/orders/CREEM-PC-RETURN" || p === "/v1/commerce/orders/CREEM-PC-RETURN/reconcile") {
+      result = {
+        order: { order_no: "CREEM-PC-RETURN", product_type: "coin_pack", product_code: "starter", status: "paid" },
+        settled: req.method() === "GET",
+      };
+    } else if (p === "/v1/commerce/orders/PANCAKE-PC-RETURN" || p === "/v1/commerce/orders/PANCAKE-PC-RETURN/reconcile") {
+      result = {
+        order: { order_no: "PANCAKE-PC-RETURN", product_type: "coin_pack", product_code: "starter", status: "paid" },
+        settled: req.method() === "GET",
+      };
+    } else if (p === "/v1/commerce/orders/WAFFO-PC-RETURN" || p === "/v1/commerce/orders/WAFFO-PC-RETURN/reconcile") {
+      result = {
+        order: { order_no: "WAFFO-PC-RETURN", product_type: "coin_pack", product_code: "extra", status: "paid" },
+        settled: req.method() === "GET",
+      };
     } else if (p === "/v1/commerce/orders/ORDER-FIXTURE/cancel") {
       if (cancelConflictCode) {
         status = 409;
@@ -1863,6 +1942,110 @@ try {
   pass(
     "manual recovery and already-paid conflicts expose order and support links without another purchase",
   );
+  epayAvailable = true;
+  await openPrice();
+  assert.equal(await page.$("#membership-plans .payment-channel"), null);
+  const coinPaymentSelector = "#coin-packs .payment-channel select";
+  await page.waitForSelector(coinPaymentSelector);
+  const epayChoices = await page.$eval(coinPaymentSelector, (select) =>
+    [...select.options].filter((item) => item.textContent.startsWith("Epay ")).map((item) => item.value),
+  );
+  assert.equal(new Set(epayChoices).size, 2);
+  await page.select(coinPaymentSelector, epayChoices[1]);
+  const epayReturnRequests = requests.length;
+  await clickText("Buy coins");
+  await text("Waiting for payment confirmation");
+  assert.equal(await page.$(".checkout-confirmed"), null);
+  await text("Payment confirmed.");
+  assert.equal(lastCheckout().body.provider, "epay");
+  assert.equal(lastCheckout().body.account_code, "epay-fixture");
+  assert.equal(lastCheckout().body.payment_method, "wxpay");
+  const epayRequests = requests.slice(epayReturnRequests);
+  assert.equal(epayRequests.filter((entry) => entry.path === "/v1/commerce/orders/EPAY-PC-RETURN/reconcile" && entry.method === "POST").length, 1);
+  assert(epayRequests.some((entry) => entry.path === "/v1/commerce/orders/EPAY-PC-RETURN" && entry.method === "GET"));
+  assert(!epayRequests.some((entry) => entry.path === "/v1/attr/visit" && entry.body.pid === "merchant-id"));
+  assert.equal(new URL(page.url()).search, "");
+  epayAvailable = false;
+  pass("Epay is omitted for subscriptions and reconciles the exact coin order after its return");
+  creemAvailable = true;
+  await openPrice();
+  const packs = await page.$$(".coin-pack-card");
+  assert.equal(packs.length, 2);
+  assert.equal(await packs[1].$("select"), null);
+  const creemPicker = ".coin-pack-card:first-child .payment-channel select";
+  await page.waitForSelector(creemPicker);
+  const creemChoice = await page.$eval(creemPicker, (select) =>
+    [...select.options].find((item) => item.textContent === "Creem fixture").value,
+  );
+  await page.select(creemPicker, creemChoice);
+  const creemReturnRequests = requests.length;
+  await packs[0].$("button").then((button) => button.click());
+  await text("Waiting for payment confirmation");
+  assert.equal(await page.$(".checkout-confirmed"), null);
+  await text("Payment confirmed.");
+  assert.equal(lastCheckout().body.provider, "creem");
+  assert.equal(lastCheckout().body.account_code, "creem-fixture");
+  assert.equal(lastCheckout().body.code, "starter");
+  assert.equal(lastCheckout().body.payment_method, undefined);
+  assert.equal(requests.slice(creemReturnRequests).filter((entry) => entry.path === "/v1/commerce/orders/CREEM-PC-RETURN/reconcile").length, 1);
+  assert.equal(new URL(page.url()).search, "");
+  pass("Creem is offered only for its mapped desktop coin pack and waits for owned settlement");
+  await openPrice();
+  creemResumeOnly = true;
+  checkoutConflictCode = "pending_subscription_checkout";
+  await clickText("Subscribe");
+  await text("Continue your existing Creem checkout.");
+  assert.equal(lastCheckout().body.provider, undefined);
+  assert(await page.$(".checkout-recovery button.primary"));
+  assert.equal(await page.$(".checkout-recovery button.secondary"), null);
+  const beforeCreemResume = checkouts().length;
+  await clickText("Continue checkout");
+  await text("Payment confirmed.");
+  assert.equal(checkouts().length, beforeCreemResume);
+  assert.equal(await page.evaluate(() => sessionStorage.getItem("jjtv_checkout_order:reconcile")), "CREEM-PC-RETURN");
+  creemAvailable = false;
+  creemResumeOnly = false;
+  checkoutConflictCode = null;
+  pass("Creem resume-only recovery cannot cancel an existing session and retains the order provider");
+  pancakeAvailable = true;
+  await openPrice();
+  assert.equal(await page.$(".coin-pack-card:nth-child(2) select"), null);
+  const pancakeChoice = await page.$eval(creemPicker, (select) =>
+    [...select.options].find((item) => item.textContent === "Waffo Pancake fixture").value,
+  );
+  await page.select(creemPicker, pancakeChoice);
+  const pancakeRequests = requests.length;
+  await page.locator(".coin-pack-card:first-child button").click();
+  await text("Waiting for payment confirmation");
+  assert.equal(await page.$(".checkout-confirmed"), null);
+  await text("Payment confirmed.");
+  assert.equal(lastCheckout().body.provider, "waffo_pancake");
+  assert.equal(lastCheckout().body.code, "starter");
+  assert.equal(lastCheckout().body.payment_method, undefined);
+  assert.equal(requests.slice(pancakeRequests).filter((entry) => entry.path === "/v1/commerce/orders/PANCAKE-PC-RETURN/reconcile").length, 1);
+  assert.equal(new URL(page.url()).search, "");
+  pancakeAvailable = false;
+  pass("Waffo Pancake shows only for its mapped coin pack and ignores provider session parameters on return");
+  waffoAvailable = true;
+  await openPrice();
+  assert.equal(await page.$("#membership-plans .payment-channel"), null);
+  const waffoChoice = await page.$eval(coinPaymentSelector, (select) =>
+    [...select.options].find((item) => item.textContent === "Waffo fixture").value,
+  );
+  await page.select(coinPaymentSelector, waffoChoice);
+  const waffoRequests = requests.length;
+  await page.locator(".coin-pack-card:nth-child(2) button").click();
+  await text("Waiting for payment confirmation");
+  assert.equal(await page.$(".checkout-confirmed"), null);
+  await text("Payment confirmed.");
+  assert.equal(lastCheckout().body.provider, "waffo");
+  assert.equal(lastCheckout().body.account_code, "waffo-fixture");
+  assert.equal(lastCheckout().body.code, "extra");
+  assert.equal(lastCheckout().body.payment_method, undefined);
+  assert.equal(requests.slice(waffoRequests).filter((entry) => entry.path === "/v1/commerce/orders/WAFFO-PC-RETURN/reconcile").length, 1);
+  assert.equal(new URL(page.url()).search, "?hosted_return=keep");
+  waffoAvailable = false;
+  pass("Waffo one-time checkout covers the coin catalog but is omitted from subscriptions until enabled");
   await go("#support?ticket=T-1");
   await text("An episode needs help.");
   await page.evaluate(() => {

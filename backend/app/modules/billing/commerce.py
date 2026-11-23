@@ -188,7 +188,15 @@ def _account_lock(db,code):
     db.execute(text('SELECT pg_advisory_xact_lock(:key)'),{'key':key})
 
 def _account_has_history(db,code):
-    return any(db.scalar(select(model).where(field==code).limit(1).execution_options(include_all_tenants=True)) is not None for model,field in ((Order,Order.account_code),(Subscription,Subscription.account_code),(StripePriceBinding,StripePriceBinding.account_code)))
+    candidates = (
+        select(Order.id).where(Order.account_code == code, Order.provider == 'stripe'),
+        select(Subscription.id).where(
+            Subscription.account_code == code, Subscription.creem_subscription_id.is_(None),
+            Subscription.pancake_subscription_id.is_(None), Subscription.waffo_subscription_id.is_(None),
+        ),
+        select(StripePriceBinding.id).where(StripePriceBinding.account_code == code),
+    )
+    return any(db.scalar(stmt.limit(1).execution_options(include_all_tenants=True)) is not None for stmt in candidates)
 
 def _identity_conflict():
     return BillingError(409,dict(code='stripe_merchant_mismatch',message='This channel is bound to a different Stripe merchant or mode. Create a new channel instead.'))
@@ -234,17 +242,6 @@ def save_account(db,code,data,actor):
     save_config(db,'stripe:'+code,changes,secret_fields=('secret_key','webhook_secret','webhook_secrets_history'))
     if row.is_default:
         for other in db.scalars(select(StripeAccount).where(StripeAccount.code!=code)):other.is_default=False
-        # The old default switch continues to select JJTV's merchant only.
-        # Other sites always retain their own explicit binding.
-        from app.modules.billing.commerce_models import SiteMerchantBinding
-        from app.modules.billing.site_merchants import require_known_bound_merchants,merchant_alias_codes
-        require_known_bound_merchants(db,code,'jjtv')
-        aliases=merchant_alias_codes(db,code)
-        other_binding=db.scalar(select(SiteMerchantBinding).where(SiteMerchantBinding.account_code.in_(aliases),SiteMerchantBinding.tenant_id!='jjtv'))
-        jjtv_binding=db.get(SiteMerchantBinding,'jjtv')
-        if other_binding is not None and (jjtv_binding is None or jjtv_binding.account_code!=code):raise BillingError(409,'Bind this shared merchant to JJTV explicitly before choosing it as the legacy default')
-        if jjtv_binding is None:jjtv_binding=SiteMerchantBinding(tenant_id='jjtv',account_code=code,explicit_reuse=False);db.add(jjtv_binding)
-        jjtv_binding.account_code=code
     audit(db,actor,'stripe_account.save',payload=dict(code=code,status=row.status,remote_id=row.remote_id,livemode=row.livemode));db.commit()
     return next(x for x in account_list(db) if x['code']==code)
 
@@ -266,14 +263,14 @@ def return_url(value,kind,db=None):
         from app.modules.sites.models import SiteSettings
         settings=db.get(SiteSettings,site)
     configured=[x for x in ((settings.web_url if settings else ''),(settings.h5_url if settings else '')) if x]
-    if site!='jjtv' and not configured:raise BillingError(503,'Configure this site storefront URL before accepting payments')
-    base=(configured[-1] if configured else os.environ.get('H5_PUBLIC_BASE_URL','https://jjtv-h5.8jj.net')).rstrip('/')
+    base=(configured[-1] if configured else os.environ.get('H5_PUBLIC_BASE_URL','https://m.example.com')).rstrip('/')
     if value is None:return base+'/?checkout='+kind
-    origins={'https://jjtv.8jj.net','https://jjtv-h5.8jj.net'} if site=='jjtv' else set()
-    entries=configured+([base,os.environ.get('WEB_PUBLIC_BASE_URL','')]+os.environ.get('CHECKOUT_RETURN_ORIGINS','').split(',') if site=='jjtv' else [])
+    origins=set()
+    entries=configured+[base,os.environ.get('WEB_PUBLIC_BASE_URL','')]+os.environ.get('CHECKOUT_RETURN_ORIGINS','').split(',')
     for entry in entries:
         if entry:
-            parsed=urllib.parse.urlsplit(entry.strip());origins.add(parsed.scheme+'://'+parsed.netloc)
+            parsed=urllib.parse.urlsplit(entry.strip())
+            if parsed.scheme and parsed.netloc: origins.add(parsed.scheme+'://'+parsed.netloc)
     parsed=urllib.parse.urlsplit(value)
     if parsed.username or parsed.password or parsed.scheme not in {'https','http'} or parsed.scheme+'://'+parsed.netloc not in origins:raise BillingError(422,'checkout return URL must use an allowed site origin')
     return value
@@ -312,11 +309,12 @@ def ensure_price(db,account,snapshot):
 
 def checkout_conflict(order,code,message,action,include_url=False):
     detail=dict(code=code,message=message,order_no=order.order_no,action=action)
+    if order.provider != 'stripe':detail['provider']=order.provider
     if include_url and order.checkout_url:detail['checkout_url']=order.checkout_url
     return BillingError(409,detail)
 
 def _checkout_pending(db,order):
-    if order.billing_mode!='subscription' or order.product_type!='membership':return False
+    if order.provider!='stripe' or order.billing_mode!='subscription' or order.product_type!='membership':return False
     if order.status=='created':return True
     if order.status=='failed':return not (order.checkout_context or {}).get('session_expired')
     # A completed Checkout is not an entitlement. Keep its reservation until the
@@ -349,6 +347,23 @@ def _checkout_remote_state(db,order):
 
 def _checkout_result(order,reused=False):
     return dict(url=order.checkout_url,session_id=order.external_txn_id,order_no=order.order_no,reused=reused)
+
+
+def checkout_key(user_id, idempotency_key):
+    return 'checkout:' + str(user_id) + ':' + hashlib.sha256(idempotency_key.encode()).hexdigest()
+
+
+def validate_checkout_source(db, source_drama_id):
+    if source_drama_id is None:
+        return
+    from app.modules.content.models import Drama
+    from app.modules.library.service import assert_distribution_allowed
+    from app.modules.tenancy.consumer_scope import current_site
+
+    drama = db.get(Drama, source_drama_id)
+    if drama is None or drama.tenant_id != current_site(db) or drama.status != 'published':
+        raise BillingError(404, 'source drama not found')
+    assert_distribution_allowed(db, drama, purpose='sale', country=db.info.get('viewer_country'))
 
 def assert_no_renewing_subscription(db,user_id):
     # Event.created has only second precision. A same-second cancel/resume or
@@ -395,16 +410,44 @@ def require_new_sale(db,product_type):
         raise BillingError(403,'New '+('membership' if product_type=='membership' else 'coin pack')+' purchases are disabled for this site')
 
 
-def checkout(db,*,user_id,email,product_type,code,idempotency_key,account_code=None,success_url=None,cancel_url=None,source_drama_id=None,attribution_pid=None):
-    from app.modules.tenancy.consumer_scope import require_owned,current_site
+def checkout(db,*,user_id,email,product_type,code,idempotency_key,account_code=None,success_url=None,cancel_url=None,source_drama_id=None,attribution_pid=None,provider='stripe',payment_method=None):
+    if provider == 'epay':
+        from app.modules.billing import epay_commerce
+        return epay_commerce.checkout(
+            db, user_id=user_id, product_type=product_type, code=code, idempotency_key=idempotency_key,
+            account_code=account_code, payment_method=payment_method, success_url=success_url,
+            cancel_url=cancel_url, source_drama_id=source_drama_id, attribution_pid=attribution_pid,
+        )
+    if provider == 'creem':
+        from app.modules.billing import creem_commerce
+        return creem_commerce.checkout(
+            db, user_id=user_id, email=email, product_type=product_type, code=code,
+            idempotency_key=idempotency_key, account_code=account_code, success_url=success_url,
+            cancel_url=cancel_url, source_drama_id=source_drama_id, attribution_pid=attribution_pid,
+        )
+    if provider == 'waffo_pancake':
+        from app.modules.billing import pancake_commerce
+        return pancake_commerce.checkout(
+            db, user_id=user_id, email=email, product_type=product_type, code=code,
+            idempotency_key=idempotency_key, account_code=account_code, success_url=success_url,
+            cancel_url=cancel_url, source_drama_id=source_drama_id, attribution_pid=attribution_pid,
+        )
+    if provider == 'waffo':
+        from app.modules.billing import waffo_commerce
+        return waffo_commerce.checkout(
+            db, user_id=user_id, email=email, product_type=product_type, code=code,
+            idempotency_key=idempotency_key, account_code=account_code, success_url=success_url,
+            cancel_url=cancel_url, source_drama_id=source_drama_id, attribution_pid=attribution_pid,
+        )
+    from app.modules.tenancy.consumer_scope import require_owned
     require_owned(db,User,user_id)
     success=return_url(success_url,'success',db);cancel=return_url(cancel_url,'cancel',db)
-    key='checkout:'+str(user_id)+':'+hashlib.sha256(idempotency_key.encode()).hexdigest()
+    key=checkout_key(user_id,idempotency_key)
     wallet_lock(db,user_id)
     order=db.scalar(select(Order).where(Order.checkout_key==key))
     reused=order is not None
     if order:
-        if order.product_type!=product_type or order.product_snapshot.get('code')!=code:raise BillingError(409,'idempotency key was used for another product')
+        if order.provider!='stripe' or order.product_type!=product_type or order.product_snapshot.get('code')!=code:raise BillingError(409,'idempotency key was used for another product')
         if account_code and order.account_code!=account_code:raise BillingError(409,'idempotency key was used for another payment channel')
         if product_type=='membership' and order.status in {'created','failed'}:_membership_refund_checkout_guard(db,user_id)
         if order.status=='failed' and (order.checkout_context or {}).get('session_expired'):raise checkout_conflict(order,'checkout_expired','This checkout has expired. Start a new purchase.','new_purchase')
@@ -424,6 +467,10 @@ def checkout(db,*,user_id,email,product_type,code,idempotency_key,account_code=N
         from app.modules.billing.site_merchants import assert_site_currency
         assert_site_currency(db,snapshot['currency'])
         if snapshot['billing_mode']=='subscription':
+            from app.modules.billing import creem_commerce, pancake_commerce, waffo_commerce
+            creem_commerce.guard_other_recurring(db,user_id)
+            pancake_commerce.guard_other_recurring(db,user_id)
+            waffo_commerce.guard_other_recurring(db,user_id)
             # Persisted orders reserve the right to create ONE subscription even
             # while a remote response or its first invoice has not arrived.
             pending=list(db.scalars(select(Order).where(Order.user_id==user_id,Order.product_type=='membership',Order.billing_mode=='subscription',Order.status.in_(('created','paid','failed'))).order_by(Order.id)))
@@ -441,12 +488,7 @@ def checkout(db,*,user_id,email,product_type,code,idempotency_key,account_code=N
         if order is None:
             account=select_account(db,user_id,account_code)
             if snapshot['currency']=='USD' and snapshot['price_cents']<50:raise BillingError(422,'Stripe price must be at least USD 0.50')
-            if source_drama_id is not None:
-                from app.modules.content.models import Drama
-                drama=db.get(Drama,source_drama_id)
-                if drama is None or drama.tenant_id!=current_site(db) or drama.status!='published':raise BillingError(404,'source drama not found')
-                from app.modules.library.service import assert_distribution_allowed
-                assert_distribution_allowed(db,drama,purpose='sale',country=db.info.get('viewer_country'))
+            validate_checkout_source(db,source_drama_id)
             order=Order(order_no=secrets.token_hex(12),user_id=user_id,plan_version_id=snapshot['version_id'] if product_type=='membership' else None,product_type=product_type,product_snapshot=snapshot,amount_cents=snapshot['price_cents'],currency=snapshot['currency'],billing_mode=snapshot['billing_mode'],status='created',account_code=account['code'],checkout_key=key,source_drama_id=source_drama_id,attribution_pid=attribution_pid,checkout_context={'request':dict(success_url=success,cancel_url=cancel,email=email)})
             db.add(order);db.commit()
     price=ensure_price(db,account['code'],snapshot)
@@ -480,6 +522,14 @@ def cancel_checkout(db,user_id,order_no):
     wallet_lock(db,user_id)
     order=db.scalar(select(Order).where(Order.order_no==order_no,Order.user_id==user_id).with_for_update())
     if order is None:raise BillingError(404,'order not found')
+    if (order.provider in {'creem','waffo_pancake','waffo'} and order.billing_mode=='subscription' and order.status=='created'
+            and not order.checkout_url and not order.subscription_ref and not order.checkout_context.get('provider_checkout_id')):
+        order.status='failed'
+        order.checkout_context={**order.checkout_context,'checkout_expired':True}
+        db.commit()
+        return dict(order_no=order.order_no,status='failed',canceled=True)
+    if order.provider!='stripe':
+        raise checkout_conflict(order,'checkout_recovery_required','This payment gateway does not provide checkout cancellation.','contact_support')
     if order.billing_mode!='subscription' or order.product_type!='membership':raise BillingError(409,'Only unpaid subscription checkouts can be canceled')
     if order.status=='failed' and (order.checkout_context or {}).get('session_expired'):return dict(order_no=order.order_no,status='failed',canceled=True)
     if not _checkout_pending(db,order):raise checkout_conflict(order,'checkout_already_paid','This order is already settled and cannot be canceled.','view_orders')
@@ -508,7 +558,17 @@ def _administratively_revoked_membership(db,order,grant=None):
     source=dict(order_id=order.id)
     if grant is not None:source['grant_id']=grant.id
     matches=[AuditLog.payload['revoked_membership_sources'].contains([source])]
-    if order.billing_mode=='subscription' and order.subscription_ref:
+    provider_fences = {
+        'creem': 'revoked_creem_subscription_bindings',
+        'waffo_pancake': 'revoked_pancake_subscription_bindings',
+        'waffo': 'revoked_waffo_subscription_bindings',
+    }
+    if order.billing_mode=='subscription' and order.subscription_ref and order.provider in provider_fences:
+        key = provider_fences[order.provider]
+        matches.append(AuditLog.payload[key].contains([
+            dict(account_code=order.account_code,subscription_id=order.subscription_ref),
+        ]))
+    elif order.billing_mode=='subscription' and order.subscription_ref:
         matches.extend((
             (AuditLog.payload['account_code'].astext==order.account_code)&(AuditLog.payload['stripe_subscription_id'].astext==order.subscription_ref),
             AuditLog.payload['revoked_subscription_bindings'].contains([dict(account_code=order.account_code,stripe_subscription_id=order.subscription_ref)]),
@@ -596,9 +656,9 @@ def record_subscription_lifecycle(db,code,payload,obj,order):
 def process_event(db,code,payload):
     kind=payload.get('type','');obj=(payload.get('data') or {}).get('object') or {}
     metadata=obj.get('metadata') or {};number=metadata.get('commerce_order_no')
-    order=db.scalar(select(Order).where(Order.order_no==number,Order.account_code==code)) if number else None
+    order=db.scalar(select(Order).where(Order.order_no==number,Order.account_code==code,Order.provider=='stripe')) if number else None
     if kind.startswith('checkout.session.'):
-        order=order or db.scalar(select(Order).where(Order.external_txn_id==obj.get('id'),Order.account_code==code,Order.checkout_key.is_not(None)))
+        order=order or db.scalar(select(Order).where(Order.external_txn_id==obj.get('id'),Order.account_code==code,Order.checkout_key.is_not(None),Order.provider=='stripe'))
         if order is None:return None
         wallet_lock(db,order.user_id)
         order=db.get(Order,order.id,with_for_update=True,populate_existing=True)
@@ -635,7 +695,7 @@ def process_event(db,code,payload):
         initial=db.scalar(select(Order).where(Order.subscription_ref==subscription,Order.account_code==code,Order.checkout_key.is_not(None)).order_by(Order.id))
         if initial is None:
             parent_meta=((obj.get('parent') or {}).get('subscription_details') or {}).get('metadata') or obj.get('subscription_details',{}).get('metadata',{})
-            initial=db.scalar(select(Order).where(Order.order_no==parent_meta.get('commerce_order_no'),Order.account_code==code))
+            initial=db.scalar(select(Order).where(Order.order_no==parent_meta.get('commerce_order_no'),Order.account_code==code,Order.provider=='stripe'))
         if initial is None:return None
         wallet_lock(db,initial.user_id)
         initial=db.get(Order,initial.id,populate_existing=True)
@@ -682,10 +742,11 @@ def process_event(db,code,payload):
         if sub is not None and sub.user_id!=order.user_id:raise BillingError(409,'subscription owner does not match frozen order')
         if sub is None:
             old=None if administratively_revoked else db.scalar(select(Subscription).where(Subscription.user_id==order.user_id,Subscription.status=='active').with_for_update())
-            if old and old.stripe_subscription_id and old.stripe_subscription_id!=subscription and old.canceled_at is None:
-                raise BillingError(409,'another renewing subscription already exists')
             preserved_pass=None
             if old:
+                from app.modules.billing.service import _is_recurring
+                if _is_recurring(old) and old.stripe_subscription_id != subscription and old.canceled_at is None:
+                    raise BillingError(409,'another renewing subscription already exists')
                 # Keep old merchant/subscription IDs and version as history.
                 # Managed paid periods live in their own grants; legacy/manual
                 # windows must remain usable through the new active binding.
@@ -769,9 +830,29 @@ def verify_source_proof(db,order,source):
 
 def orders_for_payment_intent(db,code,payment_intent):
     if not isinstance(payment_intent,str) or not payment_intent:return []
-    return list(db.scalars(select(Order).where(Order.account_code==code,or_(Order.payment_intent_id==payment_intent,Order.checkout_context['invoice_payment_intent_ids'].contains([payment_intent]))).order_by(Order.id)))
+    return list(db.scalars(select(Order).where(Order.account_code==code,Order.provider=='stripe',or_(Order.payment_intent_id==payment_intent,Order.checkout_context['invoice_payment_intent_ids'].contains([payment_intent]))).order_by(Order.id)))
 
 def refund_payment_review_reason(db,order):
+    if order.provider == 'epay':
+        return 'Epay V1 订单需要通过收款商户人工核对退款'
+    if order.provider == 'creem':
+        if order.billing_mode != 'one_time':
+            return 'Creem 订阅退款需人工核对后续扣费和会员权益'
+        if not order.external_txn_id or not (order.checkout_context or {}).get('provider_trade_no'):
+            return 'Creem 订单缺少可验证的原始交易'
+        return None
+    if order.provider == 'waffo_pancake':
+        if order.billing_mode != 'one_time':
+            return 'Waffo Pancake 订阅退款需人工核对后续扣费和会员权益'
+        if not order.external_txn_id or not (order.checkout_context or {}).get('provider_trade_no'):
+            return 'Waffo Pancake 订单缺少可验证的原始交易'
+        return None
+    if order.provider == 'waffo':
+        if order.billing_mode != 'one_time':
+            return 'Waffo 订阅退款需人工核对后续扣费和会员权益'
+        if not order.external_txn_id or not (order.checkout_context or {}).get('provider_order_id'):
+            return 'Waffo 订单缺少可验证的原始交易'
+        return None
     context=order.checkout_context or {}
     ids=context.get('invoice_payment_intent_ids') or []
     if context.get('invoice_payment_requires_manual_review') or len(set(ids))>1:
@@ -991,6 +1072,29 @@ def resolve_membership_refund(db,order_no,actor_id,reason,idempotency_key,expect
     db.commit();return result
 
 
+def freeze_refund_sources(db, order, wallet, actor, reason):
+    source=db.scalar(select(CoinSource).where(CoinSource.order_id==order.id).with_for_update())
+    grant=db.scalar(select(MembershipGrant).where(MembershipGrant.order_id==order.id).with_for_update())
+    if source:
+        verify_source_proof(db,order,source)
+    if source and (source.remaining!=source.original or source.reserved):raise BillingError(409,'purchased coins have been consumed; manual review required')
+    if grant and (grant.access_consumed or grant.status!='active'):raise BillingError(409,'membership entitlement was consumed or changed; manual review required')
+    if grant and db.scalar(select(AuditLog.id).where(AuditLog.target_type=='user',AuditLog.target_id==order.user_id,AuditLog.action.in_(('membership_grant','membership_revoke')),AuditLog.created_at>=order.paid_at).limit(1)):
+        raise BillingError(409,'membership was manually adjusted after purchase; manual refund review required')
+    if not source and not grant:raise BillingError(409,'no provably unconsumed entitlement source')
+    refund=CommerceRefund(order_id=order.id,idempotency_key='refund:'+order.order_no,status='pending',reason=reason)
+    db.add(refund);db.flush()
+    if source:
+        if wallet.balance<source.original:raise BillingError(409,'wallet changed; manual review required')
+        source.reserved=source.remaining;source.remaining=0;wallet.balance-=source.reserved
+        db.add(CoinLedgerEntry(user_id=order.user_id,amount=-source.reserved,balance_after=wallet.balance,biz_type='refund_reserve',biz_key='refund_reserve:'+order.order_no,note=reason))
+    if grant:
+        _freeze_membership_refund(db,order,grant)
+        grant.status='refund_pending'
+    order.status='refund_pending';audit(db,actor,'commerce.refund.request',order.id,dict(reason=reason));db.commit()
+    return refund
+
+
 def request_refund(db,order_no,actor,reason,idempotency_key):
     order=db.scalar(select(Order).where(Order.order_no==order_no))
     if order is None:raise BillingError(404,'order not found')
@@ -1004,29 +1108,21 @@ def request_refund(db,order_no,actor,reason,idempotency_key):
         if existing and existing.status=='pending':
             existing.status='manual_review';existing.error=review_reason;order.status='refund_review';db.commit();return refund_out(existing)
         raise BillingError(409,review_reason)
+    if order.provider=='creem':
+        from app.modules.billing import creem_commerce
+        return creem_commerce.request_refund(db,order,wallet,existing,actor,reason)
+    if order.provider=='waffo_pancake':
+        from app.modules.billing import pancake_commerce
+        return pancake_commerce.request_refund(db,order,wallet,existing,actor,reason)
+    if order.provider=='waffo':
+        from app.modules.billing import waffo_commerce
+        return waffo_commerce.request_refund(db,order,wallet,existing,actor,reason)
     if existing:
         db.commit()
         return reconcile_refund(db,order,existing)
     else:
         if order.status!='paid' or not order.checkout_key and not order.invoice_id or not order.product_snapshot or not order.payment_intent_id:raise BillingError(409,'legacy or unverified payment requires manual refund review')
-        source=db.scalar(select(CoinSource).where(CoinSource.order_id==order.id).with_for_update())
-        grant=db.scalar(select(MembershipGrant).where(MembershipGrant.order_id==order.id).with_for_update())
-        if source:
-            verify_source_proof(db,order,source)
-        if source and (source.remaining!=source.original or source.reserved):raise BillingError(409,'purchased coins have been consumed; manual review required')
-        if grant and (grant.access_consumed or grant.status!='active'):raise BillingError(409,'membership entitlement was consumed or changed; manual review required')
-        if grant and db.scalar(select(AuditLog.id).where(AuditLog.target_type=='user',AuditLog.target_id==order.user_id,AuditLog.action.in_(('membership_grant','membership_revoke')),AuditLog.created_at>=order.paid_at).limit(1)):
-            raise BillingError(409,'membership was manually adjusted after purchase; manual refund review required')
-        if not source and not grant:raise BillingError(409,'no provably unconsumed entitlement source')
-        refund=CommerceRefund(order_id=order.id,idempotency_key='refund:'+order.order_no,status='pending',reason=reason);db.add(refund);db.flush()
-        if source:
-            if wallet.balance<source.original:raise BillingError(409,'wallet changed; manual review required')
-            source.reserved=source.remaining;source.remaining=0;wallet.balance-=source.reserved
-            db.add(CoinLedgerEntry(user_id=order.user_id,amount=-source.reserved,balance_after=wallet.balance,biz_type='refund_reserve',biz_key='refund_reserve:'+order.order_no,note=reason))
-        if grant:
-            _freeze_membership_refund(db,order,grant)
-            grant.status='refund_pending'
-        order.status='refund_pending';audit(db,actor,'commerce.refund.request',order.id,dict(reason=reason));db.commit()
+        refund=freeze_refund_sources(db,order,wallet,actor,reason)
     # A new POST rejection never establishes the outcome of an earlier refund
     # on this payment. Retries below only READ the original provider facts.
     data={'payment_intent':order.payment_intent_id,'amount':str(order.amount_cents),'metadata[commerce_order_no]':order.order_no,'metadata[commerce_refund_key]':refund.idempotency_key}
@@ -1068,7 +1164,8 @@ def _reconcile_failed_one_time_membership(db,order,refund,grant,status):
         case=dict(version=1,provider_status=status,provider_refund_id=refund.refund_id,conflicting_settlement_order_ids=newer,blockers_at_outcome=blockers,budget_error=budget_error)
         order.checkout_context={**context,'membership_refund_reconciliation':case}
         refund.status='manual_review';order.status='refund_review'
-        refund.error='Stripe退款已确认'+('失败' if status=='failed' else '取消')+'；会员来源需要按冻结剩余时长结案，原权益和金币继续冻结。'+(budget_error or ('存在冻结后结算的会员订单：'+','.join(map(str,newer)) if newer else '；'.join(reasons)))
+        provider_name = {'stripe': 'Stripe', 'creem': 'Creem', 'waffo_pancake': 'Waffo Pancake', 'waffo': 'Waffo'}.get(order.provider, order.provider)
+        refund.error=provider_name+'退款已确认'+('失败' if status=='failed' else '取消')+'；会员来源需要按冻结剩余时长结案，原权益和金币继续冻结。'+(budget_error or ('存在冻结后结算的会员订单：'+','.join(map(str,newer)) if newer else '；'.join(reasons)))
         db.add(AuditLog(actor_type='system',action='membership_source.reconciliation_required',target_type='order',target_id=order.id,created_at=now(),payload=dict(source_order_id=order.id,grant_id=grant.id,freeze=frozen,case=case)))
         db.flush();return True
     # With no conflicting rights, resume only the unelapsed frozen budget. Past
@@ -1110,7 +1207,9 @@ def order_out(db,row,include_customer=False):
     if include_customer:
         from app.modules.account.models import User
         user=db.get(User,row.user_id)
-        item.update(user_id=row.user_id,user=customer_out(user) if user else None,external_txn_id=row.external_txn_id)
+        external_id=row.external_txn_id if row.provider=='stripe' else (row.checkout_context or {}).get('provider_trade_no')
+        item.update(user_id=row.user_id,user=customer_out(user) if user else None,external_txn_id=external_id,provider=row.provider,
+                    paid_amount_cents=(row.checkout_context or {}).get('provider_amount_paid', row.amount_cents))
     return item
 
 def list_orders(db,user_id=None,limit=50,offset=0):
@@ -1169,7 +1268,8 @@ def refund_eligibility(db,order):
         return dict(eligible=False,reason=existing.error or ('退款处理中，可重试现有申请' if existing.status=='pending' else '该订单已有退款记录：'+existing.status))
     review_reason=refund_payment_review_reason(db,order)
     if review_reason:return dict(eligible=False,reason=review_reason)
-    if order.status!='paid' or (not order.checkout_key and not order.invoice_id) or not order.product_snapshot or not order.payment_intent_id:return dict(eligible=False,reason='历史订单或支付来源不完整，需要人工核对')
+    if (order.status!='paid' or (not order.checkout_key and not order.invoice_id) or not order.product_snapshot
+            or (order.provider=='stripe' and not order.payment_intent_id)):return dict(eligible=False,reason='历史订单或支付来源不完整，需要人工核对')
     source=db.scalar(select(CoinSource).where(CoinSource.order_id==order.id))
     grant=db.scalar(select(MembershipGrant).where(MembershipGrant.order_id==order.id))
     if source:

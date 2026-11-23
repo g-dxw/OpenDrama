@@ -41,7 +41,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-API_DEFAULT = "https://jjtv-api.8jj.net"
+API_DEFAULT = os.environ.get("API_BASE_URL", "https://api.example.com")
 UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"

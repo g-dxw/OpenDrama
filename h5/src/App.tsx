@@ -1,5 +1,7 @@
 import { getSite, siteName, siteLink, siteFeature } from "../../shared/site";
 import { useEffect, useState, type ReactNode } from "react";
+import { cleanupCheckoutReturn, readCheckoutReturn } from "../../shared/consumer/payment-channels";
+import { authToken, getCheckoutOrder, reconcileReturnedCheckout } from "./api";
 import { AuthProvider, useAuth } from "./auth/AuthProvider";
 import { LoginSheet } from "./auth/LoginSheet";
 import { loadLocale, saveLocale, t, type Locale } from "./copy";
@@ -59,7 +61,10 @@ export function App() {
 }
 
 function AppShell() {
-  const { loginOpen, refresh, authError, user } = useAuth();
+  const { loginOpen, openLogin, refresh, authError, user, status } = useAuth();
+  const [checkoutReturn, setCheckoutReturn] = useState(() => readCheckoutReturn("jjtv_h5_checkout_order"));
+  const [paymentStatus, setPaymentStatus] = useState<"pending" | "paid" | "failed" | "refunded" | "unknown">("pending");
+  const [paymentCheck, setPaymentCheck] = useState(0);
   const [locale, setLocale] = useState<Locale>(loadLocale);
   const [route, setRoute] = useState(readMobileRoute);
   const { tab, dramaId, searching } = route;
@@ -81,32 +86,67 @@ function AppShell() {
     document.documentElement.lang = locale;
   }, [locale]);
 
-  // Stripe sends the browser back here after Checkout. Clean the flag out of the
-  // URL and re-read /v1/me so the "Premium active" strip appears immediately.
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const result = params.get("checkout");
-    if (!result) return;
-    // A return query is not payment evidence; retain every uncertain checkout intent.
-    // A confirmed paid order can be retired only by its explicit new-purchase action.
-    params.delete("checkout");
+    if (!params.has("checkout")) return;
+    cleanupCheckoutReturn(params);
     const query = params.toString();
     window.history.replaceState(
       {},
       "",
-      `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`,
+      window.location.pathname + (query ? "?" + query : "") + window.location.hash,
     );
-    if (result === "success") {
+    if (checkoutReturn?.result === "success") {
       if (!window.location.hash) setTab("me");
-      void refresh();
-      toast(
-        locale === "zh"
-          ? "支付已返回，请在订单中查看确认结果。"
-          : "Checkout returned. Check your orders for confirmation.",
-      );
+      if (!checkoutReturn.reconcile) {
+        void refresh();
+        toast(t(locale, "checkout_returned"));
+      }
     }
+    // The return parameters are consumed once when this page first opens.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    const orderNo = checkoutReturn?.orderNo;
+    if (checkoutReturn?.result !== "success" || !checkoutReturn.reconcile || !orderNo || status !== "user") return;
+    const owner = authToken();
+    let active = true;
+    let timer = 0;
+    let attempts = 0;
+    const current = () => active && owner === authToken();
+    setPaymentStatus("pending");
+    const check = async () => {
+      try {
+        const response = attempts === 0
+          ? await reconcileReturnedCheckout(orderNo).catch((error) => {
+              if (!current()) throw error;
+              return getCheckoutOrder(orderNo);
+            })
+          : await getCheckoutOrder(orderNo);
+        if (!current()) return;
+        if (response.order.order_no !== orderNo) {
+          setPaymentStatus("unknown");
+        } else if (response.order.status === "paid" && response.settled) {
+          await refresh();
+          if (current()) setPaymentStatus("paid");
+        } else if (response.order.status === "failed" || response.order.status === "refunded") {
+          setPaymentStatus(response.order.status);
+        } else if (attempts++ < 5) {
+          timer = window.setTimeout(() => void check(), 2000);
+        } else {
+          setPaymentStatus("unknown");
+        }
+      } catch {
+        if (current()) setPaymentStatus("unknown");
+      }
+    };
+    void check();
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [checkoutReturn, status, user?.id, refresh, paymentCheck]);
 
   const changeLocale = (next: Locale) => {
     saveLocale(next);
@@ -151,6 +191,19 @@ function AppShell() {
             </button>
           )}
         </header>
+      )}
+      {checkoutReturn?.result === "success" && checkoutReturn.reconcile && (
+        <div className="checkout-return-notice">
+          <p role="status">{t(locale, status === "guest" ? "checkout_sign_in" : "checkout_" + paymentStatus)}</p>
+          <div className="checkout-return-actions">
+            {status === "guest" && <button type="button" onClick={openLogin}>{t(locale, "sign_in")}</button>}
+            {status === "user" && paymentStatus === "unknown" && (
+              <button type="button" onClick={() => setPaymentCheck((attempt) => attempt + 1)}>{t(locale, "checkout_check_again")}</button>
+            )}
+            <a href="#account/orders" onClick={() => setCheckoutReturn(null)}>{t(locale, "orders_title")}</a>
+            <button type="button" onClick={() => setCheckoutReturn(null)}>{t(locale, "checkout_dismiss")}</button>
+          </div>
+        </div>
       )}
       <main className={playing || tab === "foryou" ? "stage bleed" : "stage"}>
         {((tab==="rewards"&&!siteFeature("rewards")) || (route.meSheet==="premium"&&!siteFeature("membership")&&!user?.membership?.active)) ? (<div className="center" role="status"><h2>{locale==="zh"?"本站暂未开放此功能":"This feature is unavailable on this site."}</h2><a href="#home">{t(locale,"nav.home")}</a></div>) : !route.supported ? (

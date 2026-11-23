@@ -5,7 +5,7 @@ from fastapi import HTTPException
 from sqlalchemy import select,func
 from app.modules.tenancy.models import TenantDomain
 
-SHARED_HOSTS={'localhost','127.0.0.1','testserver','jjtv-admin.8jj.net','jjtv-api.8jj.net'}
+SHARED_HOSTS={'localhost','127.0.0.1','testserver'}
 
 def shared_hosts():
     return SHARED_HOSTS|{item.strip().lower() for item in os.environ.get('PLATFORM_ADMIN_HOSTS','').split(',') if item.strip()}

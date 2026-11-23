@@ -1,4 +1,16 @@
 import {RightsNotice} from "./rights-notice";
+import {
+  checkoutReturnMarker,
+  isReconciledProvider,
+  paymentChannelOptions,
+  selectedPaymentChannel,
+  paymentChannelFields,
+  paymentChannelKey,
+  recordCheckoutReturn,
+  type CheckoutOrderStatus,
+  type CheckoutReturnReference,
+  type PaymentChannel,
+} from "../../shared/consumer/payment-channels";
 import type {ContentRights} from "../../shared/consumer/types";
 import { siteFeature } from "../../shared/site";
 import { planPriceDisplay } from "./plan-display";
@@ -29,12 +41,13 @@ interface CheckoutConflict {
   message: string;
   order_no: string;
   checkout_url?: string;
+  provider?: string;
   action: string;
 }
 interface PurchaseIntent {
   product: "membership" | "coin_pack";
   code: string;
-  account: string;
+  channel: PaymentChannel;
   key: string;
   mapKey: string;
   returnHash: string;
@@ -70,6 +83,7 @@ function checkoutConflict(error: unknown): CheckoutConflict | null {
     order_no: typeof value.order_no === "string" ? value.order_no : "",
     checkout_url:
       typeof value.checkout_url === "string" ? value.checkout_url : undefined,
+    provider: typeof value.provider === "string" ? value.provider : undefined,
     action: typeof value.action === "string" ? value.action : "",
   };
 }
@@ -89,10 +103,8 @@ export function Store({
   const [plans, setPlans] = useState<Plan[]>([]),
     [packs, setPacks] = useState<Pack[]>([]),
     [mode, setMode] = useState("one_time"),
-    [channels, setChannels] = useState<
-      Array<{ code: string; name: string; enabled: boolean }>
-    >([]),
-    [account, setAccount] = useState(""),
+    [channels, setChannels] = useState<PaymentChannel[]>([]),
+    [channelKeys, setChannelKeys] = useState<Record<string, string>>({}),
     [loading, setLoading] = useState(true),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(""),
@@ -128,7 +140,7 @@ export function Store({
     Promise.allSettled([
       siteFeature("membership") ? get<{ items: Plan[]; billing_mode?: string }>("/v1/plans") : Promise.resolve({items:[] as Plan[],billing_mode:"one_time"}),
       siteFeature("coins") ? get<{ items: Pack[] }>("/v1/coin-packs") : Promise.resolve({items:[] as Pack[]}),
-      get<{ items: Array<{ code: string; name: string; enabled: boolean }> }>(
+      get<{ items: PaymentChannel[] }>(
         "/v1/billing/channels",
       ),
     ])
@@ -141,13 +153,7 @@ export function Store({
         if (c.status === "fulfilled") setPacks(c.value.items);
         else errors.push("Coin packs: " + errorMessage(c.reason));
         if (ch.status === "fulfilled") {
-          const available = ch.value.items.filter((i) => i.enabled);
-          setChannels(available);
-          setAccount((previous) =>
-            available.some((i) => i.code === previous)
-              ? previous
-              : available[0]?.code || "",
-          );
+          setChannels(ch.value.items);
         } else {
           setChannels([]);
           errors.push("Payment options: " + errorMessage(ch.reason));
@@ -172,11 +178,37 @@ export function Store({
         .getElementById("membership-plans")
         ?.scrollIntoView({ block: "start" });
   }
+  const planChoices = paymentChannelOptions(channels, mode, "membership", plans);
+  const coinChoices = paymentChannelOptions(channels, "one_time", "coin_pack", packs);
+  function channelPreference(product: PurchaseIntent["product"], productCode: string) {
+    const choices = product === "membership" ? planChoices : coinChoices;
+    const key = product + ":" + (choices.common ? "" : productCode);
+    const options = choices.common ?? choices.byProduct.get(productCode) ?? [];
+    return {
+      options,
+      selected: selectedPaymentChannel(options, channelKeys[key]),
+      onSelect: (value: string) => setChannelKeys((previous) => ({...previous, [key]: value})),
+    };
+  }
+  function channelPicker(product: PurchaseIntent["product"], productCode = "") {
+    const {options, selected, onSelect} = channelPreference(product, productCode);
+    return (
+      <PaymentChannelSelect
+        channels={options}
+        selected={selected}
+        label={t("Payment option")}
+        disabled={!!busy || !!activeRecovery}
+        onSelect={onSelect}
+      />
+    );
+  }
+
   function newIntent(
     product: "membership" | "coin_pack",
     code: string,
+    channel: PaymentChannel,
   ): PurchaseIntent {
-    const mapKey = product + ":" + code + ":" + account;
+    const mapKey = product + ":" + code + ":" + paymentChannelKey(channel);
     let key = keys.current.get(mapKey);
     if (!key) {
       key = crypto.randomUUID();
@@ -185,7 +217,7 @@ export function Store({
     return {
       product,
       code,
-      account,
+      channel,
       key,
       mapKey,
       ownerToken: authToken(),
@@ -212,7 +244,9 @@ export function Store({
     previous?: PurchaseIntent,
   ) {
     if (submitting.current) return;
-    const intent = previous ?? newIntent(product, code);
+    const {selected: channel} = channelPreference(product, code);
+    const intent = previous ?? (channel ? newIntent(product, code, channel) : null);
+    if (!intent) return;
     if (!isCurrentIntent(intent)) return;
     submitting.current = true;
     setBusy(product + ":" + code);
@@ -224,10 +258,12 @@ export function Store({
         {
           product_type: intent.product,
           code: intent.code,
-          account_code: intent.account || undefined,
+          ...paymentChannelFields(intent.channel),
           idempotency_key: intent.key,
           success_url:
-            window.location.origin + "/?checkout=success" + intent.returnHash,
+            window.location.origin + "/?checkout=success" +
+            checkoutReturnMarker(intent.channel.provider) +
+            intent.returnHash,
           cancel_url:
             window.location.origin + "/?checkout=cancel" + intent.returnHash,
           attribution_pid:
@@ -236,7 +272,7 @@ export function Store({
         },
       );
       if (!isCurrentIntent(intent)) return;
-      sessionStorage.setItem("jjtv_checkout_order", result.order_no);
+      recordCheckoutReturn("jjtv_checkout_order", result.order_no, intent.channel.provider);
       window.location.assign(result.url);
     } catch (error) {
       if (isCurrentIntent(intent)) showConflict(error, intent);
@@ -274,16 +310,18 @@ export function Store({
     )
       return;
     if (activeRecovery.conflict.order_no)
-      sessionStorage.setItem(
+      recordCheckoutReturn(
         "jjtv_checkout_order",
         activeRecovery.conflict.order_no,
+        activeRecovery.conflict.provider ??
+          (activeRecovery.conflict.action === "resume_only" ? "creem" : activeRecovery.intent.channel.provider),
       );
     window.location.assign(activeRecovery.conflict.checkout_url);
   }
   async function cancelPendingCheckout() {
     if (!activeRecovery || submitting.current) return;
     const { intent, conflict } = activeRecovery;
-    if (!conflict.order_no) return;
+    if (!conflict.order_no || conflict.action !== "resume_or_cancel") return;
     submitting.current = true;
     setBusy("cancel-checkout");
     setError("");
@@ -426,15 +464,17 @@ export function Store({
                   >
                     {t("Continue checkout")}</button>
                 )}
-                <button
-                  className="button secondary"
-                  disabled={!!busy || !activeRecovery.conflict.order_no}
-                  onClick={() => void cancelPendingCheckout()}
-                >
-                  {busy === "cancel-checkout"
-                    ? t("Cancelling…")
-                    : t("Cancel pending checkout")}
-                </button>
+                {activeRecovery.conflict.action === "resume_or_cancel" && (
+                  <button
+                    className="button secondary"
+                    disabled={!!busy || !activeRecovery.conflict.order_no}
+                    onClick={() => void cancelPendingCheckout()}
+                  >
+                    {busy === "cancel-checkout"
+                      ? t("Cancelling…")
+                      : t("Cancel pending checkout")}
+                  </button>
+                )}
               </>
             )}
             {activeRecovery.conflict.code === "checkout_in_progress" && (
@@ -499,6 +539,10 @@ export function Store({
                   : t("One payment for your selected access period.")}
               </p>
             </div>
+            {planChoices.common && channelPicker("membership")}
+            {plans.length > 0 && !planChoices.available && coinChoices.available && siteFeature("coins") && (
+              <p className="muted" role="status">{t("No payment option supports these membership plans right now.")}</p>
+            )}
             <div className="membership-grid">
               {plans.map((plan) => {
                 const display = planPriceDisplay(plan,plans,mode);
@@ -534,9 +578,10 @@ export function Store({
                       </li>
                     ))}
                   </ul>
+                  {!planChoices.common && channelPicker("membership", plan.code)}
                   <button
                     className={"button secondary full-width" + (plan.benefits?.best ? " plan-gold-button" : "")}
-                    disabled={!!busy || !!activeRecovery || !channels.length || !!(sourceDramaId&&!sourceRights)}
+                    disabled={!!busy || !!activeRecovery || !channelPreference("membership", plan.code).selected || !!(sourceDramaId&&!sourceRights)}
                     onClick={() =>
                       requireAuth(() => {
                         void purchase("membership", plan.code);
@@ -565,6 +610,7 @@ export function Store({
               <p className="muted">
                 {t("Choose your top-up. Episode prices are shown before you unlock.")}</p>
             </div>
+            {coinChoices.common && channelPicker("coin_pack")}
             <div className="coin-pack-grid">
               {packs.map((pack) => (
                 <article
@@ -592,11 +638,12 @@ export function Store({
                       ? t("{price} per 100 coins",{price:money((pack.price_cents/pack.coins)*100,pack.currency)})
                       : ""}
                   </p>
+                  {!coinChoices.common && channelPicker("coin_pack", pack.code)}
                   <div className="coin-pack-footer">
                     <strong>{money(pack.price_cents, pack.currency)}</strong>
                     <button
                       className="button secondary"
-                      disabled={!!busy || !!activeRecovery || !channels.length || !!(sourceDramaId&&!sourceRights)}
+                      disabled={!!busy || !!activeRecovery || !channelPreference("coin_pack", pack.code).selected || !!(sourceDramaId&&!sourceRights)}
                       onClick={() =>
                         requireAuth(() => {
                           void purchase("coin_pack", pack.code);
@@ -622,21 +669,7 @@ export function Store({
               <span>{t("Go to Rewards →")}</span>
             </a>
           </section>}
-          {channels.length > 1 && (
-            <label className="payment-channel">
-              {t("Payment option")}<select
-                value={account}
-                onChange={(e) => setAccount(e.target.value)}
-              >
-                {channels.map((channel) => (
-                  <option value={channel.code} key={channel.code}>
-                    {channel.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
-          {!channels.length && (
+          {!(siteFeature("membership") && planChoices.available) && !(siteFeature("coins") && coinChoices.available) && (
             <div className="payment-unavailable" role="status">
               <Icon name="lock" size={18} />
               <span>
@@ -649,8 +682,9 @@ export function Store({
               <a href="#account/ledger">{t("Coin ledger")}</a>
               <a href="#support">{t("Payment help")}</a>
             </div>
-            <span>
-              <Icon name="lock" size={14} /> {t("Secure checkout by Stripe")}</span>
+            {channels.length > 0 && channels.every((channel) => !channel.provider || channel.provider === "stripe") && (
+              <span><Icon name="lock" size={14} /> {t("Secure checkout by Stripe")}</span>
+            )}
           </footer>
         </>
       )}
@@ -680,13 +714,39 @@ export function Store({
     </div>
   );
 }
+function PaymentChannelSelect({channels, selected, label, disabled, onSelect}: {
+  channels: PaymentChannel[];
+  selected?: PaymentChannel;
+  label: string;
+  disabled: boolean;
+  onSelect: (key: string) => void;
+}) {
+  if (channels.length < 2) {
+    return selected && isReconciledProvider(selected.provider)
+      ? <p className="muted payment-channel">{label} · {selected.name}</p>
+      : null;
+  }
+  return (
+    <label className="payment-channel">
+      {label}
+      <select value={selected && paymentChannelKey(selected)} disabled={disabled} onChange={(event) => onSelect(event.target.value)}>
+        {channels.map((channel) => {
+          const key = paymentChannelKey(channel);
+          return <option key={key} value={key}>{channel.name}</option>;
+        })}
+      </select>
+    </label>
+  );
+}
+
 export function CheckoutReturn({
-  result,
+  reference,
   onDismiss,
 }: {
-  result: string;
+  reference: CheckoutReturnReference;
   onDismiss?: () => void;
 }) {
+  const {result, orderNo: orderNumber, reconcile} = reference;
   const { t, number } = useLocale();
   const { refresh, user, status, openLogin } = useAuth();
   const [state, setState] = useState<
@@ -712,7 +772,6 @@ export function CheckoutReturn({
       setMessage("Sign in to check your payment and updated balance.");
       return;
     }
-    const orderNumber = sessionStorage.getItem("jjtv_checkout_order");
     if (!orderNumber) {
       setState("unknown");
       setMessage("Open your order history to check payment confirmation.");
@@ -721,26 +780,42 @@ export function CheckoutReturn({
     let active = true,
       timer = 0,
       tries = 0;
+    const ownerToken = authToken();
+    const isCurrent = () => active && ownerToken === authToken();
     setState("pending");
     setMessage("Waiting for payment confirmation…");
     const check = async () => {
       try {
-        const orders = await get<{ items: Order[] }>(
-          "/v1/commerce/orders?limit=100",
-        );
-        if (!active) return;
-        const order = orders.items.find((o) => o.order_no === orderNumber);
-        if (order?.status === "paid") {
+        let orderStatus: string | undefined;
+        let settled = true;
+        if (reconcile) {
+          const path = "/v1/commerce/orders/" + encodeURIComponent(orderNumber);
+          const order = tries === 0
+            ? await post<CheckoutOrderStatus>(path + "/reconcile", undefined).catch((error) => {
+                if (!isCurrent()) throw error;
+                return get<CheckoutOrderStatus>(path);
+              })
+            : await get<CheckoutOrderStatus>(path);
+          if (order.order.order_no === orderNumber) {
+            orderStatus = order.order.status;
+            settled = order.settled;
+          }
+        } else {
+          const orders = await get<{ items: Order[] }>("/v1/commerce/orders?limit=100");
+          orderStatus = orders.items.find((order) => order.order_no === orderNumber)?.status;
+        }
+        if (!isCurrent()) return;
+        if (orderStatus === "paid" && settled) {
           await refresh();
-          if (!active) return;
+          if (!isCurrent()) return;
           setState("confirmed");
           setMessage("Payment confirmed. Your account has been updated.");
           return;
         }
-        if (order && ["failed", "refunded"].includes(order.status)) {
+        if (orderStatus === "failed" || orderStatus === "refunded") {
           setState("failed");
           setMessage(
-            order.status === "refunded"
+            orderStatus === "refunded"
               ? "This order has been refunded. See your order history for details."
               : "Payment was not completed. You can try again from Price.",
           );
@@ -754,7 +829,7 @@ export function CheckoutReturn({
           );
         }
       } catch (e) {
-        if (active) {
+        if (isCurrent()) {
           setState("unknown");
           setMessage(errorMessage(e));
         }
@@ -765,7 +840,7 @@ export function CheckoutReturn({
       active = false;
       clearTimeout(timer);
     };
-  }, [result, status, user?.id, attempt, refresh]);
+  }, [result, orderNumber, reconcile, status, user?.id, attempt, refresh]);
   return (
     <div className={"checkout-notice checkout-" + state} role="status">
       <Icon name={state === "confirmed" ? "check" : "coin"} />

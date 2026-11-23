@@ -1096,6 +1096,7 @@ type MembershipDetail = {
   billing_mode: string | null;
   source: "subscription" | "one_time" | null;
   has_stripe_subscription: boolean;
+  has_renewing_subscription?: boolean;
   user: { id: number; public_id?: string | null; display_name: string; email?: string | null };
   history: {
     id: number;
@@ -1134,6 +1135,7 @@ function MembershipModal({ user, onClose, onSaved }: { user: AdminUserRow; onClo
   const isAdmin = usePermission("users.manage");
   const canManage = usePermission("users.manage") && isAdmin && plansEnabled;
   const [detail, setDetail] = useState<MembershipDetail | null>(null);
+  const recurring = detail?.has_renewing_subscription ?? detail?.has_stripe_subscription;
   const [loading, setLoading] = useState(true);
   const [granting, setGranting] = useState(false);
   const [revoking, setRevoking] = useState(false);
@@ -1257,7 +1259,7 @@ function MembershipModal({ user, onClose, onSaved }: { user: AdminUserRow; onClo
                 ) : null}
                 {detail.plan_name ? <Typography.Text type="secondary">{detail.plan_name}</Typography.Text> : null}
               </Space>
-              {detail.active && detail.has_stripe_subscription ? (
+              {detail.active && recurring ? (
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                   订阅周期至 {formatTime(detail.subscription_until)}
                   {detail.pass_until ? ` · 时长包至 ${formatTime(detail.pass_until)}` : ""}
@@ -1356,12 +1358,12 @@ function MembershipModal({ user, onClose, onSaved }: { user: AdminUserRow; onClo
                         form={revokeForm}
                         layout="vertical"
                         style={{ marginTop: 8 }}
-                        initialValues={{ mode: detail.has_stripe_subscription ? "period_end" : "now", reason: "" }}
+                        initialValues={{ mode: recurring ? "period_end" : "now", reason: "" }}
                       >
                         <Form.Item name="mode" label="方式">
                           <Radio.Group>
                             <Radio value="now">立即收回（当天失效）</Radio>
-                            <Radio value="period_end" disabled={!detail.has_stripe_subscription}>
+                            <Radio value="period_end" disabled={!recurring}>
                               到期不续费
                             </Radio>
                           </Radio.Group>
@@ -1375,8 +1377,8 @@ function MembershipModal({ user, onClose, onSaved }: { user: AdminUserRow; onClo
                         </Form.Item>
                       </Form>
                       <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                        {detail.has_stripe_subscription
-                          ? "会同步取消 Stripe 自动续费；立即收回不退款，退款需到 Stripe 后台处理。"
+                        {recurring
+                          ? "会同步取消原支付渠道的自动续费。退款请到订单详情处理。"
                           : "时长包没有续费概念，只能立即收回；已消耗的时长不退款。"}
                       </Typography.Text>
                       <Checkbox

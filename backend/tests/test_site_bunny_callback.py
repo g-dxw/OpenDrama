@@ -40,7 +40,7 @@ def callback(client, video_id, *, outcome='finished', signature=None, **claims):
 def test_signed_shared_api_callback_updates_only_stored_upload_owner(session, site_uploads, owner, outcome, status, upload_status):
     episode_id, video_id = site_uploads[owner]
     other = 'upload-site' if owner == 'jjtv' else 'jjtv'
-    client = TestClient(app, base_url='https://jjtv-api.8jj.net')
+    client = TestClient(app, base_url='https://api.example.com')
     # Host resolves JJTV. Signed body claims deliberately name the other site;
     # ownership must come from MediaUpload -> Episode, never these claims.
     response = callback(client, video_id, outcome=outcome, tenant_id=other, episode_id=site_uploads[other][0])
@@ -63,7 +63,7 @@ def test_signed_shared_api_callback_updates_only_stored_upload_owner(session, si
 
 def test_bad_signature_cannot_resolve_or_mutate_foreign_upload(session, site_uploads):
     episode_id, video_id = site_uploads['upload-site']
-    response = callback(TestClient(app, base_url='https://jjtv-api.8jj.net'), video_id, signature='invalid', tenant_id='upload-site')
+    response = callback(TestClient(app, base_url='https://api.example.com'), video_id, signature='invalid', tenant_id='upload-site')
     assert response.status_code == 401, response.text
     session.expire_all()
     with site_context(session, 'upload-site'):

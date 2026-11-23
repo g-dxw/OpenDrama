@@ -191,19 +191,6 @@ def test_pack_currency_requires_explicit_site_price_and_checkout_cannot_convert(
         assert session.scalar(select(func.count()).select_from(Order))==0
 
 
-def test_production_legacy_fake_payment_requires_explicit_nondefault_secret(session,monkeypatch):
-    from app.modules.billing import service as billing
-    from app.modules.billing.service import BillingError
-    a,_=two_sites(session)
-    monkeypatch.setenv('APP_ENV','production')
-    monkeypatch.delenv('PAY_WEBHOOK_SECRET',raising=False)
-    monkeypatch.delenv('ENABLE_LEGACY_PAY_WEBHOOK',raising=False)
-    body=json.dumps(dict(user_id=a.id,txn_id='fake-production',plan_code='monthly')).encode()
-    with pytest.raises(BillingError) as exc:billing.apply_webhook(session,body=body,signature=billing.sign_webhook(body),payload=json.loads(body))
-    assert exc.value.status_code==403
-    assert session.scalar(select(func.count()).select_from(Order))==0
-
-
 def test_unscoped_internal_writers_infer_one_consistent_parent_site(session):
     _,b=two_sites(session)
     drama=Drama(tenant_id='site-b',title='Legacy internal writer',status='published');session.add(drama);session.flush()

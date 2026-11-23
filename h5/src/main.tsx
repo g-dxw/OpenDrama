@@ -8,7 +8,7 @@ import "./styles.css";
 
 function render(){
 const params = new URLSearchParams(window.location.search);
-const pid = params.get("pid");
+const pid = params.get("payment_provider") === "epay" ? null : params.get("pid");
 if (siteFeature("attribution") && pid && /^[A-Za-z0-9_-]{1,128}$/.test(pid)) {
   localStorage.setItem(siteStorageKey("jjtv_attribution_pid"), pid);
   void postJson("/v1/attr/visit", {

@@ -12,6 +12,7 @@ import datetime
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -86,11 +87,14 @@ class Subscription(Base):
     canceled_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     account_code: Mapped[str] = mapped_column(String(32), nullable=False, default="env", server_default="env")
     managed_commerce: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
-    # Persist before Stripe I/O; retries share a key until a proven later resume.
+    # Durable provider-specific cancellation evidence and replay information.
     cancellation_context: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
     stripe_customer_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     stripe_subscription_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     stripe_price_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    creem_subscription_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    pancake_subscription_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    waffo_subscription_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     billing_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="subscription")
     # End of one-time passes; independent from current_period_end so a renewal
     # never wipes access that was bought outright.
@@ -114,6 +118,27 @@ class Subscription(Base):
             unique=True,
             postgresql_where=text("status = 'active'"),
         ),
+        Index(
+            "uq_subscriptions_creem_account_id",
+            "account_code",
+            "creem_subscription_id",
+            unique=True,
+            postgresql_where=text("creem_subscription_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_subscriptions_pancake_account_id",
+            "account_code",
+            "pancake_subscription_id",
+            unique=True,
+            postgresql_where=text("pancake_subscription_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_subscriptions_waffo_account_id",
+            "account_code",
+            "waffo_subscription_id",
+            unique=True,
+            postgresql_where=text("waffo_subscription_id IS NOT NULL"),
+        ),
     )
 
 
@@ -125,6 +150,7 @@ class Order(Base):
     order_no: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     product_type: Mapped[str] = mapped_column(String(16), nullable=False, default="membership", server_default="membership")
     product_snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
+    provider: Mapped[str] = mapped_column(String(32), nullable=False, default="stripe", server_default="stripe")
     account_code: Mapped[str] = mapped_column(String(32), nullable=False, default="env", server_default="env")
     checkout_context: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default='{}')
     checkout_url: Mapped[str | None] = mapped_column(String(2000), nullable=True)
@@ -170,6 +196,31 @@ class Order(Base):
             "ix_orders_refunded_at",
             "refunded_at",
             postgresql_where=text("refunded_at IS NOT NULL"),
+        ),
+    )
+
+
+class PancakePeriodEvidence(Base):
+    """Charge and period notifications arrive independently and may be reordered."""
+
+    __tablename__ = "pancake_period_evidence"
+
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="RESTRICT"), nullable=False, index=True)
+    initial_order_id: Mapped[int] = mapped_column(ForeignKey("orders.id", ondelete="RESTRICT"), primary_key=True)
+    period_number: Mapped[int] = mapped_column(Integer, primary_key=True)
+    payment_id: Mapped[str | None] = mapped_column(String(100))
+    payment_key: Mapped[str | None] = mapped_column(String(128), unique=True)
+    period_start: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
+    period_end: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
+    settled_order_id: Mapped[int | None] = mapped_column(ForeignKey("orders.id", ondelete="RESTRICT"), unique=True)
+
+    __table_args__ = (
+        CheckConstraint("period_number > 0", name="ck_pancake_evidence_positive_period"),
+        CheckConstraint("(payment_id IS NULL) = (payment_key IS NULL)", name="ck_pancake_evidence_payment_pair"),
+        CheckConstraint(
+            "(period_start IS NULL AND period_end IS NULL) OR "
+            "(period_start IS NOT NULL AND period_end IS NOT NULL AND period_end > period_start)",
+            name="ck_pancake_evidence_valid_window",
         ),
     )
 

@@ -23,7 +23,7 @@ def sales(session, commercial):
     user, _actor, calls = commercial
     plan = Plan(code='monthly', name_en='Monthly'); session.add(plan); session.flush()
     session.add(PlanVersion(plan_id=plan.id, version=1, price_cents=1999, base_coins=20, bonus_coins=5, benefits={}))
-    session.add(SiteSettings(tenant_id='jjtv', currency='USD', web_url='https://jjtv.8jj.net', h5_url='https://jjtv-h5.8jj.net'))
+    session.add(SiteSettings(tenant_id='jjtv', currency='USD', web_url='https://app.example.com', h5_url='https://m.example.com'))
     session.commit()
     return user, calls, TestClient(app), {'Authorization': 'Bearer '+accounts._issue_session(user)}
 

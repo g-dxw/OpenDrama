@@ -2,9 +2,11 @@
 from __future__ import annotations
 import csv
 import io
+from typing import Annotated, Literal
+from urllib.parse import parse_qsl
 from datetime import date
 from fastapi import APIRouter,Depends,HTTPException,Header,Request,Query,Response
-from pydantic import BaseModel,Field
+from pydantic import BaseModel,Field,SecretStr,StringConstraints
 from sqlalchemy import select,func
 from sqlalchemy.orm import Session
 from app.db import get_db
@@ -77,6 +79,8 @@ class CheckoutIn(BaseModel):
     product_type:str=Field(pattern='^(membership|coin_pack)$')
     code:str=Field(min_length=1,max_length=32)
     account_code:str|None=None
+    provider:Literal['stripe','epay','creem','waffo_pancake','waffo']='stripe'
+    payment_method:str|None=Field(default=None,pattern='^[a-z0-9_]{1,64}$')
     idempotency_key:str=Field(min_length=8,max_length=100)
     success_url:str|None=Field(default=None,max_length=2000)
     cancel_url:str|None=Field(default=None,max_length=2000)
@@ -115,8 +119,28 @@ def orders(limit:int=Query(30,ge=1,le=100),offset:int=Query(0,ge=0),user=Depends
     return service.list_orders(db,user.id,limit,offset)
 @public_router.get('/commerce/orders/{order_no}')
 def consumer_order_detail(order_no:str,response:Response,user=Depends(require_user),db:Session=Depends(get_db)):
+    return _consumer_order_detail(order_no,response,user,db)
+
+
+def _consumer_order_detail(order_no,response,user,db,*,reconcile=False):
     row=db.scalar(select(Order).where(Order.order_no==order_no,Order.user_id==user.id))
     if row is None:raise HTTPException(404,'order not found',headers={'Cache-Control':'private, no-store','Vary':'Authorization'})
+    if reconcile and row.provider=='epay':
+        from app.modules.billing import epay_commerce
+        call(db,epay_commerce.reconcile,db,row)
+        db.refresh(row)
+    elif reconcile and row.provider=='creem':
+        from app.modules.billing import creem_commerce
+        call(db,creem_commerce.reconcile,db,row)
+        db.refresh(row)
+    elif reconcile and row.provider=='waffo_pancake':
+        from app.modules.billing import pancake_commerce
+        call(db,pancake_commerce.reconcile,db,row)
+        db.refresh(row)
+    elif reconcile and row.provider=='waffo':
+        from app.modules.billing import waffo_commerce
+        call(db,waffo_commerce.reconcile,db,row)
+        db.refresh(row)
     snapshot=row.product_snapshot if isinstance(row.product_snapshot,dict) else {}
     code=snapshot.get('code')
     if not isinstance(code,str):code=''
@@ -128,6 +152,39 @@ def consumer_order_detail(order_no:str,response:Response,user=Depends(require_us
     response.headers['Cache-Control']='private, no-store'
     response.headers['Vary']='Authorization'
     return {'order':dict(order_no=row.order_no,product_type=row.product_type,product_code=code,status=row.status),'settled':settled}
+
+
+@public_router.post('/commerce/orders/{order_no}/reconcile')
+def reconcile_order(order_no:str,response:Response,user=Depends(require_user),db:Session=Depends(get_db)):
+    return _consumer_order_detail(order_no,response,user,db,reconcile=True)
+
+
+@public_router.api_route('/billing/epay/accounts/{code}/webhook', methods=['GET','POST'], include_in_schema=False)
+async def epay_webhook(code:str,request:Request,db:Session=Depends(get_db)):
+    from fastapi.concurrency import run_in_threadpool
+    from app.modules.billing import epay_commerce
+
+    raw = request.scope['query_string']
+    if request.method == 'POST':
+        if raw or request.headers.get('content-type','').split(';',1)[0].strip().lower() != 'application/x-www-form-urlencoded':
+            raise HTTPException(400, 'Expected an Epay form notification')
+        chunks = bytearray()
+        async for chunk in request.stream():
+            if len(chunks) + len(chunk) > 8192:
+                raise HTTPException(413, 'Epay notification is too large')
+            chunks.extend(chunk)
+        raw = bytes(chunks)
+    if len(raw) > 8192:
+        raise HTTPException(413, 'Epay notification is too large')
+    try:
+        pairs = parse_qsl(raw.decode('utf-8'), keep_blank_values=True, strict_parsing=True, errors='strict', max_num_fields=32)
+    except ValueError:
+        raise HTTPException(400, 'Malformed Epay notification') from None
+    params = dict(pairs)
+    if len(params) != len(pairs):
+        raise HTTPException(400, 'Duplicate Epay notification parameters')
+    await run_in_threadpool(call,db,epay_commerce.receive,db,code,params)
+    return Response('success', media_type='text/plain', headers={'Cache-Control':'no-store'})
 @public_router.post('/billing/stripe/accounts/{code}/webhook')
 async def webhook(code:str,request:Request,stripe_signature:str=Header(default='',alias='Stripe-Signature'),db:Session=Depends(get_db)):
     body=await request.body()
@@ -136,6 +193,51 @@ async def webhook(code:str,request:Request,stripe_signature:str=Header(default='
     if code=='env':return call(db,apply_stripe_event,db,body=body,signature=stripe_signature,payload=payload)
     from app.modules.billing.site_merchants import receive
     return call(db,receive,db,code,body,stripe_signature,payload)
+
+
+@public_router.post('/billing/creem/accounts/{code}/webhook', include_in_schema=False)
+async def creem_webhook(code: str, request: Request, signature: str = Header(default='', alias='creem-signature'),
+                        db: Session = Depends(get_db)):
+    from fastapi.concurrency import run_in_threadpool
+    from app.modules.billing import creem_commerce
+
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > 1024 * 1024:
+            raise HTTPException(413, 'Creem notification is too large')
+        body.extend(chunk)
+    return await run_in_threadpool(call, db, creem_commerce.receive, db, code, bytes(body), signature)
+
+
+@public_router.post('/billing/waffo-pancake/accounts/{code}/webhook', include_in_schema=False)
+async def pancake_webhook(code: str, request: Request, signature: str = Header(default='', alias='X-Waffo-Signature'),
+                          db: Session = Depends(get_db)):
+    from fastapi.concurrency import run_in_threadpool
+    from app.modules.billing import pancake_commerce
+
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > 1024 * 1024:
+            raise HTTPException(413, 'Waffo Pancake notification is too large')
+        body.extend(chunk)
+    return await run_in_threadpool(call, db, pancake_commerce.receive, db, code, bytes(body), signature)
+
+
+@public_router.post('/billing/waffo/accounts/{code}/webhook', include_in_schema=False)
+async def waffo_webhook(code: str, request: Request, signature: str = Header(default='', alias='X-SIGNATURE'),
+                        db: Session = Depends(get_db)):
+    from fastapi.concurrency import run_in_threadpool
+    from app.modules.billing import waffo_commerce
+
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > 1024 * 1024:
+            raise HTTPException(413, 'Waffo notification is too large')
+        body.extend(chunk)
+    payload, signed = await run_in_threadpool(
+        call, db, waffo_commerce.receive, db, code, bytes(body), signature or request.headers.get('X-Waffo-Signature', ''),
+    )
+    return Response(payload, media_type='application/json', headers={'X-SIGNATURE': signed, 'Cache-Control': 'no-store'})
 
 @admin_router.get('/coin-packs')
 def admin_packs(user=Depends(require_admin),db:Session=Depends(get_db)):return {'items':service.list_packs(db,True)}
@@ -293,3 +395,342 @@ def instance_update_account(code:str,body:AccountPatch,db:Session=Depends(get_db
 @platform_router.post('/stripe/accounts/{code}/test')
 def instance_test_account(code:str,db:Session=Depends(get_db),user=Depends(require_platform_admin)):
     return call(db,service.test_account,db,code)
+
+
+EpayMethod = Annotated[str, StringConstraints(pattern=r'^[a-z0-9_]{1,64}$')]
+EpayMerchant = Annotated[str, StringConstraints(pattern=r'^[A-Za-z0-9_.:-]{1,128}$')]
+GatewayCode = Annotated[str, StringConstraints(pattern=r'^[a-z0-9_]{2,32}$')]
+GatewayStatus = Literal['draft', 'active', 'disabled']
+
+
+class EpayAccountIn(BaseModel):
+    code: GatewayCode
+    name: str = Field(min_length=1, max_length=100)
+    status: GatewayStatus = 'draft'
+    endpoint: str = Field(min_length=1, max_length=500)
+    merchant_id: EpayMerchant
+    payment_methods: list[EpayMethod] = Field(max_length=20)
+    secret_key: SecretStr | None = None
+
+
+class EpayAccountPatch(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    status: GatewayStatus | None = None
+    endpoint: str | None = Field(default=None, min_length=1, max_length=500)
+    merchant_id: EpayMerchant | None = None
+    payment_methods: list[EpayMethod] | None = Field(default=None, max_length=20)
+    secret_key: SecretStr | None = None
+
+
+def _gateway_settings(body, fields, *, max_chars=512):
+    values = body.model_dump(exclude={'code', *fields}, exclude_none=True)
+    for field in fields:
+        secret = getattr(body, field)
+        if secret is not None:
+            value = secret.get_secret_value().strip()
+            if len(value) > max_chars:
+                raise HTTPException(422, 'Payment credential is too long')
+            values[field] = value
+    return values
+
+
+@platform_router.get('/epay/accounts')
+def epay_accounts(db: Session = Depends(get_db), user=Depends(require_platform_admin)):
+    from app.modules.billing import epay_commerce, gateway_accounts
+
+    return {'items': [epay_commerce.account_public(row) for row in gateway_accounts.accounts(db, 'epay')]}
+
+
+@platform_router.post('/epay/accounts')
+def epay_create_account(body: EpayAccountIn, db: Session = Depends(get_db), user=Depends(require_platform_admin)):
+    from app.modules.billing import epay_commerce
+
+    return call(db, epay_commerce.save_account, db, body.code, _gateway_settings(body, ('secret_key',)), user.id, create=True)
+
+
+@platform_router.patch('/epay/accounts/{code}')
+def epay_update_account(code: GatewayCode, body: EpayAccountPatch, db: Session = Depends(get_db), user=Depends(require_platform_admin)):
+    from app.modules.billing import epay_commerce
+
+    return call(db, epay_commerce.save_account, db, code, _gateway_settings(body, ('secret_key',)), user.id)
+
+
+@platform_router.post('/epay/accounts/{code}/test')
+def epay_test_account(code: GatewayCode, db: Session = Depends(get_db), user=Depends(require_platform_admin)):
+    from app.modules.billing import epay_commerce
+
+    return call(db, epay_commerce.test_account, db, code)
+
+
+class GatewayBindingIn(BaseModel):
+    account_code: GatewayCode | None
+
+
+@tenant_router.get('/epay/merchant-binding')
+def epay_read_binding(db: Session = Depends(get_db), user=Depends(require_tenant_admin)):
+    from app.modules.billing import epay_commerce
+
+    return call(db, epay_commerce.binding_info, db)
+
+
+@tenant_router.put('/epay/merchant-binding')
+def epay_set_binding(body: GatewayBindingIn, db: Session = Depends(get_db), user=Depends(require_tenant_admin)):
+    from app.modules.billing import epay_commerce
+
+    return call(db, epay_commerce.bind, db, body.account_code, user.id)
+
+
+GatewayMode = Literal['test', 'production']
+CREEM_SECRETS = ('api_key', 'webhook_secret')
+
+
+class CreemAccountIn(BaseModel):
+    code: GatewayCode
+    name: str = Field(min_length=1, max_length=100)
+    status: GatewayStatus = 'draft'
+    mode: GatewayMode
+    api_key: SecretStr | None = None
+    webhook_secret: SecretStr | None = None
+
+
+class CreemAccountPatch(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    status: GatewayStatus | None = None
+    mode: GatewayMode | None = None
+    api_key: SecretStr | None = None
+    webhook_secret: SecretStr | None = None
+
+
+class ProductBindingIn(BaseModel):
+    account_code: GatewayCode
+    product_type: Literal['coin_pack', 'membership']
+    version_id: int = Field(ge=1)
+    billing_mode: Literal['one_time', 'subscription']
+
+
+class CreemProductBindingIn(ProductBindingIn):
+    external_product_id: Annotated[str, StringConstraints(pattern=r'^prod_[a-zA-Z0-9_-]{1,122}$')] | None
+
+
+@platform_router.get('/creem/accounts')
+def creem_account_list(db: Session = Depends(get_db), user=Depends(require_platform_admin)):
+    from app.modules.billing import creem_accounts, gateway_accounts
+
+    return {'items': [creem_accounts.account_public(row) for row in gateway_accounts.accounts(db, 'creem')]}
+
+
+@platform_router.post('/creem/accounts')
+def creem_create_account(body: CreemAccountIn, db: Session = Depends(get_db), user=Depends(require_platform_admin)):
+    from app.modules.billing import creem_accounts
+
+    return call(db, creem_accounts.save_account, db, body.code, _gateway_settings(body, CREEM_SECRETS), user.id, create=True)
+
+
+@platform_router.patch('/creem/accounts/{code}')
+def creem_update_account(code: GatewayCode, body: CreemAccountPatch, db: Session = Depends(get_db), user=Depends(require_platform_admin)):
+    from app.modules.billing import creem_accounts
+
+    return call(db, creem_accounts.save_account, db, code, _gateway_settings(body, CREEM_SECRETS), user.id)
+
+
+@platform_router.post('/creem/accounts/{code}/test')
+def creem_test_account(code: GatewayCode, db: Session = Depends(get_db), user=Depends(require_platform_admin)):
+    from app.modules.billing import creem_accounts
+
+    return call(db, creem_accounts.test_account, db, code)
+
+
+@tenant_router.get('/creem/merchant-binding')
+def creem_read_binding(db: Session = Depends(get_db), user=Depends(require_tenant_admin)):
+    from app.modules.billing import creem_accounts
+
+    return call(db, creem_accounts.binding_info, db)
+
+
+@tenant_router.put('/creem/merchant-binding')
+def creem_set_binding(body: GatewayBindingIn, db: Session = Depends(get_db), user=Depends(require_tenant_admin)):
+    from app.modules.billing import creem_accounts
+
+    return call(db, creem_accounts.bind, db, body.account_code, user.id)
+
+
+@tenant_router.get('/creem/product-bindings')
+def creem_product_bindings(db: Session = Depends(get_db), user=Depends(require_tenant_admin)):
+    from app.modules.billing import creem_accounts
+
+    return call(db, creem_accounts.bindings_info, db)
+
+
+@tenant_router.put('/creem/product-bindings')
+def creem_save_product(body: CreemProductBindingIn, db: Session = Depends(get_db), user=Depends(require_tenant_admin)):
+    from app.modules.billing import creem_accounts
+
+    return call(db, creem_accounts.save_binding, db, body.model_dump(), user.id)
+
+
+PancakeMerchant = Annotated[str, StringConstraints(pattern=r'^MER_[a-zA-Z0-9]{1,120}$')]
+PancakeStore = Annotated[str, StringConstraints(pattern=r'^STO_[a-zA-Z0-9]{1,120}$')]
+
+
+class PancakeAccountIn(BaseModel):
+    code: GatewayCode
+    name: str = Field(min_length=1, max_length=100)
+    status: GatewayStatus = 'draft'
+    mode: GatewayMode
+    merchant_id: PancakeMerchant
+    store_id: PancakeStore
+    private_key: SecretStr | None = None
+
+
+class PancakeAccountPatch(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    status: GatewayStatus | None = None
+    mode: GatewayMode | None = None
+    merchant_id: PancakeMerchant | None = None
+    store_id: PancakeStore | None = None
+    private_key: SecretStr | None = None
+
+
+class PancakeProductBindingIn(ProductBindingIn):
+    external_product_id: Annotated[str, StringConstraints(pattern=r'^PROD_[a-zA-Z0-9]{1,120}$')] | None
+
+
+@platform_router.get('/waffo-pancake/accounts')
+def pancake_account_list(db: Session = Depends(get_db), user=Depends(require_platform_admin)):
+    from app.modules.billing import gateway_accounts, pancake_accounts
+
+    return {'items': [pancake_accounts.account_public(row) for row in gateway_accounts.accounts(db, 'waffo_pancake')]}
+
+
+@platform_router.post('/waffo-pancake/accounts')
+def pancake_create_account(body: PancakeAccountIn, db: Session = Depends(get_db), user=Depends(require_platform_admin)):
+    from app.modules.billing import pancake_accounts
+
+    return call(db, pancake_accounts.save_account, db, body.code,
+                _gateway_settings(body, ('private_key',), max_chars=8192), user.id, create=True)
+
+
+@platform_router.patch('/waffo-pancake/accounts/{code}')
+def pancake_update_account(code: GatewayCode, body: PancakeAccountPatch, db: Session = Depends(get_db),
+                            user=Depends(require_platform_admin)):
+    from app.modules.billing import pancake_accounts
+
+    return call(db, pancake_accounts.save_account, db, code,
+                _gateway_settings(body, ('private_key',), max_chars=8192), user.id)
+
+
+@platform_router.post('/waffo-pancake/accounts/{code}/test')
+def pancake_test_account(code: GatewayCode, db: Session = Depends(get_db), user=Depends(require_platform_admin)):
+    from app.modules.billing import pancake_accounts
+
+    return call(db, pancake_accounts.test_account, db, code)
+
+
+@platform_router.get('/waffo-pancake/accounts/{code}/catalog')
+def pancake_catalog(code: GatewayCode, db: Session = Depends(get_db), user=Depends(require_platform_admin)):
+    from app.modules.billing import pancake_accounts
+
+    return call(db, pancake_accounts.merchant_catalog, db, code)
+
+
+@tenant_router.get('/waffo-pancake/merchant-binding')
+def pancake_read_binding(db: Session = Depends(get_db), user=Depends(require_tenant_admin)):
+    from app.modules.billing import pancake_accounts
+
+    return call(db, pancake_accounts.binding_info, db)
+
+
+@tenant_router.put('/waffo-pancake/merchant-binding')
+def pancake_set_binding(body: GatewayBindingIn, db: Session = Depends(get_db), user=Depends(require_tenant_admin)):
+    from app.modules.billing import pancake_accounts
+
+    return call(db, pancake_accounts.bind, db, body.account_code, user.id)
+
+
+@tenant_router.get('/waffo-pancake/product-bindings')
+def pancake_product_bindings(db: Session = Depends(get_db), user=Depends(require_tenant_admin)):
+    from app.modules.billing import pancake_accounts
+
+    return call(db, pancake_accounts.bindings_info, db)
+
+
+@tenant_router.put('/waffo-pancake/product-bindings')
+def pancake_save_product(body: PancakeProductBindingIn, db: Session = Depends(get_db), user=Depends(require_tenant_admin)):
+    from app.modules.billing import pancake_accounts
+
+    return call(db, pancake_accounts.save_binding, db, body.model_dump(), user.id)
+
+
+WaffoMerchant = Annotated[str, StringConstraints(pattern=r'^[A-Za-z0-9_-]{1,100}$')]
+GatewayCurrency = Annotated[str, StringConstraints(pattern=r'^[A-Z]{3}$')]
+WAFFO_SECRETS = ('api_key', 'private_key', 'public_key')
+
+
+class WaffoAccountIn(BaseModel):
+    code: GatewayCode
+    name: str = Field(min_length=1, max_length=100)
+    status: GatewayStatus = 'draft'
+    mode: GatewayMode
+    merchant_id: WaffoMerchant
+    currency: GatewayCurrency = 'USD'
+    subscriptions_enabled: bool = False
+    api_key: SecretStr | None = None
+    private_key: SecretStr | None = None
+    public_key: SecretStr | None = None
+
+
+class WaffoAccountPatch(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    status: GatewayStatus | None = None
+    mode: GatewayMode | None = None
+    merchant_id: WaffoMerchant | None = None
+    currency: GatewayCurrency | None = None
+    subscriptions_enabled: bool | None = None
+    api_key: SecretStr | None = None
+    private_key: SecretStr | None = None
+    public_key: SecretStr | None = None
+
+
+@platform_router.get('/waffo/accounts')
+def waffo_account_list(db: Session = Depends(get_db), user=Depends(require_platform_admin)):
+    from app.modules.billing import gateway_accounts, waffo_accounts
+
+    return {'items': [waffo_accounts.account_public(row) for row in gateway_accounts.accounts(db, 'waffo')]}
+
+
+@platform_router.post('/waffo/accounts')
+def waffo_create_account(body: WaffoAccountIn, db: Session = Depends(get_db), user=Depends(require_platform_admin)):
+    from app.modules.billing import waffo_accounts
+
+    return call(db, waffo_accounts.save_account, db, body.code,
+                _gateway_settings(body, WAFFO_SECRETS, max_chars=16384), user.id, create=True)
+
+
+@platform_router.patch('/waffo/accounts/{code}')
+def waffo_update_account(code: GatewayCode, body: WaffoAccountPatch, db: Session = Depends(get_db),
+                          user=Depends(require_platform_admin)):
+    from app.modules.billing import waffo_accounts
+
+    return call(db, waffo_accounts.save_account, db, code,
+                _gateway_settings(body, WAFFO_SECRETS, max_chars=16384), user.id)
+
+
+@platform_router.post('/waffo/accounts/{code}/test')
+def waffo_test_account(code: GatewayCode, db: Session = Depends(get_db), user=Depends(require_platform_admin)):
+    from app.modules.billing import waffo_accounts
+
+    return call(db, waffo_accounts.test_account, db, code)
+
+
+@tenant_router.get('/waffo/merchant-binding')
+def waffo_read_binding(db: Session = Depends(get_db), user=Depends(require_tenant_admin)):
+    from app.modules.billing import waffo_accounts
+
+    return call(db, waffo_accounts.binding_info, db)
+
+
+@tenant_router.put('/waffo/merchant-binding')
+def waffo_set_binding(body: GatewayBindingIn, db: Session = Depends(get_db), user=Depends(require_tenant_admin)):
+    from app.modules.billing import waffo_accounts
+
+    return call(db, waffo_accounts.bind, db, body.account_code, user.id)
