@@ -1,0 +1,27 @@
+{
+  "version": "v2026.11.23.3",
+  "target": "video",
+  "status": "published",
+  "sha": "73a82442cf0bb557bd33b4685549d56a29571842",
+  "short_sha": "73a82442",
+  "command": [
+    "/opt/minitv-multisite-312/bin/python",
+    "/mnt/d/workspace/new/jjtv-multi-payment/scripts/deploy_video.py",
+    "--host",
+    "video",
+    "--phase",
+    "http"
+  ],
+  "exit_code": 0,
+  "started_at": "2026-11-23T14:48:25+08:00",
+  "finished_at": "2026-11-23T14:51:41+08:00",
+  "operator": {
+    "user": "root",
+    "host": "MM-202608191734",
+    "pid": 6657,
+    "agent_session": null,
+    "cwd": "/mnt/d/workspace/new/jjtv-multi-payment"
+  },
+  "note": "JJTV-multi-payment-gateways-production",
+  "dirty": false
+}
